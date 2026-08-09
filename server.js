@@ -1138,6 +1138,19 @@ const HTML = /* html */ `<!doctype html>
   .tally { margin: 3px 0 0; font-size: 12.5px; color: var(--faint); }
   .tally b { color: var(--soft); font-weight: 500; }
   .tally.stale b { color: var(--clay); }
+  /* separators live on the parts, so a part can be hidden without stranding one */
+  .tally .host::before, .tally .when::before { content: ' · '; }
+
+  /* Only a phone gets this: search is a power feature and does not deserve a
+     permanent row on a 375px screen. */
+  .seek-toggle {
+    display: none; flex: 0 0 auto; width: 38px; height: 38px; padding: 0; cursor: pointer;
+    place-items: center; border-radius: 11px;
+    background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
+    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
+  }
+  .seek-toggle svg { width: 16px; height: 16px; }
+  .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
 
   .seek { position: relative; margin-left: auto; flex: 0 1 clamp(160px, 26vw, 290px); min-width: 0; }
   .seek input {
@@ -1625,34 +1638,77 @@ const HTML = /* html */ `<!doctype html>
   @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
 
   /* ── narrow ──────────────────────────────────────────────────────────── */
+  /* ── the phone ───────────────────────────────────────────────────────── */
+  /* A phone is not a narrow desktop. The whole page scrolls as one — a fixed
+     shell with only the tile grid moving inside it feels broken on a touch
+     screen — and the top bar stays put so the house is always one tap away. */
   @media (max-width: 860px) {
-    /* No width for a side column: rooms and cues become full-width rails that
-       scroll sideways, stacked — side by side, neither one can be read. */
-    .board { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; gap: 16px; }
-    .index { display: contents; }
-    .index-sec { min-width: 0; }
-    .legend { margin-bottom: 7px; }
+    html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
+    body { display: block; min-height: 100%; padding-top: 0; }
+    .shell { display: block; max-width: none; padding: 0 16px 28px; }
+    .board { display: block; }
+    .index { display: block; overflow: visible; }
+
+    /* the bar carries the notch inset itself, so its glass reaches the top edge */
+    .plate {
+      position: sticky; top: 0; z-index: 20;
+      margin: 0 -16px 18px; padding: calc(11px + env(safe-area-inset-top)) 16px 11px;
+      gap: 12px; align-items: center;
+      background: color-mix(in oklab, var(--base) 86%, transparent);
+      backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border-bottom: 1px solid var(--edge);
+    }
+    .stamp { flex: 1 1 auto; min-width: 0; }
+    .stamp h1 { font-size: 14px; }
+    .tally { margin-top: 1px; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* the count is already the heading below; the hub only matters when stale */
+    .tally .count, .tally .host { display: none; }
+    .tally .when::before { content: none; }
+    .tally.stale .host { display: inline; }
+    .tally.stale .host::before { content: none; }
+    .tally.stale .when::before { content: ' · '; }
+
+    .seek-toggle { display: grid; margin-left: auto; }
+    .seek { display: none; order: 4; flex: 1 1 100%; margin-left: 0; }
+    .plate.searching .seek { display: block; }
+    .plate.searching { flex-wrap: wrap; }
+    .main { margin-left: 0; padding: 9px 13px; }
+
+    /* rooms and cues become sideways rails — stacked, they would eat the screen */
+    .index-sec { min-width: 0; margin-bottom: 18px; }
+    .legend { margin-bottom: 8px; }
     .index-sec > div:not(.legend):not(.maker) {
-      display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px;
+      display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
+      padding-bottom: 2px; margin: 0 -16px; padding-left: 16px; padding-right: 16px;
     }
     .index-sec > div::-webkit-scrollbar { display: none; }
-    .tab, .cue { width: auto; flex: 0 0 auto; min-width: 132px; margin-bottom: 0; }
+    .tab, .cue { width: auto; flex: 0 0 auto; min-width: 138px; margin-bottom: 0; }
+    .tab { padding: 10px 14px; }
     .cue-edit { opacity: 1; }
-    .newcue { width: auto; margin-top: 8px; }
-    .maker { margin-top: 8px; }
+    .newcue { width: auto; margin-top: 10px; }
+    .maker { margin-top: 10px; }
+
+    /* the field is now just more page, not a scrolling window */
+    .field { display: block; }
+    .tiles { display: grid; overflow: visible; padding: 0; }
+    .field-head { margin-bottom: 14px; }
   }
+
   @media (max-width: 560px) {
-    .plate { flex-wrap: wrap; gap: 12px 14px; }
-    .stamp { flex: 1 1 auto; min-width: 0; }
-    .tally .host { display: none; }
-    .tally.stale .host { display: inline; }   /* unless the hub is the problem */
-    .seek { order: 3; flex: 1 1 100%; margin-left: 0; }
-    .main { margin-left: 0; }
-    .tiles { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
-    .field-head { gap: 12px; margin-bottom: 14px; }
-    .key { top: 10px; right: 10px; }
+    .field-head h2 { font-size: 25px; }
+    .tiles { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    /* a fingertip needs more than a mouse: taller tiles, a bigger switch */
+    .tile { --tile-h: 152px; }
+    .tile.climate { height: calc(var(--tile-h) + 112px); }
+    .key { top: 8px; right: 8px; width: 40px; height: 40px; }
+    .key i { width: 15px; height: 15px; }
     .tile-body { padding: 15px; }
-    .warmth, .drawer { left: 15px; right: 15px; }
+    .tile-name { font-size: 14.5px; padding-right: 30px; }
+    .warmth, .drawer, .controls { left: 15px; right: 15px; }
+    .slider { height: 26px; }                 /* a thicker grab area */
+    .slider::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -6px; }
+    .slider::-moz-range-thumb { width: 15px; height: 15px; }
+    .cut { padding: 10px 14px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1669,6 +1725,9 @@ const HTML = /* html */ `<!doctype html>
       <h1>Pravita's Apartment</h1>
       <p class="tally" id="tally"></p>
     </div>
+    <button class="seek-toggle" id="seektoggle" type="button" aria-expanded="false" aria-label="Find a circuit">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    </button>
     <label class="seek">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <input type="search" id="seek" placeholder="Find a circuit" autocomplete="off" aria-label="Find a circuit">
@@ -1869,10 +1928,13 @@ function readout() {
     when = 'hub unreachable — ' + s.hub_error;
   }
   const t = el('#tally');
-  // The hub address only matters when something is wrong with it, so on a narrow
-  // screen it steps aside rather than pushing the All-off button onto its own row.
-  t.innerHTML = '<b>' + on.length + '</b> of ' + state.devices.length + ' circuits live' +
-    '<span class="host"> · hub ' + HUB + '</span> · ' + when;
+  // Split into parts so a narrow screen can drop what it already says elsewhere:
+  // the count is repeated in the heading below, and the hub address only matters
+  // when something is wrong with it.
+  t.innerHTML =
+    '<span class="count"><b>' + on.length + '</b> of ' + state.devices.length + ' circuits live</span>' +
+    '<span class="host">hub ' + HUB + '</span>' +
+    '<span class="when">' + when + '</span>';
   t.classList.toggle('stale', !!s.hub_error);
 
   const m = el('#main');
@@ -3037,10 +3099,22 @@ function note(msg, hold, action) {
 /* ────────────────────────────────────────────────────────────── wiring */
 
 el('#seek').addEventListener('input', (e) => { state.q = e.target.value; drawField(); });
+
+// On a phone the search field is folded away behind its icon; opening it gives
+// it the row it needs, and leaving it empty folds it back.
+const seekToggle = el('#seektoggle');
+const plate = el('.plate');
+function openSeek(open) {
+  plate.classList.toggle('searching', open);
+  seekToggle.setAttribute('aria-expanded', String(open));
+  if (open) el('#seek').focus();
+}
+seekToggle.addEventListener('click', () => openSeek(!plate.classList.contains('searching')));
+el('#seek').addEventListener('blur', () => { if (!state.q.trim()) openSeek(false); });
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!el('#scrim').hidden) { closeSheet(); return; }
-    if (state.q) { state.q = ''; el('#seek').value = ''; drawField(); }
+    if (state.q) { state.q = ''; el('#seek').value = ''; drawField(); openSeek(false); }
     else if (state.view === 'room') go('house');
   }
   // A slash puts the cursor in the search box, the way a console does.
