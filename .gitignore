@@ -1,0 +1,13 @@
+# dependencies — restored with `npm install`
+node_modules/
+
+# runtime state — your saved scenes, auto-seeded on first run if absent
+scenes.json
+
+# macOS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+*.swp
