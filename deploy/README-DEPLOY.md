@@ -1,6 +1,7 @@
-# Hosting the dashboard on the hub (the Dell NAS)
+# Hosting the dashboard on the hub (a Dell OptiPlex 3020)
 
-The hub at `192.168.1.3` is the one device in the house that is always on and
+The hub at `192.168.1.3` is a Dell OptiPlex 3020 — an ordinary x86-64 desktop PC
+running Ubuntu 20.04, and the one device in the house that is always on and
 always on the LAN. Running the dashboard here means it works with the Mac shut —
 and, crucially, gives us **schedules**, which the hub's own scheduler cannot do
 (its `addScheduledTrigger` endpoint is broken server-side — see `CLAUDE.md`).
