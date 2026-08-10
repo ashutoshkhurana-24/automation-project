@@ -11,3 +11,6 @@ scenes.json
 .vscode/
 .idea/
 *.swp
+
+# deploy bundle (rebuild with ./build-bundle.sh)
+dashboard-nas-bundle.tar.gz

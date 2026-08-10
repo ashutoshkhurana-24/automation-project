@@ -1,0 +1,35 @@
+[Unit]
+# Neo Console Dashboard — our independent UI + scheduler, hosted ON the hub.
+# This is OUR service. It touches nothing the vendor owns; it only talks to the
+# vendor's WebSocket on :8090 as any LAN client would.
+Description=Neo Console Dashboard (independent home-automation UI + scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# install.sh fills these three in from the box it runs on:
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__NODE_BIN__ server.js
+
+# Non-8090 port so we can never clash with the vendor's Django server.
+Environment=PORT=3000
+Environment=HUB_IP=192.168.1.3
+Environment=HUB_PORT=8090
+# Require a secret on the Siri/shortcut endpoints — uncomment and set if guests
+# share the Wi-Fi. Then append ?key=... to the shortcut URLs.
+#Environment=SHORTCUT_KEY=change-me-to-a-long-random-string
+
+Restart=on-failure
+RestartSec=3
+
+# Keep us boxed in. ProtectHome is deliberately NOT set to full read-only —
+# we need to write scenes.json in our own WorkingDirectory — but everything
+# else on the system is off-limits.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
