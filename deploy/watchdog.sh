@@ -14,7 +14,10 @@ PORT="${PORT:-3000}"
 SERVICE=neo-dashboard
 STAMP="${TMPDIR:-/tmp}/neo-watchdog.state"
 
-code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${PORT}/api/health" || echo 000)
+# curl already prints 000 via -w when it cannot connect; the || is a fallback for
+# the case where it prints nothing at all. Assigning rather than echoing keeps the
+# two from concatenating into a confusing "000000" in the log.
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${PORT}/api/health") || code=000
 
 if [[ "$code" == "200" ]]; then
   rm -f "$STAMP"
