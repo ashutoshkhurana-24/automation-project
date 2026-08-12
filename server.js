@@ -1791,12 +1791,20 @@ const HTML = /* html */ `<!doctype html>
     transition: height .5s cubic-bezier(.3,.8,.3,1), background .45s;
   }
   /* Light does not stop at an edge. This is the bloom where the lamp's own
-     brightness spills off the top of the fill — the thing that was missing. */
+     brightness spills off the top of the fill.
+
+     It is a gradient, not a blurred ellipse. A blurred shape is still a shape:
+     it overhung the tile, the tile's own overflow clip cut it, and the cut read
+     as a hard translucent edge with the ellipse visible inside it. A radial
+     gradient fades to nothing by itself, stays inside the tile, and so has no
+     edge to clip. */
   .tile-fill::after {
-    content: ''; position: absolute; left: -12%; right: -12%; top: -20px; height: 46px;
-    border-radius: 50%; pointer-events: none;
-    background: color-mix(in oklab, var(--tint) calc(var(--lit) * 62%), transparent);
-    filter: blur(18px);
+    content: ''; position: absolute; left: 0; right: 0; top: -58px; height: 58px;
+    pointer-events: none;
+    background: radial-gradient(72% 118% at 50% 100%,
+      color-mix(in oklab, var(--tint) calc(var(--lit) * 55%), transparent) 0%,
+      color-mix(in oklab, var(--tint) calc(var(--lit) * 22%), transparent) 38%,
+      transparent 72%);
     transition: background .45s;
   }
   .tile:not(.on) .tile-fill { background: none; }
@@ -2128,11 +2136,11 @@ const HTML = /* html */ `<!doctype html>
   .timerpop[hidden] { display: none; }
   .timerpop h3 { margin: 0 0 2px; font-size: 13px; font-weight: 500; color: var(--ink); }
   .timerpop p { margin: 0 0 11px; font-size: 12px; color: var(--faint); }
-  .scopes { display: flex; gap: 6px; margin-bottom: 10px; }
+  .scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 11px; }
   .scopes button {
-    flex: 1 1 0; font: inherit; font-size: 12px; color: var(--faint); cursor: pointer;
-    padding-top: 7px; padding-bottom: 7px; border-radius: 9px;
-    background: transparent; border: 1px solid var(--edge);
+    font: inherit; font-size: 12px; color: var(--faint); cursor: pointer;
+    padding-top: 7px; padding-right: 11px; padding-bottom: 7px; padding-left: 11px;
+    border-radius: 9px; background: transparent; border: 1px solid var(--edge);
   }
   .scopes button.on { color: var(--ink); background: var(--pane-up); border-color: var(--edge-up); }
   .mins { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
@@ -2217,8 +2225,29 @@ const HTML = /* html */ `<!doctype html>
       background: var(--pane); border-color: var(--edge);
     }
     .settings-row .setting .val { margin-left: 6px; }
-    .board { display: block; }
-    .index { display: block; overflow: visible; }
+    /* On a phone the index is not a sidebar, it is furniture stacked on top of
+       the thing you came for. Letting it display as contents makes its sections
+       siblings of the house itself, so the rooms rail stays up top, the house
+       follows immediately, and the settings — which are read once a month —
+       drop below it instead of pushing it off the screen. */
+    .board { display: flex; flex-direction: column; }
+    .index { display: contents; }
+    #secrooms { order: 1; }
+    #seccues  { order: 2; }
+    .field    { order: 3; }
+    #sechouse { order: 4; margin-top: 4px; }
+
+    /* A cue on a phone is a chip: the name is the whole target. The reading and
+       the colour swatch are detail for a screen with room to spare. The name
+       must not wrap, or the chip grows taller than the card it replaced. */
+    #seccues .cue-note, #seccues .cue-swatch { display: none; }
+    #seccues .cue {
+      min-width: 0; white-space: nowrap;
+      padding-top: 11px; padding-right: 32px; padding-bottom: 11px; padding-left: 13px;
+    }
+    #seccues .cue-name { font-size: 13px; }
+    /* the pencil rides beside the name rather than above it on a one-line chip */
+    #seccues .cue-edit { top: 50%; right: 5px; transform: translateY(-50%); }
 
     /* the bar carries the notch inset itself, so its glass reaches the top edge */
     .plate {
@@ -2246,35 +2275,42 @@ const HTML = /* html */ `<!doctype html>
     .main { margin-left: 0; padding: 9px 13px; }
 
     /* rooms and cues become sideways rails — stacked, they would eat the screen */
-    .index-sec { min-width: 0; margin-bottom: 18px; }
-    .legend { margin-bottom: 8px; }
+    .index-sec { min-width: 0; margin-bottom: 13px; }
+    .legend { margin-bottom: 6px; font-size: 10.5px; }
     .index-sec > div:not(.legend):not(.maker) {
       display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
       padding-bottom: 2px; margin: 0 -16px; padding-left: 16px; padding-right: 16px;
     }
     .index-sec > div::-webkit-scrollbar { display: none; }
-    .tab, .cue { width: auto; flex: 0 0 auto; min-width: 138px; margin-bottom: 0; }
-    .tab { padding: 10px 14px; }
+    /* A phone is not a small desktop: the rails carry more per screen, so the
+       house itself starts near the top instead of below a stack of furniture. */
+    .tab, .cue { width: auto; flex: 0 0 auto; min-width: 116px; margin-bottom: 0; }
+    .tab { padding: 8px 12px; font-size: 13px; }
+    .cue { padding: 9px 11px; }
+    .cue-name { font-size: 13px; }
     .cue-edit { opacity: 1; }
-    .newcue { width: auto; margin-top: 10px; }
-    .maker { margin-top: 10px; }
+    .newcue { width: auto; margin-top: 8px; padding: 8px 12px; font-size: 12.5px; }
+    .maker { margin-top: 8px; }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
     .tiles { display: grid; overflow: visible; padding: 0; }
-    .field-head { margin-bottom: 14px; }
+    .field-head { margin-bottom: 10px; }
+    .field-head h2 { font-size: 21px; }
+    .field-sub { margin-top: 3px; font-size: 12px; }
   }
 
   @media (max-width: 560px) {
-    .field-head h2 { font-size: 25px; }
-    .tiles { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    /* a fingertip needs more than a mouse: taller tiles, a bigger switch */
-    .tile { --tile-h: 152px; }
+    .tiles { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+    /* a fingertip needs more than a mouse: a bigger switch, but not a taller
+       tile — height here buys nothing and costs a whole row per screen */
+    .tile { --tile-h: 132px; }
     .tile.climate { height: calc(var(--tile-h) + 112px); }
-    .key { top: 8px; right: 8px; width: 40px; height: 40px; }
+    .key { top: 8px; right: 8px; width: 38px; height: 38px; }
     .key i { width: 15px; height: 15px; }
-    .tile-body { padding: 15px; }
-    .tile-name { font-size: 14.5px; padding-right: 30px; }
+    .tile-body { padding: 13px; }
+    .tile-name { font-size: 13.5px; padding-right: 28px; }
+    .tile-read { font-size: 11.5px; }
     .warmth, .drawer, .controls { left: 15px; right: 15px; }
     .slider { height: 26px; }                 /* a thicker grab area */
     .slider::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -6px; }
@@ -2310,11 +2346,11 @@ const HTML = /* html */ `<!doctype html>
 
   <main class="board">
     <aside class="index">
-      <div class="index-sec">
+      <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
       </div>
-      <div class="index-sec">
+      <div class="index-sec" id="seccues">
         <div class="legend">Cues</div>
         <div id="cues"></div>
         <button class="newcue" id="newcue" type="button" aria-expanded="false">+ Save this as a cue</button>
@@ -2327,7 +2363,7 @@ const HTML = /* html */ `<!doctype html>
           <p>Records every circuit in the rooms that have something on.</p>
         </div>
       </div>
-      <div class="index-sec">
+      <div class="index-sec" id="sechouse">
         <div class="legend">The house itself</div>
         <div class="settings-row">
         <button class="setting" id="setcirc" type="button" aria-pressed="true">
@@ -2380,11 +2416,8 @@ const HTML = /* html */ `<!doctype html>
 
 <div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
   <h3>Sleep timer</h3>
-  <p id="timerwhy">Switch off by itself, later.</p>
-  <div class="scopes" id="timerscopes">
-    <button type="button" data-scope="house" class="on">Everything</button>
-    <button type="button" data-scope="room" id="timerroom">This room</button>
-  </div>
+  <p id="timerwhy">Switch a room off by itself, later.</p>
+  <div class="scopes" id="timerscopes"></div>
   <div class="mins" id="timermins">
     <button type="button" data-min="15">15 min</button>
     <button type="button" data-min="30">30 min</button>
@@ -3780,7 +3813,7 @@ let streamLive = false;
 /* ─────────────────────────────────────────────── what the house does itself */
 
 const auto = { settings: null, nudges: [], timers: [], colour_now: null };
-let timerScope = 'house';
+let timerScope = null;      // the room a new timer would act on
 
 async function loadAuto() {
   try {
@@ -3834,7 +3867,7 @@ function drawTimers() {
     const row = document.createElement('div');
     row.className = 'row';
     row.innerHTML = '<span><b></b> in ' + mins + ' min</span>';
-    row.querySelector('b').textContent = t.label;
+    row.querySelector('b').textContent = title(t.label);   // rooms read as they do everywhere else
     const x = document.createElement('button');
     x.type = 'button';
     x.textContent = 'Cancel';
@@ -3881,31 +3914,42 @@ el('#setnudge').onclick = () => saveSetting({ nudges: { on: !auto.settings.nudge
 
 /* the timer panel */
 const timerpop = el('#timerpop');
+
+// Rooms are named outright rather than offered as "this room": which room "this"
+// meant depended on what you were looking at, which is exactly the wrong thing
+// to be unsure of when you are setting something that acts while you sleep.
+function drawScopes() {
+  const host = el('#timerscopes');
+  host.innerHTML = '';
+  for (const room of rooms()) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = title(room);
+    b.classList.toggle('on', room === timerScope);
+    b.onclick = () => pickScope(room);
+    host.appendChild(b);
+  }
+}
+function pickScope(room) {
+  timerScope = room;
+  drawScopes();
+}
 function openTimer(open) {
   timerpop.hidden = !open;
   el('#qtimer').setAttribute('aria-expanded', String(open));
   if (open) {
-    // "This room" only means something while looking at one.
-    const inRoomView = state.view === 'room' && !state.q;
-    const btn = el('#timerroom');
-    btn.disabled = !inRoomView;
-    btn.textContent = inRoomView ? title(state.room) : 'This room';
-    if (!inRoomView && timerScope === 'room') pickScope('house');
+    // Start on the room being looked at — usually the one being gone to bed in.
+    if (state.view === 'room' && state.room) timerScope = state.room;
+    else if (!timerScope || !rooms().includes(timerScope)) timerScope = rooms()[0] || null;
+    drawScopes();
     loadAuto();
   }
 }
-function pickScope(scope) {
-  timerScope = scope;
-  [...el('#timerscopes').children].forEach(b => b.classList.toggle('on', b.dataset.scope === scope));
-}
-el('#timerscopes').addEventListener('click', (e) => {
-  const b = e.target.closest('button');
-  if (b && !b.disabled) pickScope(b.dataset.scope);
-});
 el('#timermins').addEventListener('click', async (e) => {
   const b = e.target.closest('button');
   if (!b) return;
-  const scope = timerScope === 'room' ? 'room:' + state.room : 'house';
+  if (!timerScope) return note('Pick a room first.');
+  const scope = 'room:' + timerScope;
   try {
     const r = await fetch('/api/timers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
