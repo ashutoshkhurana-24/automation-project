@@ -21,6 +21,8 @@ const PORT = process.env.PORT || 3000;
 const JSON_PATH = path.join(__dirname, 'data', 'devices.json');
 const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
 const SCENES_PATH = path.join(__dirname, 'scenes.json');
+const SETTINGS_PATH = path.join(__dirname, 'settings.json');
+const STATE_PATH = path.join(__dirname, 'state.json');
 
 // ---------------------------------------------------------------- device data
 
@@ -323,6 +325,7 @@ function readHubState() {
         if (entry) entry.record = { ...entry.record, ...rec };
       }
       finish(true);
+      trackLit();
       // Anyone watching hears about it immediately — including a wall switch.
       pushSnapshot();
     });
@@ -610,6 +613,20 @@ app.post('/api/toggle', async (req, res) => {
   intents.set(recordId, token);
 
   try {
+    // A tunable light coming on gets the colour of the hour first — before the
+    // brightness, so a tune that bleeds onto the main channel costs colour
+    // rather than level. Only on the way on, so it never fights a colour set
+    // by hand while the light is already lit.
+    const rec = devices.get(recordId)?.record;
+    if (statusStr === 'true' && rec && wantsCircadian(rec)) {
+      try {
+        await sendToHub(recordId, {
+          channel_id: String(rec.channel_id_tunable),
+          device_status: encodeLevel(circadianTune()),
+        });
+        await sleep(SCENE_SETTLE_MS);
+      } catch (err) { console.error(`circadian ${recordId} skipped:`, err.message); }
+    }
     await sendToHub(recordId, { device_status: statusStr });
   } catch (err) {
     console.error(`toggle ${recordId} -> ${statusStr} failed:`, err.message);
@@ -875,6 +892,19 @@ async function sendSteps(list) {
       recordId: step.record_id,
       fields: { channel_id: String(t.rec.channel_id_tunable), device_status: encodeLevel(t.tune) },
     }));
+
+  // A cue step that names no colour gets the colour of the hour. The step's own
+  // tune always wins, and because the step still carries no tune, `outstanding`
+  // does not verify this one — a colour the hub ignores must not read as a
+  // missed step and trigger a resend.
+  for (const { step, t } of order) {
+    if (t.tune == null && t.level > 0 && wantsCircadian(t.rec)) {
+      tunes.push({
+        recordId: step.record_id,
+        fields: { channel_id: String(t.rec.channel_id_tunable), device_status: encodeLevel(circadianTune()) },
+      });
+    }
+  }
 
   if (tunes.length) {
     await sendBatchToHub(tunes);
@@ -1209,6 +1239,226 @@ app.delete('/api/scenes/:id', (req, res) => {
 
 // The page is the whole app, and it changes every time server.js does. Without
 // this a browser applies heuristic caching and keeps serving the previous build.
+/* ---------------------------------------------------------- automations */
+
+/**
+ * Three small things the house can now do for itself, since something is finally
+ * awake to notice. All of them are deliberately timid: the nudges never touch a
+ * device, and colour is only ever set as a light comes on, so nothing here can
+ * override a decision someone made by hand.
+ */
+const DEFAULT_SETTINGS = {
+  // Colour temperature applied as a tunable light switches on.
+  circadian: { on: true },
+  // Left-on watching. Advisory only — it reports, it never switches anything off.
+  nudges: { on: true, ac_hours: 4, fan_hours: 8, light_hours: 6 },
+};
+let settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    settings = {
+      circadian: { ...DEFAULT_SETTINGS.circadian, ...(saved.circadian || {}) },
+      nudges: { ...DEFAULT_SETTINGS.nudges, ...(saved.nudges || {}) },
+    };
+  } catch { /* first run: defaults are already in place */ }
+}
+
+function saveSettings() {
+  try { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2)); }
+  catch (err) { console.error('could not save settings:', err.message); }
+}
+
+/**
+ * Where the colour of the day sits right now. On this hub 0 is cool and 100 is
+ * warm: cool through the working day, warming from late afternoon, warmest
+ * overnight. Interpolated between the points below so it never steps.
+ */
+const DAY_COLOUR = [[0, 100], [6, 100], [8, 55], [10, 30], [16, 32], [19, 65], [21, 85], [23, 100], [24, 100]];
+
+function circadianTune(now = new Date()) {
+  const h = now.getHours() + now.getMinutes() / 60;
+  for (let i = 1; i < DAY_COLOUR.length; i++) {
+    const [h0, v0] = DAY_COLOUR[i - 1];
+    const [h1, v1] = DAY_COLOUR[i];
+    if (h <= h1) return Math.round(v0 + (v1 - v0) * ((h - h0) / (h1 - h0 || 1)));
+  }
+  return 100;
+}
+
+/** Should this record get today's colour as it comes on? */
+const wantsCircadian = (record) =>
+  settings.circadian.on && record.is_tunable === 'true' && record.channel_id_tunable != null;
+
+/* --------------------------------------------------- left on too long */
+
+// When each circuit was last seen to come on. Persisted, so a restart (or the
+// watchdog) does not reset every timer to zero and hide a genuine all-nighter.
+const litSince = new Map();
+// record_id -> the `since` that was dismissed, so a nudge stays gone until the
+// circuit has actually been off and on again.
+const dismissedNudges = new Map();
+
+function loadState() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+    for (const [id, at] of Object.entries(saved.lit_since || {})) litSince.set(Number(id), at);
+  } catch { /* first run */ }
+}
+
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_PATH, JSON.stringify({ lit_since: Object.fromEntries(litSince) }, null, 2));
+  } catch (err) { console.error('could not save state:', err.message); }
+}
+
+/** Called after every hub read: notice what came on and what went off. */
+function trackLit() {
+  let changed = false;
+  for (const [id, { record }] of devices) {
+    if ((record.app_type || '') === 'C') continue;       // a curtain has no "on"
+    const on = decodeLevel(record.device_status) > 0;
+    if (on && !litSince.has(id)) { litSince.set(id, Date.now()); changed = true; }
+    else if (!on && litSince.has(id)) {
+      litSince.delete(id);
+      dismissedNudges.delete(id);                        // it can nudge again next time
+      changed = true;
+    }
+  }
+  if (changed) saveState();
+}
+
+function nudgeList() {
+  if (!settings.nudges.on) return [];
+  const now = Date.now();
+  const out = [];
+  for (const [id, since] of litSince) {
+    const entry = devices.get(id);
+    if (!entry) continue;
+    const r = entry.record;
+    const isAc = (r.app_type || '') === 'AC';
+    const isFan = r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || ''));
+    const limit = isAc ? settings.nudges.ac_hours
+      : isFan ? settings.nudges.fan_hours : settings.nudges.light_hours;
+    const hours = (now - since) / 3600000;
+    if (hours < limit) continue;
+    if (dismissedNudges.get(id) === since) continue;
+    out.push({
+      record_id: id,
+      name: String(r.device_name || '').trim(),
+      room: roomKey(entry.room),
+      kind: isAc ? 'ac' : isFan ? 'fan' : 'light',
+      on_since: since,
+      hours: Number(hours.toFixed(1)),
+      limit_hours: limit,
+    });
+  }
+  return out.sort((a, b) => b.hours - a.hours);
+}
+
+/* ------------------------------------------------------------- timers */
+
+// "Everything off in 30 minutes" — the thing you want while reading in bed.
+const timers = new Map();
+let timerSeq = 0;
+
+/** The steps that switch a scope off. Curtains are left alone: they have no state. */
+function offSteps(scope) {
+  const all = [...devices.values()];
+  const isOn = ({ record }) => decodeLevel(record.device_status) > 0
+    && (record.app_type || '') !== 'C';
+  if (scope === 'house') return all.filter(isOn).map(({ record }) => ({ record_id: record.record_id, on: false }));
+  if (scope.startsWith('room:')) {
+    const want = scope.slice(5).toLowerCase();
+    return all.filter(d => isOn(d) && roomKey(d.room).toLowerCase() === want)
+      .map(({ record }) => ({ record_id: record.record_id, on: false }));
+  }
+  if (scope.startsWith('device:')) {
+    const id = Number(scope.slice(7));
+    const entry = devices.get(id);
+    return entry ? [{ record_id: id, on: false }] : [];
+  }
+  return [];
+}
+
+function timerView(t) {
+  return { id: t.id, scope: t.scope, label: t.label, at: t.at, seconds_left: Math.max(0, Math.round((t.at - Date.now()) / 1000)) };
+}
+
+async function runTimer(id) {
+  const t = timers.get(id);
+  if (!t) return;
+  timers.delete(id);
+  const steps = offSteps(t.scope);
+  console.log(`timer ${t.label}: switching off ${steps.length}`);
+  if (steps.length) {
+    try { await sendSteps(sceneTargets(steps)); } catch (err) { console.error('timer failed:', err.message); }
+    await readHubStateFresh().catch(() => {});
+  }
+  pushSnapshot(true);
+}
+
+function armTimer(t) {
+  t.handle = setTimeout(() => runTimer(t.id), Math.max(0, t.at - Date.now()));
+  timers.set(t.id, t);
+}
+
+app.get('/api/automations', (req, res) => {
+  res.json({
+    settings,
+    nudges: nudgeList(),
+    timers: [...timers.values()].map(timerView).sort((a, b) => a.at - b.at),
+    colour_now: circadianTune(),
+  });
+});
+
+app.post('/api/settings', (req, res) => {
+  const body = req.body || {};
+  if (body.circadian && typeof body.circadian.on === 'boolean') settings.circadian.on = body.circadian.on;
+  if (body.nudges) {
+    if (typeof body.nudges.on === 'boolean') settings.nudges.on = body.nudges.on;
+    for (const k of ['ac_hours', 'fan_hours', 'light_hours']) {
+      const v = Number(body.nudges[k]);
+      if (Number.isFinite(v) && v >= 0.5 && v <= 24) settings.nudges[k] = v;
+    }
+  }
+  saveSettings();
+  res.json({ ok: true, settings });
+});
+
+app.post('/api/nudges/:id/dismiss', (req, res) => {
+  const id = Number(req.params.id);
+  const since = litSince.get(id);
+  if (since) dismissedNudges.set(id, since);
+  res.json({ ok: true, nudges: nudgeList() });
+});
+
+app.post('/api/timers', (req, res) => {
+  const minutes = Number(req.body?.minutes);
+  const scope = String(req.body?.scope || 'house');
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 720) {
+    return res.status(400).json({ ok: false, error: 'minutes must be between 1 and 720' });
+  }
+  if (!/^(house|room:.+|device:\d+)$/.test(scope)) {
+    return res.status(400).json({ ok: false, error: 'scope must be house, room:NAME or device:ID' });
+  }
+  const label = scope === 'house' ? 'Everything'
+    : scope.startsWith('room:') ? scope.slice(5)
+      : (devices.get(Number(scope.slice(7)))?.record.device_name || 'Device').trim();
+  const t = { id: 't' + (++timerSeq), scope, label, at: Date.now() + minutes * 60000 };
+  armTimer(t);
+  res.json({ ok: true, timer: timerView(t), spoken: `${label} off in ${minutes} minutes` });
+});
+
+app.delete('/api/timers/:id', (req, res) => {
+  const t = timers.get(req.params.id);
+  if (!t) return res.status(404).json({ ok: false, error: 'No such timer' });
+  clearTimeout(t.handle);
+  timers.delete(t.id);
+  res.json({ ok: true });
+});
+
 app.get('/', (req, res) =>
   res.type('html').set('Cache-Control', 'no-store').send(HTML));
 
@@ -1216,6 +1466,8 @@ app.listen(PORT, () => {
   console.log(`Pravita's Apartment  ->  http://localhost:${PORT}`);
   console.log(`Hub                  ->  ${HUB_URL}`);
   loadScenes();
+  loadSettings();
+  loadState();
   readHubState().then((s) =>
     console.log(s.ok ? 'Live device status read from hub' : `Using snapshot status (${s.error})`));
 
@@ -1836,10 +2088,135 @@ const HTML = /* html */ `<!doctype html>
   /* A phone is not a narrow desktop. The whole page scrolls as one — a fixed
      shell with only the tile grid moving inside it feels broken on a touch
      screen — and the top bar stays put so the house is always one tap away. */
+  /* ── advisories ────────────────────────────────────────────────────────
+     Something has been on a long time. These never act by themselves — the
+     house does not switch off a room someone may be sitting in — so they are
+     written as observations rather than alarms. */
+  .nudges { display: grid; gap: 8px; margin-bottom: 16px; }
+  .nudge {
+    display: flex; align-items: center; gap: 11px;
+    padding-top: 10px; padding-right: 11px; padding-bottom: 10px; padding-left: 13px;
+    border-radius: 13px; background: var(--pane); background-image: var(--sheen);
+    border: 1px solid var(--edge);
+    backdrop-filter: blur(14px) saturate(1.15);
+    -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  }
+  .nudge .pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--neutral); }
+  .nudge.ac .pip { background: var(--clay); }
+  .nudge .said { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.35; color: var(--soft); }
+  .nudge .said b { color: var(--ink); font-weight: 500; }
+  .nudge .said i { font-style: normal; color: var(--faint); }
+  .nudge button {
+    flex: 0 0 auto; font: inherit; font-size: 12px; color: var(--soft); cursor: pointer;
+    padding-top: 6px; padding-right: 10px; padding-bottom: 6px; padding-left: 10px;
+    border-radius: 9px; background: var(--pane-up); border: 1px solid var(--edge);
+  }
+  .nudge button:hover { color: var(--ink); border-color: var(--edge-up); }
+
+  /* ── sleep timer ───────────────────────────────────────────────────────
+     The thing you want while already in bed, so it is reachable without
+     going anywhere: a small panel, never a page. */
+  .timerpop {
+    position: fixed; z-index: 46; right: 18px; bottom: 18px;
+    width: min(330px, calc(100vw - 36px));
+    padding: 15px; border-radius: 16px;
+    background: rgba(53,39,27,.96); border: 1px solid var(--edge-up);
+    backdrop-filter: blur(22px) saturate(1.25);
+    -webkit-backdrop-filter: blur(22px) saturate(1.25);
+    box-shadow: var(--cast);
+  }
+  .timerpop[hidden] { display: none; }
+  .timerpop h3 { margin: 0 0 2px; font-size: 13px; font-weight: 500; color: var(--ink); }
+  .timerpop p { margin: 0 0 11px; font-size: 12px; color: var(--faint); }
+  .scopes { display: flex; gap: 6px; margin-bottom: 10px; }
+  .scopes button {
+    flex: 1 1 0; font: inherit; font-size: 12px; color: var(--faint); cursor: pointer;
+    padding-top: 7px; padding-bottom: 7px; border-radius: 9px;
+    background: transparent; border: 1px solid var(--edge);
+  }
+  .scopes button.on { color: var(--ink); background: var(--pane-up); border-color: var(--edge-up); }
+  .mins { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+  .mins button {
+    font: inherit; font-size: 12.5px; color: var(--soft); cursor: pointer;
+    padding-top: 10px; padding-bottom: 10px; border-radius: 10px;
+    background: var(--pane); border: 1px solid var(--edge);
+  }
+  .mins button:hover { color: var(--ink); border-color: var(--edge-up); }
+  .running { display: grid; gap: 6px; margin-top: 11px; }
+  .running .row {
+    display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--soft);
+    padding-top: 8px; padding-right: 10px; padding-bottom: 8px; padding-left: 10px;
+    border-radius: 10px; background: var(--pane); border: 1px solid var(--edge);
+  }
+  .running .row b { color: var(--ink); font-weight: 500; }
+  .running .row button {
+    margin-left: auto; font: inherit; font-size: 11.5px; color: var(--faint);
+    background: none; border: 0; cursor: pointer; padding: 2px 4px;
+  }
+  .running .row button:hover { color: var(--clay); }
+
+  /* A setting is a sentence you can switch off, not a control panel. */
+  .setting {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    font: inherit; font-size: 12.5px; color: var(--soft); text-align: left; cursor: pointer;
+    padding-top: 8px; padding-right: 10px; padding-bottom: 8px; padding-left: 10px;
+    border-radius: 10px; background: transparent; border: 1px solid transparent;
+  }
+  .setting:hover { background: var(--pane); border-color: var(--edge); }
+  .setting .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--edge-up); }
+  .setting.on .dot { background: var(--warm); box-shadow: 0 0 8px -1px var(--warm); }
+  .setting .val { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+
+  /* The thumb bar is phone-only; a wide screen has the index down the left. */
+  .quick { display: none; }
+
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
     body { display: block; min-height: 100%; padding-top: 0; }
-    .shell { display: block; max-width: none; padding: 0 16px 28px; }
+    /* Clear the thumb bar so the last tile is never trapped under it. */
+    .shell { display: block; max-width: none; padding: 0 16px 104px; }
+
+    /* ── the thumb bar ───────────────────────────────────────────────────
+       The three things done most often, sitting where a thumb already is
+       rather than at the top of a page you have to reach across. */
+    .quick {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+      padding-top: 9px; padding-right: 14px; padding-left: 14px;
+      padding-bottom: calc(9px + env(safe-area-inset-bottom));
+      background: rgba(53,39,27,.88); border-top: 1px solid var(--edge);
+      backdrop-filter: blur(22px) saturate(1.25);
+      -webkit-backdrop-filter: blur(22px) saturate(1.25);
+    }
+    .quick button {
+      display: grid; justify-items: center; gap: 4px;
+      font: inherit; font-size: 12px; color: var(--soft); cursor: pointer;
+      padding-top: 9px; padding-bottom: 9px;
+      border-radius: 12px; background: var(--pane); border: 1px solid var(--edge);
+    }
+    .quick button svg { width: 17px; height: 17px; }
+    .quick button:disabled { opacity: .4; }
+    /* Holding all-off is the confirmation; the fill shows the hold landing. */
+    .quick button.armed { color: var(--clay); border-color: var(--clay); }
+    .quick button.on { color: var(--ink); border-color: var(--edge-up); background: var(--pane-up); }
+
+    .timerpop { left: 12px; right: 12px; width: auto; bottom: calc(80px + env(safe-area-inset-bottom)); }
+
+    /* The thumb bar already carries all-off and find, so the top bar drops both
+       rather than saying everything twice. */
+    .plate .seek-toggle, .plate #main { display: none; }
+    .plate .seek { display: none; margin-left: auto; }
+    .plate.searching .seek { display: block; }
+
+    /* Settings ride as one short row, like the other rails, instead of a stack
+       that pushes the house itself below the fold. */
+    .settings-row { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+    .settings-row::-webkit-scrollbar { display: none; }
+    .settings-row .setting {
+      width: auto; flex: 0 0 auto; white-space: nowrap;
+      background: var(--pane); border-color: var(--edge);
+    }
+    .settings-row .setting .val { margin-left: 6px; }
     .board { display: block; }
     .index { display: block; overflow: visible; }
 
@@ -1950,9 +2327,24 @@ const HTML = /* html */ `<!doctype html>
           <p>Records every circuit in the rooms that have something on.</p>
         </div>
       </div>
+      <div class="index-sec">
+        <div class="legend">The house itself</div>
+        <div class="settings-row">
+        <button class="setting" id="setcirc" type="button" aria-pressed="true">
+          <span class="dot"></span>
+          <span>Colour follows the day</span>
+          <span class="val" id="setcircval"></span>
+        </button>
+        <button class="setting" id="setnudge" type="button" aria-pressed="true">
+          <span class="dot"></span>
+          <span>Tell me what's been left on</span>
+        </button>
+        </div>
+      </div>
     </aside>
 
     <section class="field">
+      <div class="nudges" id="nudges"></div>
       <div class="field-head">
         <div>
           <h2 id="fieldname"></h2>
@@ -1963,6 +2355,45 @@ const HTML = /* html */ `<!doctype html>
       <div class="tiles" id="stack"></div>
     </section>
   </main>
+</div>
+
+<nav class="quick" id="quick" aria-label="Quick actions">
+  <button type="button" id="qoff" aria-label="Hold to switch everything off">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/>
+    </svg>
+    <span id="qoffword">All off</span>
+  </button>
+  <button type="button" id="qtimer" aria-label="Sleep timer" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 2h6"/>
+    </svg>
+    <span id="qtimerword">Timer</span>
+  </button>
+  <button type="button" id="qfind" aria-label="Find a circuit">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>
+    </svg>
+    <span>Find</span>
+  </button>
+</nav>
+
+<div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
+  <h3>Sleep timer</h3>
+  <p id="timerwhy">Switch off by itself, later.</p>
+  <div class="scopes" id="timerscopes">
+    <button type="button" data-scope="house" class="on">Everything</button>
+    <button type="button" data-scope="room" id="timerroom">This room</button>
+  </div>
+  <div class="mins" id="timermins">
+    <button type="button" data-min="15">15 min</button>
+    <button type="button" data-min="30">30 min</button>
+    <button type="button" data-min="45">45 min</button>
+    <button type="button" data-min="60">1 hour</button>
+    <button type="button" data-min="90">1½ hours</button>
+    <button type="button" data-min="120">2 hours</button>
+  </div>
+  <div class="running" id="timerrunning"></div>
 </div>
 
 <div class="scrim" id="scrim" hidden>
@@ -2143,6 +2574,13 @@ function readout() {
   m.setAttribute('aria-label', on.length
     ? 'Hold to switch off all ' + on.length + ' live circuits'
     : 'Nothing is on');
+
+  // The thumb bar carries the same truth as the main button.
+  const q = el('#qoff');
+  if (q) {
+    q.disabled = !on.length;
+    el('#qoffword').textContent = on.length ? 'All off · ' + on.length : 'All dark';
+  }
 }
 
 /* ───────────────────────────────────────────────────────────── the index */
@@ -3338,6 +3776,176 @@ let streamLive = false;
   });
   es.addEventListener('error', () => { streamLive = false; });  // it retries itself
 })();
+
+/* ─────────────────────────────────────────────── what the house does itself */
+
+const auto = { settings: null, nudges: [], timers: [], colour_now: null };
+let timerScope = 'house';
+
+async function loadAuto() {
+  try {
+    const a = await fetch('/api/automations').then(r => r.json());
+    Object.assign(auto, a);
+    drawNudges();
+    drawTimers();
+    drawSettings();
+  } catch { /* the next pass picks it up */ }
+}
+
+function drawNudges() {
+  const host = el('#nudges');
+  host.innerHTML = '';
+  for (const n of auto.nudges) {
+    const row = document.createElement('div');
+    row.className = 'nudge' + (n.kind === 'ac' ? ' ac' : '');
+    const hrs = n.hours >= 2 ? Math.round(n.hours) + ' hours' : n.hours + ' hours';
+    row.innerHTML = '<span class="pip"></span><span class="said"></span>';
+    row.querySelector('.said').innerHTML =
+      '<b></b> <i>in</i> <b></b> <i>has been on ' + hrs + '</i>';
+    const [what, where] = row.querySelectorAll('.said b');
+    what.textContent = n.name;
+    where.textContent = title(n.room);
+
+    const off = document.createElement('button');
+    off.type = 'button';
+    off.textContent = 'Switch off';
+    off.onclick = async () => {
+      const d = state.devices.find(x => x.record_id === n.record_id);
+      if (d) setDevice(d, false);
+      row.remove();
+    };
+    const seen = document.createElement('button');
+    seen.type = 'button';
+    seen.textContent = 'Leave it';
+    seen.onclick = async () => {
+      row.remove();
+      await fetch('/api/nudges/' + n.record_id + '/dismiss', { method: 'POST' }).catch(() => {});
+    };
+    row.append(off, seen);
+    host.appendChild(row);
+  }
+}
+
+function drawTimers() {
+  const host = el('#timerrunning');
+  host.innerHTML = '';
+  for (const t of auto.timers) {
+    const mins = Math.max(1, Math.round(t.seconds_left / 60));
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = '<span><b></b> in ' + mins + ' min</span>';
+    row.querySelector('b').textContent = t.label;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = 'Cancel';
+    x.onclick = async () => {
+      await fetch('/api/timers/' + t.id, { method: 'DELETE' }).catch(() => {});
+      loadAuto();
+    };
+    row.appendChild(x);
+    host.appendChild(row);
+  }
+  const on = auto.timers.length;
+  el('#qtimerword').textContent = on ? on + ' set' : 'Timer';
+  el('#qtimer').classList.toggle('on', !!on);
+}
+
+function drawSettings() {
+  if (!auto.settings) return;
+  const c = el('#setcirc');
+  c.classList.toggle('on', auto.settings.circadian.on);
+  c.setAttribute('aria-pressed', String(auto.settings.circadian.on));
+  // Say what it is doing right now, so the setting is legible rather than abstract.
+  el('#setcircval').textContent = auto.settings.circadian.on && auto.colour_now != null
+    ? (auto.colour_now >= 70 ? 'warm now' : auto.colour_now <= 40 ? 'cool now' : 'mid')
+    : '';
+  const n = el('#setnudge');
+  n.classList.toggle('on', auto.settings.nudges.on);
+  n.setAttribute('aria-pressed', String(auto.settings.nudges.on));
+}
+
+async function saveSetting(patch) {
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then(x => x.json());
+    auto.settings = r.settings;
+    drawSettings();
+    loadAuto();
+  } catch { note('Could not save that.'); }
+}
+
+el('#setcirc').onclick = () => saveSetting({ circadian: { on: !auto.settings.circadian.on } });
+el('#setnudge').onclick = () => saveSetting({ nudges: { on: !auto.settings.nudges.on } });
+
+/* the timer panel */
+const timerpop = el('#timerpop');
+function openTimer(open) {
+  timerpop.hidden = !open;
+  el('#qtimer').setAttribute('aria-expanded', String(open));
+  if (open) {
+    // "This room" only means something while looking at one.
+    const inRoomView = state.view === 'room' && !state.q;
+    const btn = el('#timerroom');
+    btn.disabled = !inRoomView;
+    btn.textContent = inRoomView ? title(state.room) : 'This room';
+    if (!inRoomView && timerScope === 'room') pickScope('house');
+    loadAuto();
+  }
+}
+function pickScope(scope) {
+  timerScope = scope;
+  [...el('#timerscopes').children].forEach(b => b.classList.toggle('on', b.dataset.scope === scope));
+}
+el('#timerscopes').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b && !b.disabled) pickScope(b.dataset.scope);
+});
+el('#timermins').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const scope = timerScope === 'room' ? 'room:' + state.room : 'house';
+  try {
+    const r = await fetch('/api/timers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes: Number(b.dataset.min), scope }),
+    }).then(x => x.json());
+    if (r.ok) { note(r.spoken + '.'); openTimer(false); loadAuto(); }
+    else note(r.error || 'Could not set that timer.');
+  } catch { note('Could not set that timer.'); }
+});
+
+/* the thumb bar */
+el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
+el('#qtimer').onclick = () => openTimer(timerpop.hidden);
+document.addEventListener('click', (e) => {
+  if (timerpop.hidden) return;
+  if (!timerpop.contains(e.target) && !el('#qtimer').contains(e.target)) openTimer(false);
+});
+
+// All-off is held, not tapped — the same gesture as the main button, because
+// switching off the whole house should never be a stray thumb.
+(function wireQuickOff() {
+  const b = el('#qoff');
+  let raf = 0, from = 0;
+  const stop = () => { cancelAnimationFrame(raf); b.classList.remove('armed'); };
+  b.addEventListener('pointerdown', (e) => {
+    if (b.disabled) return;
+    e.preventDefault();
+    from = performance.now();
+    b.classList.add('armed');
+    const step = (now) => {
+      if (now - from >= HOLD_MS) { stop(); return allOff(); }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
+})();
+
+setInterval(loadAuto, 60000);
+loadAuto();
 
 // Keep up with the house: poll while the tab is in view, re-read on return.
 setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);

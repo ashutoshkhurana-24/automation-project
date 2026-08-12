@@ -14,3 +14,7 @@ scenes.json
 
 # deploy bundle (rebuild with ./build-bundle.sh)
 dashboard-nas-bundle.tar.gz
+
+# runtime state written by the server
+settings.json
+state.json
