@@ -102,6 +102,25 @@ the process alive and serving pages while its hub connection has died.
 */5 * * * * /home/abneo/dashboard/deploy/watchdog.sh
 ```
 
+**It needs permission to restart the service, or it can detect a failure and
+then do nothing about it.** As `abneo`, plain `systemctl restart` wants
+interactive authentication and `sudo -n` wants a password, so grant exactly that
+one command and nothing else:
+
+```bash
+echo 'abneo ALL=(root) NOPASSWD: /usr/bin/systemctl restart neo-dashboard, /bin/systemctl restart neo-dashboard' \
+  | sudo tee /etc/sudoers.d/neo-dashboard >/dev/null \
+  && sudo chmod 440 /etc/sudoers.d/neo-dashboard \
+  && sudo visudo -c
+```
+
+The `visudo -c` at the end validates every sudoers file — don't skip it, a
+malformed one can lock you out of `sudo`. Confirm it took with:
+
+```bash
+sudo -n systemctl restart neo-dashboard && echo "watchdog can restart"
+```
+
 It restarts only after two consecutive bad checks, so one slow read doesn't
 bounce the service. Check health by hand any time:
 
