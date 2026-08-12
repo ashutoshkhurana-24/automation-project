@@ -280,6 +280,14 @@ function hubSocket() {
 let hubSync = { at: 0, ok: false, error: 'not read yet' };
 let reading = null;
 
+// Counters behind /api/health. This runs unattended on a box nobody looks at,
+// so "is it still talking to the hub?" has to be answerable without reading logs.
+const startedAt = Date.now();
+const stats = {
+  readsOk: 0, readsFailed: 0, consecutiveReadFailures: 0,
+  commandsSent: 0, commandsFailed: 0, cuesFired: 0,
+};
+
 function readHubState() {
   if (reading) return reading;
 
@@ -293,6 +301,8 @@ function readHubState() {
       clearTimeout(timer);
       reading = null;
       hubSync = { at: Date.now(), ok, error: ok ? null : error };
+      if (ok) { stats.readsOk++; stats.consecutiveReadFailures = 0; }
+      else { stats.readsFailed++; stats.consecutiveReadFailures++; }
       if (!ok) console.error('hub state read failed:', error);
       try { ws.close(); } catch { /* already gone */ }
       resolve(hubSync);
@@ -313,6 +323,8 @@ function readHubState() {
         if (entry) entry.record = { ...entry.record, ...rec };
       }
       finish(true);
+      // Anyone watching hears about it immediately — including a wall switch.
+      pushSnapshot();
     });
 
     ws.on('error', (err) => finish(false, err.message));
@@ -362,16 +374,19 @@ function sendToHub(recordId, fields, param) {
     ws.on('open', () => {
       ws.send(JSON.stringify(payload), (err) => {
         if (err) {
+          stats.commandsFailed++;
           done(err);
           ws.terminate();
           return;
         }
+        stats.commandsSent++;
         // Keep the cache plausible until the next hub read replaces it.
         if (fields.channel_id && fields.channel_id === String(entry.record.channel_id_tunable)) {
           entry.record.device_status_tunable = fields.device_status;
         } else if (fields.device_status !== undefined) {
           entry.record.device_status = fields.device_status;
         }
+        pushSoon();
         done();
         setTimeout(() => ws.close(), 500);
       });
@@ -425,6 +440,7 @@ function sendBatchToHub(commands) {
           await new Promise((ok, fail) =>
             ws.send(JSON.stringify(payload), (err) => (err ? fail(err) : ok())));
           sent++;
+          stats.commandsSent++;
           // Keep the cache plausible until the next hub read replaces it.
           if (fields.channel_id && fields.channel_id === String(entry.record.channel_id_tunable)) {
             entry.record.device_status_tunable = fields.device_status;
@@ -433,9 +449,11 @@ function sendBatchToHub(commands) {
           }
           await sleep(BATCH_GAP_MS);
         }
+        pushSoon();
         done();
         setTimeout(() => ws.close(), 500);
       } catch (err) {
+        stats.commandsFailed++;
         done(err);
         ws.terminate();
       }
@@ -462,6 +480,108 @@ function snapshot() {
     hub_error: hubSync.error,
   };
 }
+
+/* --------------------------------------------------------------- live push */
+
+// Browsers used to poll every 10s, so the page could sit ten seconds behind the
+// house and two phones could disagree. The server already learns the truth every
+// REFRESH_MS, so it pushes instead — including changes made at a wall switch,
+// which now appear as soon as the reader sees them.
+const sseClients = new Set();
+
+/** A fingerprint of what the page actually renders, so we only push on change. */
+function stateSignature() {
+  const parts = [];
+  for (const { record } of devices.values()) {
+    parts.push(record.record_id + ':' + record.device_status + ':' +
+      (record.device_status_tunable ?? '') + ':' + (record.ac_temp ?? ''));
+  }
+  return parts.join('|');
+}
+let lastSignature = '';
+
+function pushSnapshot(force) {
+  if (!sseClients.size) return;
+  const sig = stateSignature();
+  if (!force && sig === lastSignature) return;
+  lastSignature = sig;
+  const frame = 'event: devices\ndata: ' + JSON.stringify(snapshot()) + '\n\n';
+  for (const res of sseClients) {
+    try { res.write(frame); } catch { sseClients.delete(res); }
+  }
+}
+
+// Our own commands update the cache optimistically; this lets the other phones
+// in the house see that at once instead of waiting for the next read. Coalesced,
+// so a cue of eleven lights costs one frame rather than eleven.
+let pushTimer = null;
+function pushSoon() {
+  if (pushTimer || !sseClients.size) return;
+  pushTimer = setTimeout(() => { pushTimer = null; pushSnapshot(); }, 250);
+}
+
+app.get('/api/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 3000\n\n');
+  res.write('event: devices\ndata: ' + JSON.stringify(snapshot()) + '\n\n');
+  sseClients.add(res);
+
+  // Without traffic an idle proxy or phone radio will drop this; a comment line
+  // is the cheapest thing that counts as traffic.
+  const beat = setInterval(() => {
+    try { res.write(': beat\n\n'); } catch { /* cleaned up on close */ }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(beat);
+    sseClients.delete(res);
+  });
+});
+
+/**
+ * Is this thing still working? Answers without touching the hub, so a watchdog
+ * can call it every minute for free.
+ *
+ * Unhealthy (503) means the background reader has stopped getting through: the
+ * process can be alive and serving pages while the house has become unreachable,
+ * which is exactly the failure systemd cannot see. deploy/watchdog.sh restarts
+ * the service on a 503.
+ */
+app.get('/api/health', (req, res) => {
+  const now = Date.now();
+  const age = hubSync.at ? now - hubSync.at : null;
+  // Three missed refreshes in a row, or no successful read yet, counts as down.
+  const stale = age == null || age > REFRESH_MS * 3;
+  const healthy = hubSync.ok && !stale;
+  const reads = stats.readsOk + stats.readsFailed;
+
+  res.status(healthy ? 200 : 503).json({
+    ok: healthy,
+    uptime_s: Math.round((now - startedAt) / 1000),
+    hub: {
+      ok: hubSync.ok,
+      last_read_age_s: age == null ? null : Math.round(age / 1000),
+      last_error: hubSync.error,
+      reads_ok: stats.readsOk,
+      reads_failed: stats.readsFailed,
+      success_rate: reads ? Number((stats.readsOk / reads).toFixed(3)) : null,
+      consecutive_failures: stats.consecutiveReadFailures,
+      stale,
+    },
+    commands: { sent: stats.commandsSent, failed: stats.commandsFailed },
+    cues_fired: stats.cuesFired,
+    devices: devices.size,
+    scenes: scenes.length,
+    clients: sseClients.size,
+    memory_mb: Math.round(process.memoryUsage().rss / 1048576),
+    node: process.version,
+  });
+});
 
 app.get('/api/devices', async (req, res) => {
   // ?refresh=1 waits for truth; a normal read serves the last snapshot at once
@@ -853,6 +973,7 @@ async function fireCue(scene) {
   const { before, skipped } = captureBefore(scene.steps);
   undoable = before.length ? { name: scene.name, at: Date.now(), steps: before } : null;
 
+  stats.cuesFired++;
   const result = await applyScene(scene);
   return { ...result, undoable: !!undoable, undo_skipped: skipped };
 }
@@ -1945,28 +2066,33 @@ const inFlight = new Set();
 const commandedAt = new Map();
 const markCommanded = (id) => commandedAt.set(id, Date.now());
 
+// Takes a snapshot from anywhere — a poll, or a frame pushed down the stream —
+// and moves the screen to match it.
+function applySnapshot(snap) {
+  state.sync = snap;
+  const fresh = new Map(snap.devices.map(d => [d.record_id, d]));
+  let moved = false;
+  for (const d of state.devices) {
+    const now = fresh.get(d.record_id);
+    if (!now || inFlight.has(d.record_id)) continue;
+    // This snapshot was taken before we last commanded this circuit, so it
+    // cannot know about that command. Wait for a read that does.
+    if ((commandedAt.get(d.record_id) || 0) > (snap.synced_at || 0)) continue;
+    if (now.status === d.status && now.level === d.level && now.tune === d.tune) continue;
+    d.status = now.status;            // someone used a wall switch or the phone app
+    d.level = now.level;
+    d.tune = now.tune;
+    paint(d);
+    moved = true;
+  }
+  if (moved) tick();
+  readout();
+}
+
 async function sync(force) {
   try {
-    const snap = await fetch('/api/devices' + (force ? '?refresh=1' : '')).then(r => r.json());
-    state.sync = snap;
-    const fresh = new Map(snap.devices.map(d => [d.record_id, d]));
-    let moved = false;
-    for (const d of state.devices) {
-      const now = fresh.get(d.record_id);
-      if (!now || inFlight.has(d.record_id)) continue;
-      // This snapshot was taken before we last commanded this circuit, so it
-      // cannot know about that command. Wait for a read that does.
-      if ((commandedAt.get(d.record_id) || 0) > (snap.synced_at || 0)) continue;
-      if (now.status === d.status && now.level === d.level && now.tune === d.tune) continue;
-      d.status = now.status;            // someone used a wall switch or the phone app
-      d.level = now.level;
-      d.tune = now.tune;
-      paint(d);
-      moved = true;
-    }
-    if (moved) tick();
-  } catch { /* momentary; the next poll picks it up */ }
-  readout();
+    applySnapshot(await fetch('/api/devices' + (force ? '?refresh=1' : '')).then(r => r.json()));
+  } catch { readout(); /* momentary; the next poll picks it up */ }
 }
 
 /* ─────────────────────────────────────────────── everything that changes */
@@ -3198,8 +3324,23 @@ wireMain();
 wireMaker();
 wireSheet();
 
+// The server pushes a snapshot the moment the house moves, so the page is live
+// instead of up to ten seconds behind, and two phones never disagree. Polling
+// stays as a fallback for when the stream cannot hold — and is skipped entirely
+// while the stream is healthy.
+let streamLive = false;
+(function listen() {
+  let es;
+  try { es = new EventSource('/api/stream'); } catch { return; }
+  es.addEventListener('devices', (e) => {
+    streamLive = true;
+    try { applySnapshot(JSON.parse(e.data)); } catch { /* ignore a torn frame */ }
+  });
+  es.addEventListener('error', () => { streamLive = false; });  // it retries itself
+})();
+
 // Keep up with the house: poll while the tab is in view, re-read on return.
-setInterval(() => { if (!document.hidden) sync(); }, 10000);
+setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
 setInterval(readout, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 

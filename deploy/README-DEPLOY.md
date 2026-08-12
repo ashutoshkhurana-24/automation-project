@@ -92,6 +92,23 @@ If you set `SHORTCUT_KEY` in the unit, also export it for cron:
 Cron uses the **hub's** clock and timezone — check `timedatectl` once; if it's
 not on IST the schedule times will be off.
 
+## 4b. The watchdog
+
+systemd restarts the service if it *crashes*. It cannot see the other failure:
+the process alive and serving pages while its hub connection has died.
+`/api/health` returns 503 in that case, and this catches it:
+
+```cron
+*/5 * * * * /home/abneo/dashboard/deploy/watchdog.sh
+```
+
+It restarts only after two consecutive bad checks, so one slow read doesn't
+bounce the service. Check health by hand any time:
+
+```bash
+curl -s http://192.168.1.3:3000/api/health
+```
+
 ## 5. Point the phone at the hub
 
 In your iPhone shortcuts, replace the Mac's address with the hub's:
