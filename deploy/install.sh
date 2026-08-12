@@ -30,7 +30,12 @@ if [[ ! -f "$APP_DIR/server.js" ]]; then
 fi
 
 # --- 2. find a usable Node (>= 14) -----------------------------------------
-NODE_BIN="$(command -v node || true)"
+# Prefer an explicit NODE_BIN, then a standalone /opt/nodejs (installed alongside
+# a too-old system node without disturbing it), then whatever's on PATH.
+if [[ -z "${NODE_BIN:-}" ]]; then
+  if [[ -x /opt/nodejs/bin/node ]]; then NODE_BIN=/opt/nodejs/bin/node
+  else NODE_BIN="$(command -v node || true)"; fi
+fi
 if [[ -z "$NODE_BIN" ]]; then
   echo "!! Node.js is not installed on this box." >&2
   echo "   If the hub has internet:  curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs" >&2
