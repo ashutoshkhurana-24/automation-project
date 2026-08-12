@@ -382,6 +382,70 @@ function sendToHub(recordId, fields, param) {
   });
 }
 
+/**
+ * Sends many commands down ONE socket, the way the vendor's app fires a scene.
+ *
+ * A socket per command means a scene of eleven lights is eleven handshakes, and
+ * the hub drops commands under that churn — which is why single sends have to be
+ * spaced ~260ms apart, and why a room used to light one lamp at a time. Through
+ * a single connection the same commands can follow each other closely, so the
+ * room moves as one.
+ *
+ * `commands` is [{ recordId, fields, param }] in the order they should reach the
+ * hub. Resolves with how many made it onto the wire.
+ */
+const BATCH_GAP_MS = Number(process.env.BATCH_GAP_MS || 60);
+
+function sendBatchToHub(commands) {
+  if (!commands.length) return Promise.resolve(0);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let sent = 0;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      err ? reject(err) : resolve(sent);
+    };
+
+    const ws = hubSocket();
+
+    ws.on('open', async () => {
+      try {
+        for (const { recordId, fields, param } of commands) {
+          const entry = devices.get(recordId);
+          if (!entry) continue;
+          // Echo the hub's own record back, exactly as a single send does.
+          const payload = {
+            opr: 'service',
+            opr_type: 'service_opr',
+            opr_param: param || '',
+            record: { ...entry.record, record_id: recordId, ...fields },
+          };
+          await new Promise((ok, fail) =>
+            ws.send(JSON.stringify(payload), (err) => (err ? fail(err) : ok())));
+          sent++;
+          // Keep the cache plausible until the next hub read replaces it.
+          if (fields.channel_id && fields.channel_id === String(entry.record.channel_id_tunable)) {
+            entry.record.device_status_tunable = fields.device_status;
+          } else if (fields.device_status !== undefined) {
+            entry.record.device_status = fields.device_status;
+          }
+          await sleep(BATCH_GAP_MS);
+        }
+        done();
+        setTimeout(() => ws.close(), 500);
+      } catch (err) {
+        done(err);
+        ws.terminate();
+      }
+    });
+
+    ws.on('error', (err) => { done(err); ws.terminate(); });
+    ws.on('close', () => done(new Error('Hub closed the connection before the batch was sent')));
+  });
+}
+
 // ------------------------------------------------------------------------ http
 
 const app = express();
@@ -656,9 +720,10 @@ app.post('/api/ac', async (req, res) => {
 
 /* ------------------------------------------------------------------ scenes */
 
-// Measured against this hub: commands sent closer than ~200ms apart get
-// dropped. Sends are spaced, then verified, then the misses are retried once.
-const SCENE_GAP_MS = 260;
+// Measured against this hub: separate connections made closer than ~200ms apart
+// get dropped, so single sends stay spaced. A scene instead goes down one shared
+// socket (sendBatchToHub), which the hub is happy to take quickly. Either way the
+// result is verified and the misses retried once.
 const SCENE_SETTLE_MS = 600;   // between two commands aimed at the same device
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -673,23 +738,38 @@ function stepTarget(step) {
 }
 
 /**
- * Colour temperature goes first, brightness second. Both commands carry the
- * level in device_status, and under load the tune command can bleed onto the
- * main channel — observed once, a lamp left at 100% because that was its tune
- * value. Sending brightness last means that bleed costs colour, not level.
+ * Fires a set of steps down one socket, so the room changes together.
+ *
+ * Colour temperature still goes before brightness. Both carry the level in
+ * device_status, and under load a tune command can bleed onto the main channel —
+ * observed once, a lamp left at 100% because that was its tune value. Sending
+ * every brightness after every tune means that bleed costs colour, not level.
  */
-async function sendStep(step) {
-  const t = stepTarget(step);
-  if (!t) return false;
-  if (t.tune != null && t.level > 0) {
-    await sendToHub(step.record_id, {
-      channel_id: String(t.rec.channel_id_tunable), device_status: encodeLevel(t.tune),
-    });
+async function sendSteps(list) {
+  // Off first, so a scene never briefly lights the whole room.
+  const order = [...list].sort((a, b) => (a.step.on === false ? 0 : 1) - (b.step.on === false ? 0 : 1));
+
+  const tunes = order
+    .filter(({ t }) => t.tune != null && t.level > 0)
+    .map(({ step, t }) => ({
+      recordId: step.record_id,
+      fields: { channel_id: String(t.rec.channel_id_tunable), device_status: encodeLevel(t.tune) },
+    }));
+
+  if (tunes.length) {
+    await sendBatchToHub(tunes);
     await sleep(SCENE_SETTLE_MS);
   }
-  await sendToHub(step.record_id, { device_status: encodeLevel(t.level) });
-  return true;
+
+  return sendBatchToHub(order.map(({ step, t }) => ({
+    recordId: step.record_id,
+    fields: { device_status: encodeLevel(t.level) },
+  })));
 }
+
+/** The steps of a scene paired with what they resolve to, skipping unknowns. */
+const sceneTargets = (steps) =>
+  steps.map((step) => ({ step, t: stepTarget(step) })).filter(({ t }) => t);
 
 /** Which steps the hub has not actually taken. */
 function outstanding(scene) {
@@ -702,14 +782,9 @@ function outstanding(scene) {
 }
 
 async function applyScene(scene) {
-  // Switch things off first, so a scene never briefly lights the whole room.
-  const order = [...scene.steps].sort((a, b) => (a.on === false ? 0 : 1) - (b.on === false ? 0 : 1));
   let sent = 0;
-  for (const step of order) {
-    try { if (await sendStep(step)) sent++; }
-    catch (err) { console.error(`scene ${scene.id}: ${step.record_id} failed:`, err.message); }
-    await sleep(SCENE_GAP_MS);
-  }
+  try { sent = await sendSteps(sceneTargets(scene.steps)); }
+  catch (err) { console.error(`scene ${scene.id} failed to send:`, err.message); }
 
   await sleep(SETTLE_MS);
   await readHubStateFresh();
@@ -718,10 +793,8 @@ async function applyScene(scene) {
   const missed = outstanding(scene);
   if (missed.length) {
     console.log(`scene ${scene.id}: retrying ${missed.length}`);
-    for (const step of missed) {
-      try { await sendStep(step); } catch { /* reported below */ }
-      await sleep(SCENE_GAP_MS);
-    }
+    try { await sendSteps(sceneTargets(missed)); }
+    catch (err) { console.error(`scene ${scene.id} retry failed:`, err.message); }
     await sleep(SETTLE_MS);
     await readHubStateFresh();
   }
