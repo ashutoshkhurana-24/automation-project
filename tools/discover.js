@@ -1,5 +1,9 @@
 // Refresh data/devices.json from the hub.
 //
+// Deliberately written to parse on old Node too: this box still has Ubuntu's
+// node 10 for the vendor's sake and that is what plain `node` resolves to, so
+// syntax the app itself uses freely would fail here with a bare SyntaxError.
+//
 // Run this whenever the installer adds, removes or renames devices — the
 // dashboard reads that file once at startup and ignores any record_id it does
 // not already know, so a newly fitted light is invisible until you do.
@@ -40,13 +44,16 @@ ws.on('message', (data) => {
     if (done) return;
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (msg?.payload?.type !== 'site_config') return;   // ping, live_link, imageMap_config
+    if (!msg || !msg.payload || msg.payload.type !== 'site_config') return;   // ping, live_link, imageMap_config
 
     done = true;
     clearTimeout(timer);
 
-    const devices = msg.payload.response?.devices || [];
-    const rooms = msg.payload.response?.areas?.[0]?.departments?.[0]?.sub_area || [];
+    const response = msg.payload.response || {};
+    const devices = response.devices || [];
+    const area = (response.areas || [])[0] || {};
+    const dept = (area.departments || [])[0] || {};
+    const rooms = dept.sub_area || [];
     if (!devices.length || !rooms.length) die('site_config had no devices or no rooms — not overwriting.');
 
     // Report the change before making it, so a surprise is visible.

@@ -128,6 +128,19 @@ bounce the service. Check health by hand any time:
 curl -s http://192.168.1.3:3000/api/health
 ```
 
+## 4c. When the installer adds or changes devices
+
+The dashboard ignores any device it does not already know about, so a light
+fitted later stays invisible until the device database is refreshed. On the hub:
+
+```bash
+cd ~/dashboard && node tools/discover.js && sudo systemctl restart neo-dashboard
+```
+
+It prints what it added or removed, and writes `data/devices.json` itself — do
+not redirect it. Plain `node` is fine here (the tool is written to parse on the
+box's old Node 10); the *service* runs on `/opt/nodejs`.
+
 ## 5. Point the phone at the hub
 
 In your iPhone shortcuts, replace the Mac's address with the hub's:

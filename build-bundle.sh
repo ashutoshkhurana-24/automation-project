@@ -20,6 +20,7 @@ tar --disable-copyfile \
     data \
     scenes.json \
     node_modules \
-    deploy
+    deploy \
+    tools
 
 echo "built $OUT ($(du -h "$OUT" | cut -f1)) — see deploy/README-DEPLOY.md"
