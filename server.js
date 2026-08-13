@@ -1854,6 +1854,23 @@ const HTML = /* html */ `<!doctype html>
   /* ── the field ───────────────────────────────────────────────────────── */
   .field { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .field-head { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 16px; margin-bottom: 20px; }
+  /* Going back deserves saying outright. The rail and a sideways swipe both do
+     it, but neither is visible when you are looking at one room and wondering
+     how to leave it. */
+  .back {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    margin-bottom: 9px; padding-top: 6px; padding-right: 12px;
+    padding-bottom: 6px; padding-left: 9px;
+    font: inherit; font-size: 12.5px; color: var(--soft);
+    background: var(--pane); border: 1px solid var(--edge); border-radius: 999px;
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    transition: color .18s, border-color .18s, background .18s, transform .18s;
+  }
+  .back[hidden] { display: none; }
+  .back svg { width: 14px; height: 14px; }
+  .back:hover { color: var(--ink); border-color: var(--edge-up); background: var(--pane-up); transform: translateX(-2px); }
+  .back:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .field-head h2 {
     margin: 0; font-size: clamp(24px, 3.6vh, 34px); font-weight: 400;
     letter-spacing: -.018em; line-height: 1.1;
@@ -2719,6 +2736,13 @@ const HTML = /* html */ `<!doctype html>
       <div class="nudges" id="nudges"></div>
       <div class="field-head">
         <div>
+          <button class="back" id="back" type="button" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 5l-7 7 7 7"/>
+            </svg>
+            <span>The house</span>
+          </button>
           <h2 id="fieldname"></h2>
           <p class="field-sub" id="fieldsub"></p>
         </div>
@@ -3131,6 +3155,10 @@ function drawField() {
   el('#fieldname').textContent =
     state.q ? 'Search' : state.view === 'room' ? title(state.room) : 'The house';
   el('#fieldsub').innerHTML = fieldSub();
+
+  const back = el('#back');
+  back.hidden = state.view === 'house' && !state.q;
+  back.querySelector('span').textContent = state.q ? 'Back to the house' : 'The house';
 
   const cut = el('#cut');
   cut.hidden = state.view !== 'room' || !!state.q;
@@ -4260,6 +4288,11 @@ addEventListener('keydown', (e) => {
 wireMain();
 wireSheet();
 el('#newcue').onclick = newCue;
+
+el('#back').onclick = () => {
+  if (state.q) { state.q = ''; el('#seek').value = ''; openSeek(false); }
+  go('house');
+};
 
 // The server pushes a snapshot the moment the house moves, so the page is live
 // instead of up to ten seconds behind, and two phones never disagree. Polling
