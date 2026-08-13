@@ -7,17 +7,83 @@ Tap on the back of the phone.
 Everything here works only on the home Wi-Fi. The hub is LAN-only, so this is
 not remote control.
 
+## One address for everything: `/do`
+
+A cue is the right shape for "good night". It is the wrong shape for "just the
+fan", or "a bit dimmer" — you do not want a saved cue for every circuit at every
+level. So every circuit in the house also has a plain address you can type from
+memory:
+
+```
+/do/<room>/<circuit>/<action>
+```
+
+```
+http://192.168.1.3:3000/do/ashu/fan/on
+http://192.168.1.3:3000/do/ashu/cobs/down
+http://192.168.1.3:3000/do/ashu/cobs/40
+http://192.168.1.3:3000/do/living/main-curtain/open
+http://192.168.1.3:3000/do/master/off          ← the whole room
+http://192.168.1.3:3000/do/house/off
+http://192.168.1.3:3000/do/cue/movie-night
+```
+
+**Rooms and circuits are the names on screen**, lowercased with hyphens, and any
+**unambiguous prefix** works — `/do/ashu/foot/off` finds Ashu Room's Foot Light.
+Three collective names exist in every room: `all`, `lights` and `cobs`.
+
+### The actions
+
+| | |
+|---|---|
+| `on` `off` `toggle` | The obvious ones. `toggle` reads the hub first, so it is never backwards |
+| `0`–`100` | A brightness, e.g. `/do/ashu/cobs/35` |
+| `up` `down` | 20% brighter or dimmer **than it is now** — press it again to go further |
+| `warm` `cool` | Colour temperature, on the lamps that tune |
+| `warmer` `cooler` | 15 points at a time, same idea as `up`/`down` |
+| `open` `close` `stop` | Curtains only — they take nothing else |
+
+`up` and `down` are the ones worth building shortcuts for. One shortcut you press
+three times beats three shortcuts naming fixed levels, and it is the natural
+thing to say to Siri: *"dim the COBs"*.
+
+### Finding the address you want
+
+`GET /do` lists every room, every circuit and every action. `GET /do/<room>`
+lists one room with what each circuit is doing right now:
+
+```bash
+curl -s http://192.168.1.3:3000/do/ashu
+```
+
+```json
+{"room":"ashu-room","circuits":[
+  {"circuit":"cobs","level":60,"tune":61,"circuits":5},
+  {"circuit":"fan","level":100,"tune":null,"circuits":1}, …]}
+```
+
+Mistype one and the error tells you what was valid — that list is the point of
+the error, since a wrong URL in Shortcuts is otherwise silent.
+
 ## The endpoints
 
 | | |
 |---|---|
-| `GET/POST /api/cue/:id/fire` | Run a cue |
+| `GET/POST /do/:room/:circuit/:action` | One circuit, or a group of them |
+| `GET/POST /do/:room/:action` | Everything in a room |
+| `GET/POST /do/cue/:id` | Run a cue |
+| `GET /do` · `GET /do/:room` | What can be addressed, and its state |
+| `GET/POST /api/cue/:id/fire` | Run a cue (the older address, still live) |
 | `GET/POST /api/house/off` | Switch off everything that is on |
 | `GET /api/cues` | List the cues, with their ids |
 
 They answer to `GET` as well as `POST` because a widget or a bookmark can only
 manage a `GET`. Each reply carries a `spoken` field — a sentence rather than a
 count — which is what Siri should read back.
+
+One caveat that is not the API's fault: an **air conditioner is infrared**, so
+`/do/ashu/ac/on` blasts the code and the hub never hears back. The reply says
+what was sent, not what the unit is doing.
 
 ## Cue ids — the naming convention
 

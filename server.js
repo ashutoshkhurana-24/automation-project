@@ -836,25 +836,18 @@ app.post('/api/tune', async (req, res) => {
  * verdict per drag would be worse than the occasional lamp that misses, which
  * the next background read corrects anyway.
  */
-app.post('/api/group', async (req, res) => {
-  const ids = Array.isArray(req.body?.record_ids) ? req.body.record_ids.map(Number) : [];
-  const known = [...new Set(ids)].filter((id) => devices.has(id));
-  if (!known.length) {
-    return res.status(400).json({ ok: false, error: 'record_ids must name devices this hub knows' });
-  }
+const pct = (v) => (v != null && Number.isFinite(Number(v))
+  ? Math.max(0, Math.min(100, Math.round(Number(v)))) : null);
 
-  const { on, level, tune } = req.body || {};
-  const num = (v) => (v != null && Number.isFinite(Number(v))
-    ? Math.max(0, Math.min(100, Math.round(Number(v)))) : null);
+/** Sets a set of records to one brightness and/or one colour. Returns how many
+ *  payloads reached the wire. Shared by the group tile and the /do addresses. */
+async function setRecords(records, { on, level, tune }) {
   // A level wins over a bare on/off, which is simply full or nothing.
-  const wantLevel = num(level) != null ? num(level)
+  const wantLevel = pct(level) != null ? pct(level)
     : typeof on === 'boolean' ? (on ? 100 : 0) : null;
-  const wantTune = num(tune);
-  if (wantLevel == null && wantTune == null) {
-    return res.status(400).json({ ok: false, error: 'Nothing to set — send on, level or tune' });
-  }
+  const wantTune = pct(tune);
+  if (wantLevel == null && wantTune == null) throw new Error('Nothing to set — send on, level or tune');
 
-  const records = known.map((id) => devices.get(id).record);
   const canTune = (rec) => rec.is_tunable === 'true' && rec.channel_id_tunable != null;
   // A colour asked for goes to every tunable lamp. With none asked for, the
   // colour of the hour fills in — but only for lamps that are coming on, so a
@@ -865,29 +858,40 @@ app.post('/api/group', async (req, res) => {
     : records.filter((rec) => canTune(rec)
         && (wantTune != null || decodeLevel(rec.device_status) === 0));
 
+  let sent = 0;
+  if (colour != null && tunable.length) {
+    sent += await sendBatchToHub(tunable.map((rec) => ({
+      recordId: rec.record_id,
+      fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) },
+    })));
+    if (wantLevel != null) await sleep(SCENE_SETTLE_MS);
+  }
+  if (wantLevel != null) {
+    sent += await sendBatchToHub(records.map((rec) => ({
+      recordId: rec.record_id,
+      // A switch has no middle: anything above zero is simply on.
+      fields: { device_status: encodeLevel(rec.is_dimmable === 'true' ? wantLevel : (wantLevel > 0 ? 100 : 0)) },
+    })));
+  }
+  // A group command overrides any single-circuit verdict still in flight.
+  for (const rec of records) intents.set(rec.record_id, ++intentSeq);
+  nudgeRefresh();
+  return sent;
+}
+
+app.post('/api/group', async (req, res) => {
+  const ids = Array.isArray(req.body?.record_ids) ? req.body.record_ids.map(Number) : [];
+  const known = [...new Set(ids)].filter((id) => devices.has(id));
+  if (!known.length) {
+    return res.status(400).json({ ok: false, error: 'record_ids must name devices this hub knows' });
+  }
+
   try {
-    let sent = 0;
-    if (colour != null && tunable.length) {
-      sent += await sendBatchToHub(tunable.map((rec) => ({
-        recordId: rec.record_id,
-        fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) },
-      })));
-      if (wantLevel != null) await sleep(SCENE_SETTLE_MS);
-    }
-    if (wantLevel != null) {
-      sent += await sendBatchToHub(records.map((rec) => ({
-        recordId: rec.record_id,
-        // A switch has no middle: anything above zero is simply on.
-        fields: { device_status: encodeLevel(rec.is_dimmable === 'true' ? wantLevel : (wantLevel > 0 ? 100 : 0)) },
-      })));
-    }
-    // A group command overrides any single-circuit verdict still in flight.
-    for (const id of known) intents.set(id, ++intentSeq);
-    nudgeRefresh();
+    const sent = await setRecords(known.map((id) => devices.get(id).record), req.body || {});
     res.json({ ok: true, sent, count: known.length });
   } catch (err) {
     console.error(`group of ${known.length} failed:`, err.message);
-    res.status(502).json({ ok: false, error: err.message });
+    res.status(err.message.startsWith('Nothing to set') ? 400 : 502).json({ ok: false, error: err.message });
   }
 });
 
@@ -1275,6 +1279,268 @@ app.all('/api/house/off', async (req, res) => {
 app.get('/api/cues', (req, res) => {
   res.json({ cues: scenes.map(sc => ({ id: sc.id, name: sc.name, circuits: sc.steps.length })) });
 });
+
+/* ======================================================================= /do
+ *
+ * One address for everything, so a shortcut is a URL you can type from memory:
+ *
+ *     /do/<room>/<circuit>/<action>          /do/ashu/fan/on
+ *     /do/<room>/<action>                    /do/ashu/off          (the whole room)
+ *     /do/cue/<id>                           /do/cue/movie-night
+ *
+ * Every part is a slug of the name the dashboard already shows, matched on a
+ * unique prefix — `/do/ashu/foot/off` reaches ASHU ROOM's FOOT LIGHT. That
+ * matters more than it sounds: a shortcut is built once and lives on a Home
+ * Screen for years, so the address has to be guessable and must not move.
+ *
+ * GET works everywhere, because a widget, a Back Tap or a bookmark can only
+ * manage a GET, and every reply carries `spoken` for Siri to read back.
+ */
+
+const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+// How far one press of "down" moves things. A press should be worth pressing —
+// 10% is invisible, 33% overshoots — and 20 divides the range evenly.
+const STEP = 20;
+const TUNE_STEP = 15;
+
+const ACTIONS = ['on', 'off', 'toggle', 'up', 'down', 'warmer', 'cooler', 'warm', 'cool',
+                 'open', 'close', 'stop', '0-100'];
+
+const isAction = (word) => ACTIONS.includes(word) || /^\d{1,3}$/.test(word);
+
+/** Rooms as addresses, with `house` meaning all of them. */
+function roomsIndex() {
+  const out = new Map();
+  for (const { room } of devices.values()) {
+    const key = roomKey(room);
+    // ASHU ROOM answers to `ashu-room`, and to `ashu` as a prefix.
+    if (!out.has(slug(key))) out.set(slug(key), key);
+  }
+  return out;
+}
+
+/** Matches a slug exactly, then as a unique prefix. Ambiguity is an error, not a guess. */
+function pick(want, candidates) {
+  const exact = candidates.filter(c => c.slug === want);
+  if (exact.length === 1) return { hit: exact[0] };
+  const near = candidates.filter(c => c.slug.startsWith(want));
+  if (near.length === 1) return { hit: near[0] };
+  if (near.length > 1) return { ambiguous: near.map(c => c.slug) };
+  return { none: true };
+}
+
+/** Every circuit of a room, plus the collective names worth having. */
+function circuitsOf(roomName) {
+  const here = [...devices.values()]
+    .filter(({ room }) => roomKey(room) === roomName)
+    .map(({ record }) => record);
+
+  const isFan = (r) => r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || ''));
+  const isLight = (r) => (r.app_type || 'L') === 'L' && !isFan(r);
+
+  const groups = [
+    { slug: 'all', label: 'everything', records: here.filter(r => (r.app_type || '') !== 'C') },
+    { slug: 'lights', label: 'the lights', records: here.filter(isLight) },
+    { slug: 'cobs', label: 'the COBs', records: here.filter(r => /^COB\b/i.test(String(r.device_name || '').trim())) },
+  ].filter(g => g.records.length > 1);          // a group of one is just the circuit
+
+  // The hub writes one label with full stops in it — T.V — and `t-v` is not an
+  // address anybody would guess, so the stops come out before slugging.
+  const singles = here.map(rec => ({
+    slug: slug(String(rec.device_name).replace(/\./g, '')),
+    label: String(rec.device_name).trim().toLowerCase(), records: [rec],
+  }));
+  return [...groups, ...singles];
+}
+
+/** Where a set of circuits stands now, from the cache. */
+const levelOf = (records) => Math.round(
+  records.reduce((s, r) => s + decodeLevel(r.device_status), 0) / records.length);
+const tuneOf = (records) => {
+  const tunable = records.filter(r => r.is_tunable === 'true');
+  return tunable.length
+    ? Math.round(tunable.reduce((s, r) => s + decodeLevel(r.device_status_tunable), 0) / tunable.length)
+    : null;
+};
+
+/**
+ * Turns an action word into what to send.
+ *
+ * `up`/`down` are the ones worth having: "turn the brightness down" is a thing
+ * you do repeatedly, and one shortcut you press three times beats three
+ * shortcuts naming fixed levels. They read the current level from the cache,
+ * so the reading has to be current — the caller refreshes first.
+ */
+function resolveAction(word, records) {
+  if (/^\d{1,3}$/.test(word)) return { level: pct(word) };
+  const dims = records.some(r => r.is_dimmable === 'true');
+  const now = levelOf(records);
+
+  switch (word) {
+    case 'on': return { on: true };
+    case 'off': return { on: false };
+    case 'toggle': return { on: !(now > 0) };
+    // On a plain switch there is no middle, so up and down are simply on and off.
+    case 'up': return dims ? { level: Math.min(100, (now || 0) + STEP) } : { on: true };
+    case 'down': return dims ? { level: Math.max(0, now - STEP) } : { on: false };
+    case 'warmer': return { tune: Math.min(100, (tuneOf(records) ?? 50) + TUNE_STEP) };
+    case 'cooler': return { tune: Math.max(0, (tuneOf(records) ?? 50) - TUNE_STEP) };
+    case 'warm': return { tune: 85 };
+    case 'cool': return { tune: 15 };
+    default: return null;
+  }
+}
+
+/** What the reply says out loud. Kept short: Siri reads it aloud. */
+function spokenFor(label, where, sent) {
+  const place = where === 'HOUSE' ? '' : ' in ' + title_(where);
+  if (sent.on === false) return label + place + ' off';
+  if (sent.on === true) return label + place + ' on';
+  if (sent.level != null) return label + place + ' at ' + sent.level + '%';
+  if (sent.tune != null) return label + place + ' set to ' + sent.tune + ' warm';
+  return label + place + ' set';
+}
+const title_ = (s) => String(s).toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+
+/** The whole map, so you can see every address you can type. */
+app.get('/do', (req, res) => {
+  const rooms = [...roomsIndex()].map(([sl, name]) => ({
+    room: sl,
+    circuits: circuitsOf(name).map(c => c.slug),
+  }));
+  res.json({
+    shape: ['/do/<room>/<circuit>/<action>', '/do/<room>/<action>', '/do/cue/<id>'],
+    actions: ACTIONS,
+    rooms,
+    cues: scenes.map(sc => sc.id),
+    examples: ['/do/ashu/fan/on', '/do/ashu/cobs/down', '/do/living/main-curtain/open',
+               '/do/master/off', '/do/house/off', '/do/cue/movie-night'],
+  });
+});
+
+/** One room's addresses, with what each circuit is doing right now. */
+app.get('/do/:room', (req, res, next) => {
+  const want = slug(req.params.room);
+  if (want === 'cue') return next();
+  const found = pick(want, [...roomsIndex()].map(([sl, name]) => ({ slug: sl, name })));
+  if (!found.hit) {
+    return res.status(found.ambiguous ? 300 : 404).json({
+      ok: false, error: found.ambiguous ? 'That could be more than one room' : 'No such room',
+      known: found.ambiguous || [...roomsIndex().keys()],
+    });
+  }
+  res.json({
+    room: found.hit.slug,
+    circuits: circuitsOf(found.hit.name).map(c => ({
+      circuit: c.slug,
+      level: levelOf(c.records),
+      tune: tuneOf(c.records),
+      circuits: c.records.length,
+    })),
+  });
+});
+
+app.all('/do/cue/:id', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  const scene = scenes.find(sc => sc.id === req.params.id);
+  if (!scene) return res.status(404).json({ ok: false, error: 'No such cue', known: scenes.map(sc => sc.id) });
+  try {
+    const result = await fireCue(scene);
+    res.json({ ok: true, ...result, spoken: result.missed
+      ? scene.name + ' set, but ' + result.missed + ' did not take' : scene.name + ' set' });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message, spoken: 'The hub did not answer' });
+  }
+});
+
+// /do/<room>/<action> — the whole room, and the one you reach for at the door.
+app.all('/do/:room/:action', (req, res) =>
+  runAddress(req, res, req.params.room, 'all', req.params.action));
+
+app.all('/do/:room/:circuit/:action', (req, res) =>
+  runAddress(req, res, req.params.room, req.params.circuit, req.params.action));
+
+async function runAddress(req, res, roomWord, circuitWord, actionWord) {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  const action = slug(actionWord);
+  if (!isAction(action)) {
+    return res.status(404).json({ ok: false, error: 'No such action', known: ACTIONS,
+      spoken: 'I do not know how to do that' });
+  }
+
+  // A room named `house` reaches the whole place.
+  const wantRoom = slug(roomWord);
+  const index = roomsIndex();
+  let roomName = null;
+  if (wantRoom === 'house' || wantRoom === 'everywhere') roomName = 'HOUSE';
+  else {
+    const found = pick(wantRoom, [...index].map(([sl, name]) => ({ slug: sl, name })));
+    if (!found.hit) {
+      return res.status(found.ambiguous ? 300 : 404).json({
+        ok: false, error: found.ambiguous ? 'That could be more than one room' : 'No such room',
+        known: found.ambiguous || [...index.keys()], spoken: 'I do not know that room' });
+    }
+    roomName = found.hit.name;
+  }
+
+  // A relative or toggling action is only as good as its reading of now.
+  if (['toggle', 'up', 'down', 'warmer', 'cooler'].includes(action)
+      && (!hubSync.at || Date.now() - hubSync.at > 4000)) {
+    await readHubStateFresh().catch(() => {});
+  }
+
+  let target;
+  if (roomName === 'HOUSE') {
+    const all = [...devices.values()].map(({ record }) => record);
+    target = { slug: 'all', label: 'Everything',
+      records: all.filter(r => (r.app_type || '') !== 'C') };
+  } else {
+    const found = pick(slug(circuitWord), circuitsOf(roomName));
+    if (!found.hit) {
+      return res.status(found.ambiguous ? 300 : 404).json({
+        ok: false, error: found.ambiguous ? 'That could be more than one circuit' : 'No such circuit here',
+        known: found.ambiguous || circuitsOf(roomName).map(c => c.slug),
+        spoken: 'I cannot find that one' });
+    }
+    target = found.hit;
+  }
+  const label = target.label.charAt(0).toUpperCase() + target.label.slice(1);
+
+  // A curtain reads its verb out of opr_param and ignores everything else, so
+  // it takes a different road entirely — and it can only be told open, close
+  // or stop, never a level.
+  const curtains = target.records.filter(r => (r.app_type || '') === 'C');
+  if (curtains.length) {
+    if (!CURTAIN_VERB[action]) {
+      return res.status(400).json({ ok: false, error: 'A curtain takes open, close or stop',
+        spoken: 'A curtain only opens, closes or stops' });
+    }
+    try {
+      for (const rec of curtains) await sendToHub(rec.record_id, {}, CURTAIN_VERB[action]);
+      return res.json({ ok: true, room: roomName, circuit: target.slug, action,
+        count: curtains.length, spoken: label + ' ' + (action === 'stop' ? 'stopped' : action) });
+    } catch (err) {
+      return res.status(502).json({ ok: false, error: err.message, spoken: 'The hub did not answer' });
+    }
+  }
+
+  const sent = resolveAction(action, target.records);
+  if (!sent) {
+    return res.status(400).json({ ok: false, error: 'That action does not apply here',
+      spoken: 'That does not apply here' });
+  }
+
+  try {
+    const wrote = await setRecords(target.records, sent);
+    res.json({ ok: true, room: roomName === 'HOUSE' ? 'house' : slug(roomName),
+      circuit: target.slug, action, count: target.records.length, sent: wrote,
+      ...sent, spoken: spokenFor(label, roomName, sent) });
+  } catch (err) {
+    console.error(`do ${roomName}/${target.slug}/${action} failed:`, err.message);
+    res.status(502).json({ ok: false, error: err.message, spoken: 'The hub did not answer' });
+  }
+}
 
 /**
  * Captures the house as it stands. Every device in a room that has something
