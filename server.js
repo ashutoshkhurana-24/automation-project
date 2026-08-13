@@ -1305,9 +1305,13 @@ const STEP = 20;
 const TUNE_STEP = 15;
 
 const ACTIONS = ['on', 'off', 'toggle', 'up', 'down', 'warmer', 'cooler', 'warm', 'cool',
-                 'open', 'close', 'stop', '0-100'];
+                 'open', 'close', 'stop', '0-100', 'warmth-0-100'];
 
-const isAction = (word) => ACTIONS.includes(word) || /^\d{1,3}$/.test(word);
+// A bare number is a brightness, because that is what a number means to anyone
+// typing one. Colour has to say so: `warmth-60`, and `tune-60` for the field
+// name the hub itself uses.
+const WARMTH = /^(?:warmth|tune)-(\d{1,3})$/;
+const isAction = (word) => ACTIONS.includes(word) || /^\d{1,3}$/.test(word) || WARMTH.test(word);
 
 /** Rooms as addresses, with `house` meaning all of them. */
 function roomsIndex() {
@@ -1374,6 +1378,8 @@ const tuneOf = (records) => {
  */
 function resolveAction(word, records) {
   if (/^\d{1,3}$/.test(word)) return { level: pct(word) };
+  const warmth = word.match(WARMTH);
+  if (warmth) return { tune: pct(warmth[1]) };
   const dims = records.some(r => r.is_dimmable === 'true');
   const now = levelOf(records);
 
@@ -1398,9 +1404,14 @@ function spokenFor(label, where, sent) {
   if (sent.on === false) return label + place + ' off';
   if (sent.on === true) return label + place + ' on';
   if (sent.level != null) return label + place + ' at ' + sent.level + '%';
-  if (sent.tune != null) return label + place + ' set to ' + sent.tune + ' warm';
+  if (sent.tune != null) return label + place + ' set to ' + warmthName(sent.tune);
   return label + place + ' set';
 }
+
+// 0 is cool and 100 is warm on this hub, so the number is meaningless spoken
+// aloud. Siri says the colour instead.
+const warmthName = (t) =>
+  t < 20 ? 'cool' : t < 42 ? 'soft white' : t < 64 ? 'neutral' : t < 84 ? 'warm' : 'candle';
 const title_ = (s) => String(s).toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
 
 /** The whole map, so you can see every address you can type. */
@@ -1414,8 +1425,9 @@ app.get('/do', (req, res) => {
     actions: ACTIONS,
     rooms,
     cues: scenes.map(sc => sc.id),
-    examples: ['/do/ashu/fan/on', '/do/ashu/cobs/down', '/do/living/main-curtain/open',
-               '/do/master/off', '/do/house/off', '/do/cue/movie-night'],
+    examples: ['/do/ashu/fan/on', '/do/ashu/cobs/down', '/do/ashu/cobs/warmth-70',
+               '/do/living/main-curtain/open', '/do/master/off', '/do/house/off',
+               '/do/cue/movie-night'],
   });
 });
 
@@ -1529,6 +1541,12 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
   if (!sent) {
     return res.status(400).json({ ok: false, error: 'That action does not apply here',
       spoken: 'That does not apply here' });
+  }
+  // Only some lamps have a second channel. Asking the rest for a colour would
+  // otherwise report a cheerful success having sent nothing at all.
+  if (sent.tune != null && !target.records.some(r => r.is_tunable === 'true')) {
+    return res.status(400).json({ ok: false, error: label + ' does not tune',
+      spoken: label + ' cannot change colour' });
   }
 
   try {

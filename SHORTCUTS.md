@@ -39,9 +39,20 @@ Three collective names exist in every room: `all`, `lights` and `cobs`.
 | `on` `off` `toggle` | The obvious ones. `toggle` reads the hub first, so it is never backwards |
 | `0`–`100` | A brightness, e.g. `/do/ashu/cobs/35` |
 | `up` `down` | 20% brighter or dimmer **than it is now** — press it again to go further |
-| `warm` `cool` | Colour temperature, on the lamps that tune |
+| `warmth-0`–`warmth-100` | An exact colour, e.g. `/do/ashu/cobs/warmth-70`. `tune-70` works too |
+| `warm` `cool` | Shorthand for `warmth-85` and `warmth-15` |
 | `warmer` `cooler` | 15 points at a time, same idea as `up`/`down` |
 | `open` `close` `stop` | Curtains only — they take nothing else |
+
+A bare number is always **brightness**, because that is what a number means to
+anyone typing one. Colour has to say so — hence `warmth-70`. The two are sent
+down separate channels, so setting one never disturbs the other, and asking a
+lamp with no second channel for a colour is an error rather than a quiet
+success: `/do/ashu/foot-light/warm` → *"Foot light cannot change colour"*.
+
+On this hub **0 is cool and 100 is warm**, which is the opposite of the
+kelvin-based scales elsewhere. `spoken` says the colour rather than the number,
+since "sixty-one" means nothing read aloud.
 
 `up` and `down` are the ones worth building shortcuts for. One shortcut you press
 three times beats three shortcuts naming fixed levels, and it is the natural
