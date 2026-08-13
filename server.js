@@ -592,6 +592,28 @@ app.get('/api/stream', (req, res) => {
  * gradient and still works.
  */
 const BG_PATH = path.join(__dirname, 'data', 'background.jpg');
+
+/**
+ * A fingerprint of the assets that are cached hard, used both as the service
+ * worker's cache name and as `?v=` on the backdrop.
+ *
+ * These files are served with a long max-age, which is right — they change
+ * about once a year. But it means replacing the photograph left every phone
+ * showing the old one for a day, and an installed app showing it indefinitely,
+ * because the service worker cache was named by hand and nobody remembers to
+ * raise a 'v1'. Naming the cache after the bytes means changing them is the
+ * bust. Computed once at startup, since a deploy restarts the service anyway.
+ */
+const ASSET_V = (() => {
+  const parts = ['background.jpg', 'icon-180.png', 'icon-192.png', 'icon-512.png'].map((f) => {
+    try {
+      const s = fs.statSync(path.join(__dirname, 'data', f));
+      return `${f}:${s.size}:${Math.round(s.mtimeMs)}`;
+    } catch { return `${f}:none`; }
+  });
+  return require('crypto').createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 8);
+})();
+
 app.get('/bg.jpg', (req, res) => {
   if (!fs.existsSync(BG_PATH)) return res.status(404).end();
   res.type('jpeg').set('Cache-Control', 'public, max-age=86400').sendFile(BG_PATH);
@@ -614,8 +636,8 @@ app.get('/icon-:size.png', (req, res) => {
  * falling back to cache only when the hub is unreachable.
  */
 const SW = `
-const SHELL = 'neo-shell-v1';
-const STATIC = ['/icon-180.png', '/icon-192.png', '/icon-512.png', '/bg.jpg', '/manifest.webmanifest'];
+const SHELL = 'neo-shell-${ASSET_V}';
+const STATIC = ['/icon-180.png', '/icon-192.png', '/icon-512.png', '/bg.jpg?v=${ASSET_V}', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(STATIC)).then(() => self.skipWaiting()));
@@ -2045,6 +2067,13 @@ const HTML = /* html */ `<!doctype html>
     --neutral:#c9d3dd;      /* bronze: a fan or a curtain, lit but not glowing */
     --clay:   #e8705a;      /* the one alarming colour, used almost never */
 
+    /* The number in the display type, and only that. It used to borrow --warm,
+       which is the colour a lamp is making — so the count of lit circuits was
+       drawn in the same ink as the light itself, and the page said two
+       different things in one colour. This is type, not emission: a true
+       orange, off the lamp palette on purpose. */
+    --accent: #ff7d3f;
+
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
     --pane:      rgba(9,12,17,.34);
     --pane-up:   rgba(14,18,25,.46);
@@ -2103,7 +2132,7 @@ const HTML = /* html */ `<!doctype html>
        masses standing in for curtains and a doorway, so the glass always has
        structure to bend even before a picture is dropped in. */
     background-image:
-      url('/bg.jpg'),
+      url('/bg.jpg?v=${ASSET_V}'),
       radial-gradient(58% 44% at 12% 6%,   rgba(196,216,238,.22) 0%, transparent 68%),
       radial-gradient(46% 40% at 88% 88%,  rgba(176,200,226,.18) 0%, transparent 66%),
       linear-gradient(102deg, transparent 10%, rgba(226,238,250,.05) 13%, transparent 17%),
@@ -2111,24 +2140,35 @@ const HTML = /* html */ `<!doctype html>
       linear-gradient(88deg,  transparent 78%, rgba(226,238,250,.04) 82%, transparent 86%),
       radial-gradient(120% 100% at 50% 50%, #26303b 0%, #161c24 62%, #0c1014 100%);
     background-size: cover, auto, auto, auto, auto, auto, auto;
-    background-position: center;
+    /* A wide screen sees only a horizontal band of this tall picture, so it
+       is told which band: high in the frame is all warm rock, and the page
+       then reads amber-on-amber. Half way down catches the meadow and the
+       tree line, where a lamp is once again the warmest thing on screen.
+       On a phone the crop is horizontal instead, so this changes nothing there. */
+    background-position: center 50%;
     background-repeat: no-repeat;
     /* Held well back: white type must stay legible over any photograph, and the
-       lamps must remain the brightest thing on the screen. */
-    filter: saturate(.66) brightness(.42) contrast(1.03);
+       lamps must remain the brightest thing on the screen. This picture is a
+       warm one — lit peaks, sunlit grass — so it is desaturated harder than a
+       cold backdrop needs to be, or the page would read as amber-on-amber and
+       a lamp would stop being the only warm thing on it. */
+    filter: saturate(.52) brightness(.50) contrast(1.04);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
   .photo::after {
     content: ''; position: absolute; inset: 0;
     background:
-      /* The sky and the snow are the brightest part of the picture and they sit
-         exactly where the header does, so the top is held down hardest. */
+      /* A pale sky sits exactly where the header does, so the top is held down
+         hardest — and unlike the cold picture before it, this one never goes
+         dark further down: the meadow is luminous most of the way to the foot
+         of the frame, so the fade keeps a floor rather than releasing at the
+         middle. Nine stops, because fewer shows as a band. */
       linear-gradient(180deg,
-        rgba(10,8,6,.74) 0%,  rgba(10,8,6,.58) 12%, rgba(10,8,6,.40) 22%,
-        rgba(10,8,6,.24) 32%, rgba(10,8,6,.10) 41%, transparent 50%,
-        rgba(10,8,6,.14) 62%, rgba(10,8,6,.34) 80%, rgba(10,8,6,.60) 100%),
-      radial-gradient(130% 86% at 50% 8%, transparent 34%, rgba(8,6,4,.52) 100%);
+        rgba(10,8,6,.74) 0%,  rgba(10,8,6,.56) 11%, rgba(10,8,6,.38) 20%,
+        rgba(10,8,6,.24) 29%, rgba(10,8,6,.14) 38%, rgba(10,8,6,.10) 48%,
+        rgba(10,8,6,.18) 60%, rgba(10,8,6,.34) 78%, rgba(10,8,6,.56) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 34%, rgba(8,6,4,.50) 100%);
   }
 
   .spill {
@@ -2752,7 +2792,7 @@ const HTML = /* html */ `<!doctype html>
     }
     .glance-say { display: block; font-size: 15px; line-height: 1.35; color: var(--soft); }
     .glance-say b { color: var(--ink); font-weight: 500; }
-    .glance-say i { font-style: normal; color: var(--warm); font-weight: 500; }
+    .glance-say i { font-style: normal; color: var(--accent); font-weight: 500; }
     .glance-bars {
       display: flex; align-items: flex-end; gap: 5px; height: 46px; margin-top: 12px;
     }
@@ -2910,7 +2950,7 @@ const HTML = /* html */ `<!doctype html>
       margin: 10px 0 0; font-weight: 300; letter-spacing: -.03em; line-height: .96;
       font-size: clamp(40px, 4.4vw, 66px); color: var(--ink);
     }
-    .hero .say b { font-weight: 400; color: var(--warm); }
+    .hero .say b { font-weight: 400; color: var(--accent); }
     .hero .say span { display: block; color: var(--soft); font-size: .42em; letter-spacing: -.01em;
                       margin-top: 14px; line-height: 1.4; font-weight: 400; }
 
