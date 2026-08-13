@@ -1591,8 +1591,8 @@ const HTML = /* html */ `<!doctype html>
     --clay:   #d97158;      /* the one alarming colour, used almost never */
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
-    --pane:      rgba(28,20,14,.46);
-    --pane-up:   rgba(34,25,17,.56);
+    --pane:      rgba(26,19,13,.34);
+    --pane-up:   rgba(32,23,15,.46);
     --edge:      rgba(255,226,190,.11);
     --edge-up:   rgba(255,226,190,.20);
     --lip:       rgba(255,213,160,.10);
@@ -1660,15 +1660,20 @@ const HTML = /* html */ `<!doctype html>
     background-repeat: no-repeat;
     /* Held well back: white type must stay legible over any photograph, and the
        lamps must remain the brightest thing on the screen. */
-    filter: saturate(.78) brightness(.62) contrast(1.06);
+    filter: saturate(.66) brightness(.42) contrast(1.03);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
   .photo::after {
     content: ''; position: absolute; inset: 0;
     background:
-      radial-gradient(120% 90% at 50% 0%, transparent 30%, rgba(0,0,0,.42) 100%),
-      linear-gradient(180deg, rgba(0,0,0,.30) 0%, transparent 26%, rgba(0,0,0,.46) 100%);
+      /* The sky and the snow are the brightest part of the picture and they sit
+         exactly where the header does, so the top is held down hardest. */
+      linear-gradient(180deg,
+        rgba(10,8,6,.74) 0%,  rgba(10,8,6,.58) 12%, rgba(10,8,6,.40) 22%,
+        rgba(10,8,6,.24) 32%, rgba(10,8,6,.10) 41%, transparent 50%,
+        rgba(10,8,6,.14) 62%, rgba(10,8,6,.34) 80%, rgba(10,8,6,.60) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 34%, rgba(8,6,4,.52) 100%);
   }
 
   .spill {
@@ -1918,7 +1923,7 @@ const HTML = /* html */ `<!doctype html>
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
   .tile.on {
-    background: rgba(44,31,19,.44);
+    background: rgba(42,29,17,.34);
     border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
       /* the lit edge itself */
