@@ -2287,6 +2287,53 @@ const HTML = /* html */ `<!doctype html>
   /* A phone is not a narrow desktop. The whole page scrolls as one — a fixed
      shell with only the tile grid moving inside it feels broken on a touch
      screen — and the top bar stays put so the house is always one tap away. */
+  /* ── the house at a glance ───────────────────────────────────────────
+     A phone should not have to be scrolled to be read. One card carries the
+     whole house: what is lit, said in words, over a row where every room is a
+     column of its own light — height is how much, colour is how warm. Tapping
+     a column goes there, so it is a summary and a way in at once. */
+  .glance { display: none; }
+
+  @media (max-width: 860px) {
+    .glance {
+      display: block; width: 100%; text-align: left; cursor: pointer;
+      margin-bottom: 14px; padding: 14px 14px 10px; border-radius: 18px;
+      background: var(--pane); background-image: var(--sheen);
+      border: 1px solid var(--edge); box-shadow: var(--cast);
+      backdrop-filter: blur(22px) saturate(150%);
+      -webkit-backdrop-filter: blur(22px) saturate(150%);
+      font: inherit; color: var(--ink);
+    }
+    .glance-say { display: block; font-size: 15px; line-height: 1.35; color: var(--soft); }
+    .glance-say b { color: var(--ink); font-weight: 500; }
+    .glance-say i { font-style: normal; color: var(--warm); font-weight: 500; }
+    .glance-bars {
+      display: flex; align-items: flex-end; gap: 5px; height: 46px; margin-top: 12px;
+    }
+    .glance-bar {
+      flex: 1 1 0; min-width: 0; position: relative; height: 100%;
+      background: none; border: 0; padding: 0; cursor: pointer;
+    }
+    /* the column of light: a floor line always, the lamp's own colour above it */
+    .glance-bar i {
+      position: absolute; left: 0; right: 0; bottom: 0; display: block;
+      height: max(3px, calc(var(--load) * 100%)); border-radius: 3px;
+      background: linear-gradient(0deg,
+        color-mix(in oklab, var(--tint) 78%, transparent) 0%,
+        color-mix(in oklab, var(--tint) 34%, transparent) 100%);
+      box-shadow: 0 0 calc(var(--load) * 16px) color-mix(in oklab, var(--tint) calc(var(--load) * 55%), transparent);
+      transition: height .5s cubic-bezier(.3,.8,.3,1), background .4s;
+    }
+    .glance-bar.dark i { background: rgba(255,255,255,.10); box-shadow: none; }
+    .glance-bar.here i { outline: 1px solid var(--edge-up); outline-offset: 1px; }
+    .glance-bar u {
+      position: absolute; left: 0; right: 0; bottom: -14px; text-decoration: none;
+      font-size: 9px; letter-spacing: .02em; color: var(--faint);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;
+    }
+    .glance-bars { margin-bottom: 16px; }
+  }
+
   /* ── advisories ────────────────────────────────────────────────────────
      Something has been on a long time. These never act by themselves — the
      house does not switch off a room someone may be sitting in — so they are
@@ -2665,6 +2712,10 @@ const HTML = /* html */ `<!doctype html>
     </aside>
 
     <section class="field">
+      <button class="glance" id="glance" type="button" aria-label="The house at a glance">
+        <span class="glance-say" id="glancesay"></span>
+        <span class="glance-bars" id="glancebars"></span>
+      </button>
       <div class="nudges" id="nudges"></div>
       <div class="field-head">
         <div>
@@ -2759,6 +2810,7 @@ const state = { devices: [], view: 'house', room: null, q: '', sync: null };
 const el = (s) => document.querySelector(s);
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 const rooms = () => [...new Set(state.devices.map(d => d.room))];
+const rooms_ = rooms;
 // A curtain reports nothing back, so it is never counted as lit.
 const lit = (list) => list.filter(d => d.status && !d.is_curtain);
 const inRoom = (room) => state.devices.filter(d => d.room === room);
@@ -2813,6 +2865,14 @@ async function load() {
 
 // A circuit the user is touching owns its own state until the hub answers.
 const inFlight = new Set();
+
+/* A short tick when the hub actually confirms, so a lamp landing feels
+   different from the tap that asked for it. Android honours this; iOS Safari
+   has no vibration API at all, so on an iPhone it is simply a no-op — worth
+   having anyway, and it costs nothing where it is unsupported. */
+function tick_haptic(ms) {
+  try { if (navigator.vibrate) navigator.vibrate(ms); } catch { /* not permitted */ }
+}
 
 /**
  * When we last told the hub to change each circuit.
@@ -2893,6 +2953,44 @@ function drawHero() {
       + (rooms.length > 3 ? ' and more.' : '.');
 }
 
+/* The house in one card: what is lit, said plainly, over a row where each room
+   is a column of its own light. Read at a glance, tapped to go there. */
+function drawGlance() {
+  const say = el('#glancesay');
+  if (!say) return;
+  const on = lit(state.devices);
+  const rooms = [...new Set(on.map(d => d.room))];
+  say.innerHTML = on.length
+    ? '<i></i> lit <b></b>'
+    : 'The house is <b>dark</b>';
+  if (on.length) {
+    say.querySelector('i').textContent = on.length;
+    say.querySelector('b').textContent = rooms.length === 1
+      ? 'in ' + title(rooms[0]) : 'across ' + rooms.length + ' rooms';
+  }
+
+  const bars = el('#glancebars');
+  bars.innerHTML = '';
+  for (const room of rooms_()) {
+    const items = inRoom(room);
+    const load = output(items);
+    const alight = lit(items);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'glance-bar' + (alight.length ? '' : ' dark')
+      + (state.view === 'room' && state.room === room ? ' here' : '');
+    b.style.setProperty('--load', load.toFixed(3));
+    b.style.setProperty('--tint', alight.length ? roomTint(alight) : 'var(--warm)');
+    b.innerHTML = '<i></i><u></u>';
+    // the first word is enough at this size, and the whole name is read aloud
+    b.querySelector('u').textContent = title(room).split(' ')[0];
+    b.setAttribute('aria-label', title(room) + ', '
+      + (alight.length ? alight.length + ' of ' + items.length + ' on' : 'all off'));
+    b.onclick = (e) => { e.stopPropagation(); go('room', room); };
+    bars.appendChild(b);
+  }
+}
+
 function readout() {
   const on = lit(state.devices);
 
@@ -2904,6 +3002,7 @@ function readout() {
   root.setProperty('--lamp', 'color-mix(in oklab, var(--warm) ' + Math.round(warmth) + '%, var(--cool))');
 
   drawHero();
+  drawGlance();
 
   const s = state.sync || {};
   let when = 'status unread';
@@ -3304,8 +3403,10 @@ async function setDevice(d, next) {
       d.status = body.actual;
       if (d.is_dimmable) d.level = body.level != null ? body.level : (body.actual ? 100 : 0);
       refuse(d);
+      tick_haptic([12, 60, 12]);      // a stumble, not a tick — it did not take
       note(pretty(d.name) + ' — the hub did not apply that. It is still ' + readWord(d) + '.');
     } else {
+      tick_haptic(9);                 // the hub confirmed: the lamp really moved
       d.status = next;
       // The hub decides what level "on" means for this lamp; take its word.
       if (d.is_dimmable && next && body.level != null && body.level > 0) d.level = body.level;
@@ -4355,6 +4456,42 @@ document.addEventListener('click', (e) => {
 
 setInterval(loadAuto, 60000);
 loadAuto();
+
+/* ── swipe between rooms ───────────────────────────────────────────────────
+   One-handed, the rail is a reach. A horizontal drag across the board moves to
+   the next room, the way pages turn. Anything that is itself a horizontal
+   control — a brightness or colour slider above all — is left alone, or every
+   attempt to dim a lamp would fling you into the next room instead. */
+(function wireSwipe() {
+  const board = el('#stack');
+  if (!board) return;
+  const order = () => ['house', ...rooms()];
+  let x0 = 0, y0 = 0, live = false;
+
+  board.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { live = false; return; }
+    // never steal a gesture that belongs to a control
+    if (e.target.closest('input, .slider, .seg, .pull, .key, .warmth')) { live = false; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; live = true;
+  }, { passive: true });
+
+  board.addEventListener('touchend', (e) => {
+    if (!live) return;
+    live = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - x0, dy = t.clientY - y0;
+    // decisively sideways, or it was a scroll that happened to drift
+    if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.8) return;
+    const list = order();
+    const at = state.q ? 0 : list.indexOf(state.view === 'room' ? state.room : 'house');
+    if (at < 0) return;
+    const next = list[at + (dx < 0 ? 1 : -1)];
+    if (!next) return;
+    if (state.q) { state.q = ''; el('#seek').value = ''; }
+    tick_haptic(6);
+    next === 'house' ? go('house') : go('room', next);
+  }, { passive: true });
+})();
 
 // Keep up with the house: poll while the tab is in view, re-read on return.
 setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
