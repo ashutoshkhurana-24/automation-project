@@ -129,10 +129,23 @@ State as of this session:
 
 Security notes (LAN-only, but real): the hub's HTTP API is unauthenticated, FTP (vsftpd) is open on 21, and Django debug mode leaks stack traces to anything on the Wi-Fi.
 
-## Curtains (still open)
+## Curtains (solved 2026-08-13)
 
-Two untested leads from decompiling the vendor client, to try on **HOME THEATRE CURTAIN (483)** only:
-1. The client *writes* `channel_id_open`/`channel_id_close` but *reads back* `channel_open`/`channel_close` — we have only ever used the read-back spelling. Try adding both.
-2. `tis_motor` with `opr_value` 0–100 is a positional "move to X%" command — but it is a *scene* operation, not an `opr_param` string, so it must be tested via a throwaway hub scene.
+**A curtain is the one device class that ignores `device_status` entirely — the hub reads the verb out of `opr_param`.** Sending a curtain record with `device_status` set does nothing at all, silently, which is why curtains never worked. From the vendor's own source on the box (`/home/abneo/abneo_controller/BMS_host/`), `operations.py` dispatches `device_type == 'RL'` + `app_type == 'C'` to `curtain_opr.curtain_relay_opr(record, opr_param)`, and that function acts on exactly four strings:
+
+| `opr_param` | Effect |
+|---|---|
+| `curtain_opr_o` | pulse the `channel_open` relay on |
+| `curtain_opr_c` | pulse the `channel_close` relay on |
+| `curtain_opr_s` | release **both** relays — stop |
+| `curtain_opr_tis` | positional, `is_tis` motors only |
+
+Anything else falls through every branch. Verified on LIVING MAIN CURTAIN (497): open ran it fully open, close-then-stop halted it midway.
+
+Both earlier leads were wrong and are closed: `channel_id_open`/`channel_id_close` is the *device-registration* spelling, never a command; and `tis_motor`/`curtain_opr_tis` needs `is_tis: True`, while **all five curtains here are `is_tis: False`** — two-relay pulse motors with no position to report.
+
+**Stop works mid-travel**, so position is reachable by timing rather than by any positional command: run the motor for a measured fraction of its full travel, then stop. That is the only route to a position slider on this hardware — the hub will never report where a curtain is, so any position we show is dead reckoning and will drift if someone uses a wall switch.
+
+**The lesson worth keeping:** the hub's Python is readable at `/home/abneo/abneo_controller/`. Reading it beats guessing payloads against a controller that answers nothing — this was solved in minutes there after three wrong guesses against the wire.
 
 Full design notes and tiered idea list: `~/.claude/plans/glowing-honking-treehouse.md`.

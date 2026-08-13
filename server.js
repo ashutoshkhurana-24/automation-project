@@ -744,6 +744,23 @@ app.post('/api/tune', async (req, res) => {
  * back afterwards, so unlike a light this cannot be confirmed — the response
  * says only that the command went out.
  */
+/**
+ * A curtain is the one device class that ignores `device_status` entirely: the
+ * hub reads the verb out of `opr_param`. From its own source, BMS_host —
+ * operations.py dispatches `app_type === 'C'` to curtain_opr.curtain_relay_opr(
+ * record, opr_param), and that function only acts on these four strings:
+ *
+ *   curtain_opr_o    pulse the channel_open relay on
+ *   curtain_opr_c    pulse the channel_close relay on
+ *   curtain_opr_s    release both relays — stop, which we never had
+ *   curtain_opr_tis  positional, but only for is_tis motors; ours are all False
+ *
+ * Anything else falls through every branch and the hub does nothing at all,
+ * silently. That is why sending device_status here never moved a curtain: the
+ * curtain path does not read the field we were setting.
+ */
+const CURTAIN_VERB = { open: 'curtain_opr_o', close: 'curtain_opr_c', stop: 'curtain_opr_s' };
+
 app.post('/api/curtain', async (req, res) => {
   const recordId = Number(req.body?.record_id);
   const action = String(req.body?.action || '');
@@ -751,8 +768,8 @@ app.post('/api/curtain', async (req, res) => {
   if (!Number.isInteger(recordId)) {
     return res.status(400).json({ ok: false, error: 'record_id must be an integer' });
   }
-  if (action !== 'open' && action !== 'close') {
-    return res.status(400).json({ ok: false, error: 'action must be "open" or "close"' });
+  if (!CURTAIN_VERB[action]) {
+    return res.status(400).json({ ok: false, error: 'action must be "open", "close" or "stop"' });
   }
   const entry = devices.get(recordId);
   if (!entry) return res.status(404).json({ ok: false, error: `Unknown record_id ${recordId}` });
@@ -760,10 +777,8 @@ app.post('/api/curtain', async (req, res) => {
     return res.status(400).json({ ok: false, error: `${entry.record.device_name.trim()} is not a curtain` });
   }
 
-  // The app drives a curtain exactly like a light — device_type is RL, so it
-  // sends the plain record and lets the hub pick the open or close relay.
   try {
-    await sendToHub(recordId, { device_status: action === 'open' ? 'true' : 'false' });
+    await sendToHub(recordId, {}, CURTAIN_VERB[action]);
     res.json({ ok: true, record_id: recordId, action });
   } catch (err) {
     console.error(`curtain ${recordId} ${action} failed:`, err.message);
@@ -1907,6 +1922,9 @@ const HTML = /* html */ `<!doctype html>
   .tile.climate { height: calc(var(--tile-h) + 106px); }
   .tile.climate .tile-body { padding-bottom: 164px; }
   .pulls { display: flex; gap: 7px; }
+  /* Stop is narrower and quieter: it is the exception, not a third destination. */
+  .pull.halt { flex: 0 0 auto; padding-left: 12px; padding-right: 12px; color: var(--faint); }
+  .pull.halt:hover { color: var(--ink); }
   .pull {
     flex: 1; padding: 8px 6px; cursor: pointer; border-radius: 9px;
     background: rgba(255,213,160,.05); border: 1px solid var(--edge);
@@ -3050,12 +3068,16 @@ function curtainPulls(d) {
   wrap.className = 'drawer';
   const pulls = document.createElement('div');
   pulls.className = 'pulls';
-  for (const action of ['open', 'close']) {
+  // Stop is not a nicety on a curtain: it is a two-relay motor with no position
+  // to report, so halting it partway is the only way to leave it anywhere other
+  // than fully open or fully shut.
+  const WORDS = { open: 'Open', stop: 'Stop', close: 'Close' };
+  for (const action of ['open', 'stop', 'close']) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'pull';
-    b.textContent = action === 'open' ? 'Open' : 'Close';
-    b.setAttribute('aria-label', (action === 'open' ? 'Open ' : 'Close ') + pretty(d.name));
+    b.className = 'pull' + (action === 'stop' ? ' halt' : '');
+    b.textContent = WORDS[action];
+    b.setAttribute('aria-label', WORDS[action] + ' ' + pretty(d.name));
     b.onclick = async () => {
       b.classList.add('working');
       try {
