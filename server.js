@@ -2492,10 +2492,20 @@ const title = (s) => s.toLowerCase().replace(/(^|\\s)\\S/g, (c) => c.toUpperCase
 // The hub stores every label in capitals. Shouting them back is not calm, so
 // they are set in sentence case — except the handful that really are acronyms.
 const ACRONYMS = new Set(['COB', 'AC', 'TV', 'T.V', 'PRJ', 'LED', 'RGB', 'USB', 'CCT']);
-const pretty = (s) => String(s).trim().split(/\\s+/)
-  .map(w => ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase()
-          : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-  .join(' ');
+
+// Labels the installer mistyped in the hub's own database. Corrected here for
+// reading only — the hub keeps its spelling, so the vendor's app and ours still
+// address the very same record. Search matches the correction too, or a circuit
+// would be unfindable by the name the screen shows it under.
+const MISSPELT = { 'CEILING ROPR': 'CEILING ROPE' };
+
+const pretty = (s) => {
+  const raw = String(s).trim();
+  return (MISSPELT[raw.toUpperCase()] || raw).split(/\\s+/)
+    .map(w => ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase()
+            : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+};
 
 // How much light a set of circuits is making, 0 → 1. A lamp at 20% counts as a
 // fifth of a lamp, which is what the room actually looks like.
@@ -2705,7 +2715,11 @@ function fieldSub() {
 
 const matches = () => {
   const q = state.q.trim().toLowerCase();
-  return state.devices.filter(d => d.name.toLowerCase().includes(q) || d.room.toLowerCase().includes(q));
+  // Match the label as shown as well as the hub's own, so a circuit is findable
+  // by the spelling on screen and by the one the installer typed.
+  return state.devices.filter(d => d.name.toLowerCase().includes(q)
+    || pretty(d.name).toLowerCase().includes(q)
+    || d.room.toLowerCase().includes(q));
 };
 
 function drawField() {
