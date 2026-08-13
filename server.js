@@ -3323,6 +3323,11 @@ async function load() {
 // A circuit the user is touching owns its own state until the hub answers.
 const inFlight = new Set();
 
+// Which press owns each circuit. A verdict is worth listening to only if it
+// answers the most recent press — see setDevice.
+const clicks = new Map();
+let clickSeq = 0;
+
 /* A short tick when the hub actually confirms, so a lamp landing feels
    different from the tap that asked for it. Android honours this; iOS Safari
    has no vibration API at all, so on an iPhone it is simply a no-op — worth
@@ -3956,6 +3961,15 @@ const paint = (d) => {
 async function setDevice(d, next) {
   const was = d.status;
   const wasLevel = d.level;
+  // A verdict takes about five seconds to come back, which is long enough to
+  // press the key again — and when it lands it must not write the value it was
+  // asking about. Switch a lamp on and straight off and the first reply would
+  // otherwise arrive last, turning it back on for a second. So each press takes
+  // a token, and a press that is no longer the latest says nothing at all.
+  const token = ++clickSeq;
+  clicks.set(d.record_id, token);
+  const mine = () => clicks.get(d.record_id) === token;
+
   d.status = next;                                 // optimistic: the key throws now
   if (d.is_dimmable) d.level = next ? 100 : 0;     // "true" means full, per the hub
   const bar = paint(d);
@@ -3978,6 +3992,10 @@ async function setDevice(d, next) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.ok) throw new Error(body.error || 'Hub did not respond');
 
+    // A newer press owns this circuit now; this verdict is about a state the
+    // user has already moved on from, so it stays quiet.
+    if (!mine()) return;
+
     // The hub never acknowledges, so the server re-reads its state to check.
     if (body.confirmed === false) {
       d.status = body.actual;
@@ -3998,12 +4016,15 @@ async function setDevice(d, next) {
       readout();
     }
   } catch (err) {
+    if (!mine()) return;                           // a newer press owns the tile
     d.status = was;
     d.level = wasLevel;                            // put it back
     refuse(d);
     note(pretty(d.name) + ' — ' + err.message + '. Nothing changed.');
   } finally {
-    inFlight.delete(d.record_id);
+    // Only the latest press may release the circuit, or an older reply would
+    // hand it back to the poll while a newer command is still in the air.
+    if (mine()) inFlight.delete(d.record_id);
   }
 }
 
