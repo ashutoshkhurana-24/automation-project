@@ -820,6 +820,78 @@ app.post('/api/tune', async (req, res) => {
 });
 
 /**
+ * Several circuits set to the same thing, together.
+ *
+ * A room's COBs are one ceiling of light rather than five switches — eleven of
+ * them in LIVING — and driving them one at a time is both slow and visibly
+ * uneven, the room coming up in steps. So a group goes down one shared socket,
+ * the way a cue does, which the hub takes without dropping any of it.
+ *
+ * The two channels are addressed independently on purpose: a warmth drag sends
+ * colour only and must not rewrite brightness. When both are asked for, colour
+ * goes first — under load a tune can bleed onto the main channel, and that way
+ * the bleed costs colour rather than level.
+ *
+ * Like `/api/level` this does not confirm: the control is a slider, and a 5s
+ * verdict per drag would be worse than the occasional lamp that misses, which
+ * the next background read corrects anyway.
+ */
+app.post('/api/group', async (req, res) => {
+  const ids = Array.isArray(req.body?.record_ids) ? req.body.record_ids.map(Number) : [];
+  const known = [...new Set(ids)].filter((id) => devices.has(id));
+  if (!known.length) {
+    return res.status(400).json({ ok: false, error: 'record_ids must name devices this hub knows' });
+  }
+
+  const { on, level, tune } = req.body || {};
+  const num = (v) => (v != null && Number.isFinite(Number(v))
+    ? Math.max(0, Math.min(100, Math.round(Number(v)))) : null);
+  // A level wins over a bare on/off, which is simply full or nothing.
+  const wantLevel = num(level) != null ? num(level)
+    : typeof on === 'boolean' ? (on ? 100 : 0) : null;
+  const wantTune = num(tune);
+  if (wantLevel == null && wantTune == null) {
+    return res.status(400).json({ ok: false, error: 'Nothing to set — send on, level or tune' });
+  }
+
+  const records = known.map((id) => devices.get(id).record);
+  const canTune = (rec) => rec.is_tunable === 'true' && rec.channel_id_tunable != null;
+  // A colour asked for goes to every tunable lamp. With none asked for, the
+  // colour of the hour fills in — but only for lamps that are coming on, so a
+  // brightness drag never re-tunes a lit lamp and fights a colour set by hand.
+  const colour = wantTune != null ? wantTune
+    : wantLevel > 0 && settings.circadian.on ? circadianTune() : null;
+  const tunable = colour == null ? []
+    : records.filter((rec) => canTune(rec)
+        && (wantTune != null || decodeLevel(rec.device_status) === 0));
+
+  try {
+    let sent = 0;
+    if (colour != null && tunable.length) {
+      sent += await sendBatchToHub(tunable.map((rec) => ({
+        recordId: rec.record_id,
+        fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) },
+      })));
+      if (wantLevel != null) await sleep(SCENE_SETTLE_MS);
+    }
+    if (wantLevel != null) {
+      sent += await sendBatchToHub(records.map((rec) => ({
+        recordId: rec.record_id,
+        // A switch has no middle: anything above zero is simply on.
+        fields: { device_status: encodeLevel(rec.is_dimmable === 'true' ? wantLevel : (wantLevel > 0 ? 100 : 0)) },
+      })));
+    }
+    // A group command overrides any single-circuit verdict still in flight.
+    for (const id of known) intents.set(id, ++intentSeq);
+    nudgeRefresh();
+    res.json({ ok: true, sent, count: known.length });
+  } catch (err) {
+    console.error(`group of ${known.length} failed:`, err.message);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * Curtains are driven by pulsing one of two relays. There is nothing to read
  * back afterwards, so unlike a light this cannot be confirmed — the response
  * says only that the command went out.
@@ -2882,6 +2954,10 @@ const rooms_ = rooms;
 // A curtain reports nothing back, so it is never counted as lit.
 const lit = (list) => list.filter(d => d.status && !d.is_curtain);
 const inRoom = (room) => state.devices.filter(d => d.room === room);
+// COB 1…COB 11 are the same fitting repeated around a ceiling, which is why
+// they are the one set of circuits worth driving as one.
+const isCob = (d) => /^COB\\b/i.test(d.name);
+const cobsIn = (room) => inRoom(room).filter(isCob);
 const title = (s) => s.toLowerCase().replace(/(^|\\s)\\S/g, (c) => c.toUpperCase());
 
 // The hub stores every label in capitals. Shouting them back is not calm, so
@@ -2990,6 +3066,7 @@ function tick() {
   readout();
   for (const tab of document.querySelectorAll('.tab[data-room]')) tabState(tab, tab.dataset.room);
   for (const t of document.querySelectorAll('.tile[data-room]')) roomTileState(t, t.dataset.room);
+  for (const t of document.querySelectorAll('.tile[data-gang]')) paintGang(t);
   const cut = el('#cut');
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
@@ -3250,6 +3327,10 @@ function fillRoom(stack, room) {
     label.className = 'group-label';
     label.textContent = KINDS[kind].label;
     stack.appendChild(label);
+    // The COBs lead the lights, on one control — they are a ceiling, not five
+    // switches. Their own tiles stay below it for the times one lamp is the point.
+    const cobs = kind === 'light' ? group.filter(isCob) : [];
+    if (cobs.length > 1) stack.appendChild(cobTile(room, cobs));
     group.forEach(d => stack.appendChild(circuitTile(d)));
   }
 }
@@ -3398,6 +3479,120 @@ function slider(d, key) {
   return input;
 }
 
+/* ─────────────────────────────────────── the COBs of a room, as one control */
+
+/* Every room here has COBs — five in Ashu, eleven in Living — and they are one
+   ceiling of light that is nearly always wanted at one setting. This tile is
+   that setting: one key, one brightness, one warmth, all of them together down
+   a single socket. The individual tiles stay below it, so nothing is lost. */
+function cobTile(room, members) {
+  const dims = members.every(d => d.is_dimmable);
+  const tunes = members.every(d => d.is_tunable);
+  const tile = document.createElement('div');
+  tile.className = 'tile enter light gang' + (dims ? ' dims' : '') + (tunes ? ' tunes' : '')
+    + (tunes ? ' wide' : dims ? ' tall' : '');
+  tile.dataset.gang = room;
+  tile.title = 'All ' + members.length + ' COB circuits in ' + title(room) + ', together';
+
+  const fill = document.createElement('span');
+  fill.className = 'tile-fill';
+  tile.appendChild(fill);
+
+  const body = document.createElement('button');
+  body.type = 'button';
+  body.className = 'tile-body';
+  body.innerHTML = '<span class="tile-name"></span><span class="tile-read"></span>';
+  body.querySelector('.tile-name').textContent = 'All COBs';
+  body.onclick = () => setGang(tile);
+  tile.appendChild(body);
+
+  const key = document.createElement('button');
+  key.type = 'button';
+  key.className = 'key';
+  key.innerHTML = '<i></i>';
+  key.onclick = () => setGang(tile);
+  tile.appendChild(key);
+
+  if (dims || tunes) {
+    const controls = document.createElement('div');
+    controls.className = 'controls';
+    if (dims) controls.appendChild(gangSlider(tile, 'level'));
+    if (tunes) controls.appendChild(gangSlider(tile, 'tune'));
+    tile.appendChild(controls);
+  }
+
+  paintGang(tile);
+  return tile;
+}
+
+// What the whole set reads as: its mean, since they are set together.
+const gangMean = (members, key) =>
+  Math.round(members.reduce((s, d) => s + (d[key] || 0), 0) / members.length);
+
+function gangRead(members) {
+  const on = lit(members);
+  if (!on.length) return 'all ' + members.length + ' off';
+  if (on.length < members.length) return on.length + ' of ' + members.length + ' on';
+  const level = members.every(d => d.is_dimmable) ? gangMean(members, 'level') + '%' : 'on';
+  return members.every(d => d.is_tunable)
+    ? level + ' · ' + warmthWord(gangMean(members, 'tune')) : level;
+}
+
+function paintGang(tile) {
+  const members = cobsIn(tile.dataset.gang);
+  if (!members.length) return;
+  const on = lit(members);
+  const load = output(members);
+  tile.style.setProperty('--tint', on.length ? roomTint(on) : 'var(--warm)');
+  tile.classList.toggle('on', on.length > 0);
+  tile.style.setProperty('--lit', load.toFixed(3));
+  tile.querySelector('.tile-fill').style.setProperty('--fill', load.toFixed(3));
+  tile.querySelector('.tile-read').textContent = gangRead(members);
+
+  // A drag owns these sliders until the hub has answered — the same rule the
+  // single tiles follow, or a repaint would jump the handle under the finger.
+  const busy = members.some(d => inFlight.has(d.record_id));
+  for (const input of tile.querySelectorAll('.slider')) {
+    if (busy || input === document.activeElement) continue;
+    const v = gangMean(members, input.dataset.key);
+    input.value = v;
+    if (input.dataset.key === 'level') input.style.setProperty('--pct', v + '%');
+  }
+
+  const key = tile.querySelector('.key');
+  key.setAttribute('aria-pressed', String(on.length > 0));
+  key.setAttribute('aria-label', (on.length ? 'Turn off' : 'Turn on') + ' all ' + members.length + ' COBs');
+  tile.querySelector('.tile-body').setAttribute('aria-label',
+    'All COBs in ' + title(tile.dataset.gang) + ', ' + gangRead(members));
+}
+
+function gangSlider(tile, key) {
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.className = key === 'level' ? 'slider dim' : 'slider warm';
+  input.min = 0; input.max = 100; input.step = 1;
+  input.dataset.key = key;
+  const start = gangMean(cobsIn(tile.dataset.gang), key);
+  input.value = start;
+  if (key === 'level') input.style.setProperty('--pct', start + '%');
+  input.setAttribute('aria-label',
+    'All COBs ' + (key === 'level' ? 'brightness' : 'warmth, 0 cool to 100 warm'));
+
+  input.addEventListener('input', () => {
+    const v = Number(input.value);
+    for (const d of cobsIn(tile.dataset.gang)) {
+      d[key] = v;
+      if (key === 'level') d.status = v > 0;
+      paint(d);                                  // the room's own tiles follow
+    }
+    if (key === 'level') { input.style.setProperty('--pct', v + '%'); tick(); }
+    paintGang(tile);
+    queueGang(tile, key);
+  });
+  input.addEventListener('change', () => queueGang(tile, key, true));
+  return input;
+}
+
 /* ────────────────────────────────────────────────── drawing one circuit */
 
 function paintTile(tile, d) {
@@ -3534,6 +3729,75 @@ async function sendSlider(d, key) {
   } finally {
     // Hold the poll off a moment longer so a slow hub read cannot yank a slider.
     setTimeout(() => inFlight.delete(d.record_id), 4000);
+  }
+}
+
+/* ────────────────────────────────────── switching a room's COBs together */
+
+// Part on reads as on, so the key finishes the job rather than undoing it.
+async function setGang(tile) {
+  const members = cobsIn(tile.dataset.gang);
+  const next = !lit(members).length;
+  const was = members.map(d => ({ d, status: d.status, level: d.level }));
+
+  for (const d of members) {
+    d.status = next;
+    if (d.is_dimmable) d.level = next ? 100 : 0;
+    paint(d);
+    inFlight.add(d.record_id);
+    markCommanded(d.record_id);
+  }
+  paintGang(tile);
+  tick();
+
+  try {
+    const res = await fetch('/api/group', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record_ids: members.map(d => d.record_id), on: next }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) throw new Error(body.error || 'Hub did not respond');
+    tick_haptic(9);
+  } catch (err) {
+    for (const { d, status, level } of was) { d.status = status; d.level = level; paint(d); }
+    paintGang(tile);
+    tick();
+    tick_haptic([12, 60, 12]);
+    note('The COBs did not move — ' + err.message);
+  } finally {
+    // The group is not confirmed, so let the next hub read speak for it.
+    setTimeout(() => { members.forEach(d => inFlight.delete(d.record_id)); }, 4000);
+  }
+}
+
+function queueGang(tile, key, now) {
+  const id = 'gang:' + tile.dataset.gang + ':' + key;
+  for (const d of cobsIn(tile.dataset.gang)) {
+    inFlight.add(d.record_id);
+    markCommanded(d.record_id);
+  }
+  clearTimeout(sliderTimers.get(id));
+  sliderTimers.set(id, setTimeout(() => sendGang(tile, key), now ? 0 : 200));
+}
+
+async function sendGang(tile, key) {
+  const members = cobsIn(tile.dataset.gang);
+  if (!members.length) return;
+  const value = gangMean(members, key);
+  const body = { record_ids: members.map(d => d.record_id) };
+  if (key === 'level') { body.level = value; body.on = value > 0; } else { body.tune = value; }
+
+  try {
+    const res = await fetch('/api/group', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) throw new Error(out.error || 'Hub did not respond');
+  } catch (err) {
+    note('All COBs — ' + err.message + '. The setting may not have changed.');
+  } finally {
+    setTimeout(() => { members.forEach(d => inFlight.delete(d.record_id)); }, 4000);
   }
 }
 
