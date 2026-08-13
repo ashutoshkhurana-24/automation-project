@@ -279,8 +279,23 @@ function hubSocket() {
  * truth — including changes made at a wall switch or from the phone app.
  * Takes ~3s. Concurrent callers share one read.
  */
-let hubSync = { at: 0, ok: false, error: 'not read yet' };
+/**
+ * `at` is when the read finished; `taken` is when it connected — and those are
+ * two to three seconds apart, because the hub sends its site_config that long
+ * after the handshake and it describes the house **at connect time**.
+ *
+ * The difference is not academic. A read already in flight when you press a key
+ * carries a picture from before you pressed it, and merging that picture puts
+ * the light back on for the second or two until the next read. `taken` is what
+ * every "does this snapshot know about my command?" test has to use.
+ */
+let hubSync = { at: 0, taken: 0, ok: false, error: 'not read yet' };
 let reading = null;
+
+// When we last commanded each circuit, so a read that predates the command can
+// be told apart from one that reflects it.
+const commandedAt = new Map();
+const markCommanded = (recordId) => commandedAt.set(recordId, Date.now());
 
 // Counters behind /api/health. This runs unattended on a box nobody looks at,
 // so "is it still talking to the hub?" has to be answerable without reading logs.
@@ -293,6 +308,10 @@ const stats = {
 function readHubState() {
   if (reading) return reading;
 
+  // The site_config describes the house as it stood when this socket opened,
+  // not when the message arrives, so this is the moment the snapshot belongs to.
+  const takenAt = Date.now();
+
   reading = new Promise((resolve) => {
     const ws = hubSocket();
     let settled = false;
@@ -302,7 +321,7 @@ function readHubState() {
       settled = true;
       clearTimeout(timer);
       reading = null;
-      hubSync = { at: Date.now(), ok, error: ok ? null : error };
+      hubSync = { at: Date.now(), taken: takenAt, ok, error: ok ? null : error };
       if (ok) { stats.readsOk++; stats.consecutiveReadFailures = 0; }
       else { stats.readsFailed++; stats.consecutiveReadFailures++; }
       if (!ok) console.error('hub state read failed:', error);
@@ -322,7 +341,15 @@ function readHubState() {
 
       for (const rec of msg.payload.response.devices || []) {
         const entry = devices.get(rec.record_id);
-        if (entry) entry.record = { ...entry.record, ...rec };
+        if (!entry) continue;
+        // This picture cannot know about our last command to this circuit —
+        // either it was taken first, or it was taken inside the hub's own
+        // settling window, where a fresh connection still reports the previous
+        // state. Merging it puts the light back on for a second or two until a
+        // read that does know arrives, which is exactly the flicker you see
+        // when you switch something on and straight off again.
+        if (takenAt - (commandedAt.get(rec.record_id) || 0) < SETTLE_MS) continue;
+        entry.record = { ...entry.record, ...rec };
       }
       finish(true);
       trackLit();
@@ -354,6 +381,7 @@ async function readHubStateFresh() {
 function sendToHub(recordId, fields, param) {
   const entry = devices.get(recordId);
   if (!entry) return Promise.reject(new Error(`Unknown record_id ${recordId}`));
+  markCommanded(recordId);
 
   // Echo the hub's own record back with the overrides applied — the hub rejects
   // partial records for some device types.
@@ -433,6 +461,7 @@ function sendBatchToHub(commands) {
         for (const { recordId, fields, param } of commands) {
           const entry = devices.get(recordId);
           if (!entry) continue;
+          markCommanded(recordId);
           // Echo the hub's own record back, exactly as a single send does.
           const payload = {
             opr: 'service',
@@ -478,7 +507,7 @@ const SETTLE_MS = 3200;
 function snapshot() {
   return {
     devices: deviceList(),
-    synced_at: hubSync.at || null,
+    synced_at: hubSync.taken || null,
     hub_ok: hubSync.ok,
     hub_error: hubSync.error,
   };
@@ -743,7 +772,7 @@ app.post('/api/toggle', async (req, res) => {
     actual: actualOn,
     level: decodeLevel(actual),
     confirmed,
-    synced_at: hubSync.at,
+    synced_at: hubSync.taken,
   });
 });
 
@@ -1168,7 +1197,7 @@ async function fireCue(scene) {
   // The snapshot is only worth keeping if it is current: a cached read can be
   // up to REFRESH_MS old, and undoing to a stale reading is worse than not
   // offering undo at all.
-  if (!hubSync.at || Date.now() - hubSync.at > 4000) {
+  if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
     await readHubStateFresh().catch(() => {});
   }
   const { before, skipped } = captureBefore(scene.steps);
@@ -1184,7 +1213,7 @@ app.post('/api/scenes/:id/apply', async (req, res) => {
   if (!scene) return res.status(404).json({ ok: false, error: 'No such scene' });
   try {
     const result = await fireCue(scene);
-    res.json({ ok: true, scene: scene.name, ...result, synced_at: hubSync.at });
+    res.json({ ok: true, scene: scene.name, ...result, synced_at: hubSync.taken });
   } catch (err) {
     console.error(`scene ${scene.id} failed:`, err.message);
     res.status(502).json({ ok: false, error: err.message });
@@ -1207,7 +1236,7 @@ app.post('/api/scenes/undo', async (req, res) => {
   undoable = null;
   try {
     const result = await applyScene({ id: 'undo', name: 'Undo', steps: snap.steps });
-    res.json({ ok: true, scene: snap.name, ...result, synced_at: hubSync.at });
+    res.json({ ok: true, scene: snap.name, ...result, synced_at: hubSync.taken });
   } catch (err) {
     console.error('undo failed:', err.message);
     res.status(502).json({ ok: false, error: err.message });
@@ -1241,7 +1270,7 @@ app.all('/api/cue/:id/fire', async (req, res) => {
       spoken: result.missed
         ? scene.name + ' set, but ' + result.missed + ' did not take'
         : scene.name + ' set',
-      synced_at: hubSync.at,
+      synced_at: hubSync.taken,
     });
   } catch (err) {
     console.error(`cue ${scene.id} failed:`, err.message);
@@ -1267,7 +1296,7 @@ app.all('/api/house/off', async (req, res) => {
       spoken: result.missed
         ? result.set + ' off, but ' + result.missed + ' did not take'
         : 'Everything off',
-      synced_at: hubSync.at,
+      synced_at: hubSync.taken,
     });
   } catch (err) {
     console.error('house off failed:', err.message);
@@ -1498,7 +1527,7 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
 
   // A relative or toggling action is only as good as its reading of now.
   if (['toggle', 'up', 'down', 'warmer', 'cooler'].includes(action)
-      && (!hubSync.at || Date.now() - hubSync.at > 4000)) {
+      && (!hubSync.taken || Date.now() - hubSync.taken > 4000)) {
     await readHubStateFresh().catch(() => {});
   }
 
