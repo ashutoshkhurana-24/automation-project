@@ -36,6 +36,10 @@ This was reverse-engineered by probing, not from documentation. Getting it wrong
 
 **Colour temperature** lives in `device_status_tunable` but **cannot be written directly** — that field is silently ignored. Address the tunable channel instead: send `channel_id: <channel_id_tunable>` with the level in `device_status`. On this installation 0 is cool and 100 is warm.
 
+**An IR device's state is a belief, not a reading.** Six of the seven ACs are `device_type: IR` (the exception is HOME THEATRE 496, `RL`, a real relay). IR is one-way: the hub blasts a code and never hears back, so `device_status` for those units is **only what the hub last sent**. Anyone using the AC's own remote is invisible to it, and the unit's real state can differ indefinitely. Never report an IR device's state as fact — it is "the hub last sent off", not "it is off". This is not a bug to fix; there is no feedback channel to read.
+
+Consequences worth remembering: the left-on advisory for an AC can only catch one switched on *through the hub* — an AC started by its remote will never nudge, which is exactly the case you would most want caught. It can also nudge for a unit someone has since switched off by remote. The advisory is still worth having (forgetting the dashboard's own AC is the common case) but it is not a guarantee, and any UI wording must not imply certainty.
+
 **Reading state.** The hub pushes one `site_config` per connection carrying live status for every device. It sends **nothing** in reply to a command and does not push changes to an idle socket, so a fresh connection is the only way to learn the truth — including changes made at a wall switch or in the phone app.
 
 **Timing, measured against this hub.** A `site_config` arrives ~1.5–3s after connecting, and snapshots state at connect time. A read starting too soon after a command still reports the *previous* state; `SETTLE_MS = 3200` is that measurement plus margin. Do not lower it without re-measuring.
