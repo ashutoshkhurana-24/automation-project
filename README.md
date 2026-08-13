@@ -49,7 +49,9 @@ Throwaway diagnostics, not part of the app — run directly with `node`:
 
 - `probe.js` — pulse a curtain, try an AC command, or dump what the hub stores
   for one device.
-- `discover.js` — fetch the full component database from the hub.
+- `discover.js` — refresh `data/devices.json` from the hub. Run it after the
+  installer adds or renames anything, then restart; new devices are otherwise
+  ignored. It prints what changed and writes the file itself — do not redirect.
 - `connection-test.js` — confirm the WebSocket handshake works.
 - `generate-csv.js` — regenerate `data/neo_console_devices.csv` from
   `data/devices.json`.
