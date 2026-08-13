@@ -2402,8 +2402,13 @@ const HTML = /* html */ `<!doctype html>
 
     /* ── the board ────────────────────────────────────────────────────────
        A hero column that says what the house is doing, and the field beside it. */
-    .board { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 34px; align-items: start; }
-    .index { display: block; position: static; overflow: visible; }
+    /* No align-items:start here. The page itself does not scroll on a wide
+       screen — the tile grid scrolls inside a window sized by the viewport —
+       and starting the items collapses .field to its content, so the grid grew
+       past the window and the overflow was clipped rather than scrollable.
+       A room has fourteen circuits and would simply lose the last of them. */
+    .board { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 34px; min-height: 0; }
+    .index { min-height: 0; display: flex; flex-direction: column; }
 
     /* the house, stated */
     .hero { display: block; margin-bottom: 26px; }
