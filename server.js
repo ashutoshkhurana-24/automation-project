@@ -1363,21 +1363,32 @@ function nudgeList() {
 const timers = new Map();
 let timerSeq = 0;
 
-/** The steps that switch a scope off. Curtains are left alone: they have no state. */
-function offSteps(scope) {
+/**
+ * The steps a sleep timer runs.
+ *
+ * Lights and screens go off; the fan and the AC keep running. A sleep timer is
+ * for falling asleep, not for being woken at two in the morning by a room gone
+ * still and warm — switching off the climate is the one thing it must not do.
+ * Curtains are skipped as ever: they have no state to set.
+ */
+function sleepSteps(scope) {
   const all = [...devices.values()];
   const isOn = ({ record }) => decodeLevel(record.device_status) > 0
     && (record.app_type || '') !== 'C';
-  if (scope === 'house') return all.filter(isOn).map(({ record }) => ({ record_id: record.record_id, on: false }));
+  const keepsRunning = ({ record }) => (record.app_type || '') === 'AC'
+    || record.isFan === 'true' || /\bFAN\b/i.test(String(record.device_name || ''));
+  const wanted = (d) => isOn(d) && !keepsRunning(d);
+
+  if (scope === 'house') return all.filter(wanted).map(({ record }) => ({ record_id: record.record_id, on: false }));
   if (scope.startsWith('room:')) {
     const want = scope.slice(5).toLowerCase();
-    return all.filter(d => isOn(d) && roomKey(d.room).toLowerCase() === want)
+    return all.filter(d => wanted(d) && roomKey(d.room).toLowerCase() === want)
       .map(({ record }) => ({ record_id: record.record_id, on: false }));
   }
   if (scope.startsWith('device:')) {
     const id = Number(scope.slice(7));
     const entry = devices.get(id);
-    return entry ? [{ record_id: id, on: false }] : [];
+    return entry ? [{ record_id: id, on: false }] : [];   // named outright, so honour it
   }
   return [];
 }
@@ -1390,8 +1401,8 @@ async function runTimer(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
-  const steps = offSteps(t.scope);
-  console.log(`timer ${t.label}: switching off ${steps.length}`);
+  const steps = sleepSteps(t.scope);
+  console.log(`sleep timer ${t.label}: lights off, ${steps.length} circuits`);
   if (steps.length) {
     try { await sendSteps(sceneTargets(steps)); } catch (err) { console.error('timer failed:', err.message); }
     await readHubStateFresh().catch(() => {});
@@ -1448,7 +1459,7 @@ app.post('/api/timers', (req, res) => {
       : (devices.get(Number(scope.slice(7)))?.record.device_name || 'Device').trim();
   const t = { id: 't' + (++timerSeq), scope, label, at: Date.now() + minutes * 60000 };
   armTimer(t);
-  res.json({ ok: true, timer: timerView(t), spoken: `${label} off in ${minutes} minutes` });
+  res.json({ ok: true, timer: timerView(t), spoken: `${label} lights off in ${minutes} minutes` });
 });
 
 app.delete('/api/timers/:id', (req, res) => {
@@ -2416,7 +2427,7 @@ const HTML = /* html */ `<!doctype html>
 
 <div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
   <h3>Sleep timer</h3>
-  <p id="timerwhy">Switch a room off by itself, later.</p>
+  <p id="timerwhy">Lights off by themselves, later. The fan and AC keep running.</p>
   <div class="scopes" id="timerscopes"></div>
   <div class="mins" id="timermins">
     <button type="button" data-min="15">15 min</button>
