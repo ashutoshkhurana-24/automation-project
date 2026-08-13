@@ -2827,7 +2827,7 @@ function circuitTile(d) {
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
   // turning on a lamp, so it lives in the tooltip.
-  tile.title = d.name + ' · circuit ' +
+  tile.title = pretty(d.name) + ' · circuit ' +
     (d.channel_id && d.channel_id !== 'None' ? d.device_id + '.' + d.channel_id : (d.device_type || d.app_type));
 
   const fill = document.createElement('span');
@@ -2876,7 +2876,7 @@ function slider(d, key) {
   input.min = 0; input.max = 100; input.step = 1;
   input.value = d[key];
   input.dataset.key = key;
-  input.setAttribute('aria-label', d.name +
+  input.setAttribute('aria-label', pretty(d.name) +
     (key === 'level' ? ' brightness' : ' warmth, 0 cool to 100 warm'));
 
   input.addEventListener('input', () => {
@@ -2913,12 +2913,12 @@ function paintTile(tile, d) {
   const key = tile.querySelector('.key');
   if (key) {
     key.setAttribute('aria-pressed', String(d.status));
-    key.setAttribute('aria-label', (d.status ? 'Turn off ' : 'Turn on ') + d.name);
+    key.setAttribute('aria-label', (d.status ? 'Turn off ' : 'Turn on ') + pretty(d.name));
   }
   const body = tile.querySelector('button.tile-body');
   if (body) {
     body.setAttribute('aria-pressed', String(d.status));
-    body.setAttribute('aria-label', d.name + ', ' + title(d.room) + ', ' + readWord(d));
+    body.setAttribute('aria-label', pretty(d.name) + ', ' + title(d.room) + ', ' + readWord(d));
   }
 }
 
@@ -3041,7 +3041,7 @@ function curtainPulls(d) {
     b.type = 'button';
     b.className = 'pull';
     b.textContent = action === 'open' ? 'Open' : 'Close';
-    b.setAttribute('aria-label', (action === 'open' ? 'Open ' : 'Close ') + d.name);
+    b.setAttribute('aria-label', (action === 'open' ? 'Open ' : 'Close ') + pretty(d.name));
     b.onclick = async () => {
       b.classList.add('working');
       try {
@@ -3847,7 +3847,7 @@ function drawNudges() {
     row.querySelector('.said').innerHTML =
       '<b></b> <i>in</i> <b></b> <i>has been on ' + hrs + '</i>';
     const [what, where] = row.querySelectorAll('.said b');
-    what.textContent = n.name;
+    what.textContent = pretty(n.name);
     where.textContent = title(n.room);
 
     const off = document.createElement('button');
