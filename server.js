@@ -1591,6 +1591,23 @@ const HTML = /* html */ `<!doctype html>
     --tile-h: clamp(146px, 20vh, 182px);
     --lamp: var(--warm);
     --glow: 0;
+
+    /* The specular edge that makes a pane read as glass rather than as a tinted
+       box: bright where the light falls, almost gone across the middle, picking
+       up again where the surface curves away. Uneven on purpose — an even
+       border reads as a stroke, not as a lit edge. */
+    --rim: linear-gradient(145deg,
+      rgba(255,240,218,.58) 0%,
+      rgba(255,240,218,.14) 20%,
+      rgba(255,240,218,.03) 46%,
+      rgba(255,240,218,.10) 72%,
+      rgba(255,240,218,.38) 100%);
+    --rim-lit: linear-gradient(145deg,
+      rgba(255,244,226,.85) 0%,
+      rgba(255,226,180,.26) 22%,
+      rgba(255,226,180,.06) 50%,
+      rgba(255,226,180,.20) 76%,
+      rgba(255,236,205,.62) 100%);
   }
 
   * { box-sizing: border-box; }
@@ -1611,15 +1628,20 @@ const HTML = /* html */ `<!doctype html>
   .spill {
     position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background:
-      /* two lamps' worth of standing warmth, so the surface is never flat */
-      radial-gradient(88% 66% at 10% -12%, rgba(255,232,196,.11) 0%, transparent 62%),
-      radial-gradient(64% 48% at 94% 2%,  rgba(255,214,170,.06) 0%, transparent 60%),
-      /* the house's own light, rising from the foot of the room */
-      radial-gradient(132% 82% at 50% 122%,
-        color-mix(in oklab, var(--lamp) calc(var(--glow) * 42%), transparent) 0%, transparent 76%),
-      radial-gradient(78% 56% at 86% 110%,
-        color-mix(in oklab, var(--lamp) calc(var(--glow) * 22%), transparent) 0%, transparent 68%),
-      linear-gradient(180deg, rgba(255,250,242,.03) 0%, transparent 42%, rgba(0,0,0,.24) 100%);
+      /* Standing warmth, well off-centre, so no two panes sit over the same
+         tone — glass only reads as glass when what is behind it varies. */
+      radial-gradient(74% 52% at 8% -14%,  rgba(255,236,203,.13) 0%, transparent 64%),
+      radial-gradient(52% 42% at 96% 4%,   rgba(255,216,172,.08) 0%, transparent 62%),
+      radial-gradient(46% 38% at 62% 30%,  rgba(255,228,190,.045) 0%, transparent 70%),
+      /* The house's own light, rising from the foot of the room. This is the
+         part that moves: brighter and warmer as more of the house comes on. */
+      radial-gradient(120% 78% at 50% 124%,
+        color-mix(in oklab, var(--lamp) calc(var(--glow) * 58%), transparent) 0%, transparent 74%),
+      radial-gradient(70% 52% at 84% 112%,
+        color-mix(in oklab, var(--lamp) calc(var(--glow) * 34%), transparent) 0%, transparent 66%),
+      radial-gradient(58% 46% at 14% 104%,
+        color-mix(in oklab, var(--lamp) calc(var(--glow) * 22%), transparent) 0%, transparent 64%),
+      linear-gradient(180deg, rgba(255,250,242,.035) 0%, transparent 38%, rgba(0,0,0,.34) 100%);
     transition: background 1.2s ease;
   }
 
@@ -1649,7 +1671,8 @@ const HTML = /* html */ `<!doctype html>
     display: none; flex: 0 0 auto; width: 38px; height: 38px; padding: 0; cursor: pointer;
     place-items: center; border-radius: 11px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
-    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
+    backdrop-filter: blur(38px) saturate(142%);
+    -webkit-backdrop-filter: blur(38px) saturate(142%);
   }
   .seek-toggle svg { width: 16px; height: 16px; }
   .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
@@ -1800,9 +1823,46 @@ const HTML = /* html */ `<!doctype html>
     position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
     border-radius: 20px; border: 1px solid var(--edge); background: var(--pane);
     backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
-    box-shadow: inset 0 1px 0 var(--lip), var(--cast);
+    box-shadow: inset 0 1px 0 var(--lip),
+                inset 0 -18px 26px -26px rgba(0,0,0,.55),
+                var(--cast);
     transition: border-color .25s, background .25s, transform .18s, box-shadow .3s;
   }
+  /* ── the lit edge ──────────────────────────────────────────────────────
+     A one-pixel gradient laid in the border box and masked out of the middle,
+     so it draws only the rim. This is what separates a pane of glass from a
+     rounded rectangle with a border: the edge catches light unevenly and the
+     face stays clear. Guarded, because without mask-composite the mask does
+     not cut and the gradient would flood the whole surface. */
+  @supports (mask-composite: exclude) or (-webkit-mask-composite: xor) {
+    .tile::after, .cue::after, .tab::after, .sheet::after,
+    .timerpop::after, .quick button::after, .key::after {
+      content: ''; position: absolute; inset: 0; z-index: 3;
+      border-radius: inherit; padding: 1px; pointer-events: none;
+      background: var(--rim);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask-composite: exclude;
+      transition: background .45s ease, opacity .45s ease;
+    }
+    /* Only what is lit or chosen catches the light along its edge — in the
+       reference exactly one row has a rim and the rest have none. Here that
+       rule does double duty: it is also how the page says a lamp is on, so an
+       unlit pane stays a quiet sheet of glass and recedes. */
+    .tile::after { opacity: .3; }
+    .tile.on::after { opacity: 1; background: var(--rim-lit); }
+    .tab::after { opacity: 0; }
+    .tab.here::after, .tab.awake::after { opacity: 1; }
+    .tab.here::after { background: var(--rim-lit); }
+    .cue::after { opacity: .38; }
+    .cue:hover::after, .cue.firing::after { opacity: 1; }
+    .key::after { opacity: 0; }
+    .key.on::after { opacity: 1; background: var(--rim-lit); }
+    .quick button::after { opacity: .4; }
+    .quick button.on::after { opacity: 1; background: var(--rim-lit); }
+  }
+
   .tile::before {
     content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
     border-radius: inherit; background: var(--sheen);
@@ -1815,10 +1875,17 @@ const HTML = /* html */ `<!doctype html>
     background: rgba(255,213,160,.085);
     border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
-      inset 0 1px 0 color-mix(in oklab, var(--tint) calc(var(--lit) * 34%), var(--glass-hi)),
-      inset 0 -40px 60px -34px color-mix(in oklab, var(--tint) calc(var(--lit) * 75%), transparent),
-      0 0 calc(20px + var(--lit) * 44px) calc(var(--lit) * -4px)
-        color-mix(in oklab, var(--tint) calc(var(--lit) * 40%), transparent),
+      /* the lit edge itself */
+      inset 0 1px 0 color-mix(in oklab, var(--tint) calc(var(--lit) * 42%), var(--glass-hi)),
+      /* the pool of light standing in the bottom of the pane */
+      inset 0 -44px 64px -32px color-mix(in oklab, var(--tint) calc(var(--lit) * 88%), transparent),
+      /* a tight halo hugging the glass, then a wide one thrown onto the page —
+         two falloffs rather than one, which is what a real lamp does and what
+         a single blur radius can never look like */
+      0 0 calc(10px + var(--lit) * 18px) calc(var(--lit) * -2px)
+        color-mix(in oklab, var(--tint) calc(var(--lit) * 46%), transparent),
+      0 0 calc(30px + var(--lit) * 78px) calc(var(--lit) * 2px)
+        color-mix(in oklab, var(--tint) calc(var(--lit) * 30%), transparent),
       var(--cast);
   }
   .tile.busy { opacity: .5; }
@@ -2404,6 +2471,7 @@ const HTML = /* html */ `<!doctype html>
         <div class="legend">Cues</div>
         <div id="cues"></div>
         <button class="newcue" id="newcue" type="button">+ Create a cue</button>
+      </div>
       <div class="index-sec" id="sechouse">
         <div class="legend">The house itself</div>
         <div class="settings-row">

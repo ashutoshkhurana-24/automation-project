@@ -83,6 +83,10 @@ Because the frontend is inside a JS template literal: `${...}` interpolates at s
 
 Devices are classed as light / fan / curtain / climate / screen, and each class gets a control shaped like the object — a rocker that throws, a rotor that turns, curtain panels that part, a cold wash, a lit screen — with its own emission colour. Controls are strictly honest about what the hub can do: only genuinely dimmable and tunable lights get sliders. The palette is committed to dark; the whole design rests on devices emitting light.
 
+**Liquid glass, and why it needs the backdrop.** The panes read as glass because of three things together, not the blur alone: a heavy `backdrop-filter` (blur 38 / saturate 142), a **specular rim** — a 1px gradient laid in the border box and masked out of the middle with `mask-composite: exclude`, bright at the top-left and almost gone across the middle — and a backdrop worth bending. That last one is the part that is easy to lose: glass over a flat field shows nothing, so `.spill` carries structured warmth *and* the house's own light (`--glow`, `--lamp`, set from how much is lit and how warm it is). Raising the backdrop too far washes the page out and unlit rooms stop receding — the first attempt at this added `brightness(1.06)` and had to come straight back out.
+
+**The rim is a signal, not a decoration.** Only a lit tile, the room you are in, or a chosen control gets the bright rim (`--rim-lit`); everything else sits at low opacity. That is lifted from the reference, where exactly one row is highlighted and the rest have none, and here it does double duty — it is also how the page says a lamp is on, so the light-first design survives the glass. A lit tile then throws **two** halos, a tight one hugging the pane and a wide one on the page, because a single blur radius never looks like a lamp.
+
 Two CSS traps already hit here: shorthand `padding` on `.tools` silently wiped `.wrap`'s side padding, and a `-100vw` full-bleed trick widened the document into a horizontal scroll. Prefer longhands and a full-width wrapper.
 
 ## Working against the live hub
