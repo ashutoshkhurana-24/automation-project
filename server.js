@@ -1574,11 +1574,11 @@ const HTML = /* html */ `<!doctype html>
   :root {
     /* Warm charcoal, no blue anywhere in the greys. The interface is greyscale;
        the only colour on the page is the light a lamp is actually making. */
-    --base:   #35271b;
-    --raise:  #43331f;
-    --ink:    #f9efe0;
-    --soft:   #c6ac89;
-    --faint:  #b0956b;      /* lifted: on the deeper base, the old value fell under 4:1 */
+    --base:   #12151a;
+    --raise:  #1b2027;
+    --ink:    #f2f5f8;
+    --soft:   #b6bec8;
+    --faint:  #8a939e;      /* lifted: on the deeper base, the old value fell under 4:1 */
 
     /* Lamp colour, at full strength now: a tungsten bulb is genuinely amber.
        Cool stays a muted blue-grey — it is the contrast that carries meaning. */
@@ -1586,17 +1586,17 @@ const HTML = /* html */ `<!doctype html>
     /* The cool end of a tunable lamp, kept inside the warm family: pale
        champagne rather than blue-grey, which read as a hole in a bronze page.
        Warm against cool is still obvious — deep amber against pale gold. */
-    --cool:   #ecd9b4;
-    --neutral:#e0c69c;      /* bronze: a fan or a curtain, lit but not glowing */
-    --clay:   #d97158;      /* the one alarming colour, used almost never */
+    --cool:   #cfe2f2;
+    --neutral:#c9d3dd;      /* bronze: a fan or a curtain, lit but not glowing */
+    --clay:   #e8705a;      /* the one alarming colour, used almost never */
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
-    --pane:      rgba(26,19,13,.34);
-    --pane-up:   rgba(32,23,15,.46);
-    --edge:      rgba(255,226,190,.11);
-    --edge-up:   rgba(255,226,190,.20);
-    --lip:       rgba(255,213,160,.10);
-    --sheen: linear-gradient(152deg, rgba(255,213,160,.055) 0%, rgba(255,213,160,.014) 34%, transparent 62%);
+    --pane:      rgba(9,12,17,.34);
+    --pane-up:   rgba(14,18,25,.46);
+    --edge:      rgba(255,255,255,.13);
+    --edge-up:   rgba(255,255,255,.24);
+    --lip:       rgba(255,255,255,.13);
+    --sheen: linear-gradient(152deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,.018) 34%, transparent 62%);
     --cast: 0 14px 34px -20px rgba(0,0,0,.7);
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1610,17 +1610,17 @@ const HTML = /* html */ `<!doctype html>
        up again where the surface curves away. Uneven on purpose — an even
        border reads as a stroke, not as a lit edge. */
     --rim: linear-gradient(145deg,
-      rgba(255,240,218,.58) 0%,
-      rgba(255,240,218,.14) 20%,
-      rgba(255,240,218,.03) 46%,
-      rgba(255,240,218,.10) 72%,
-      rgba(255,240,218,.38) 100%);
+      rgba(255,255,255,.52) 0%,
+      rgba(255,255,255,.13) 20%,
+      rgba(255,255,255,.03) 46%,
+      rgba(255,255,255,.09) 72%,
+      rgba(255,255,255,.34) 100%);
     --rim-lit: linear-gradient(145deg,
-      rgba(255,244,226,.85) 0%,
-      rgba(255,226,180,.26) 22%,
-      rgba(255,226,180,.06) 50%,
-      rgba(255,226,180,.20) 76%,
-      rgba(255,236,205,.62) 100%);
+      rgba(255,252,246,.88) 0%,
+      rgba(255,236,206,.28) 22%,
+      rgba(255,236,206,.07) 50%,
+      rgba(255,236,206,.22) 76%,
+      rgba(255,246,230,.66) 100%);
   }
 
   * { box-sizing: border-box; }
@@ -1649,12 +1649,12 @@ const HTML = /* html */ `<!doctype html>
        structure to bend even before a picture is dropped in. */
     background-image:
       url('/bg.jpg'),
-      radial-gradient(58% 44% at 12% 6%,   rgba(255,214,164,.28) 0%, transparent 68%),
-      radial-gradient(46% 40% at 88% 88%,  rgba(255,186,116,.24) 0%, transparent 66%),
-      linear-gradient(102deg, transparent 10%, rgba(255,226,186,.05) 13%, transparent 17%),
-      linear-gradient(96deg,  transparent 46%, rgba(255,226,186,.07) 52%, transparent 58%),
-      linear-gradient(88deg,  transparent 78%, rgba(255,226,186,.04) 82%, transparent 86%),
-      radial-gradient(120% 100% at 50% 50%, #3a2c1e 0%, #241a12 62%, #160f0a 100%);
+      radial-gradient(58% 44% at 12% 6%,   rgba(196,216,238,.22) 0%, transparent 68%),
+      radial-gradient(46% 40% at 88% 88%,  rgba(176,200,226,.18) 0%, transparent 66%),
+      linear-gradient(102deg, transparent 10%, rgba(226,238,250,.05) 13%, transparent 17%),
+      linear-gradient(96deg,  transparent 46%, rgba(226,238,250,.06) 52%, transparent 58%),
+      linear-gradient(88deg,  transparent 78%, rgba(226,238,250,.04) 82%, transparent 86%),
+      radial-gradient(120% 100% at 50% 50%, #26303b 0%, #161c24 62%, #0c1014 100%);
     background-size: cover, auto, auto, auto, auto, auto, auto;
     background-position: center;
     background-repeat: no-repeat;
@@ -1681,9 +1681,9 @@ const HTML = /* html */ `<!doctype html>
     background:
       /* Standing warmth, well off-centre, so no two panes sit over the same
          tone — glass only reads as glass when what is behind it varies. */
-      radial-gradient(74% 52% at 8% -14%,  rgba(255,236,203,.13) 0%, transparent 64%),
-      radial-gradient(52% 42% at 96% 4%,   rgba(255,216,172,.08) 0%, transparent 62%),
-      radial-gradient(46% 38% at 62% 30%,  rgba(255,228,190,.045) 0%, transparent 70%),
+      radial-gradient(74% 52% at 8% -14%,  rgba(214,230,246,.10) 0%, transparent 64%),
+      radial-gradient(52% 42% at 96% 4%,   rgba(206,224,244,.06) 0%, transparent 62%),
+      radial-gradient(46% 38% at 62% 30%,  rgba(220,234,248,.035) 0%, transparent 70%),
       /* The house's own light, rising from the foot of the room. This is the
          part that moves: brighter and warmer as more of the house comes on. */
       radial-gradient(120% 78% at 50% 124%,
@@ -1692,7 +1692,7 @@ const HTML = /* html */ `<!doctype html>
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 34%), transparent) 0%, transparent 66%),
       radial-gradient(58% 46% at 14% 104%,
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 22%), transparent) 0%, transparent 64%),
-      linear-gradient(180deg, rgba(255,250,242,.035) 0%, transparent 38%, rgba(0,0,0,.34) 100%);
+      linear-gradient(180deg, rgba(244,248,252,.03) 0%, transparent 38%, rgba(0,0,0,.36) 100%);
     transition: background 1.2s ease;
   }
 
@@ -1809,7 +1809,7 @@ const HTML = /* html */ `<!doctype html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cue-swatch { display: block; height: 2px; margin-top: 9px; border-radius: 1px;
-                background: rgba(255,213,160,.07); }
+                background: rgba(255,255,255,.08); }
   .cue-swatch i { display: block; height: 100%; border-radius: 1px; opacity: .85; }
   .cue-edit {
     position: absolute; top: 9px; right: 9px; width: 22px; height: 22px; padding: 0;
@@ -1819,7 +1819,7 @@ const HTML = /* html */ `<!doctype html>
   }
   .cue-edit svg { width: 13px; height: 13px; }
   .cue-wrap:hover .cue-edit, .cue-edit:focus-visible { opacity: 1; }
-  .cue-edit:hover { color: var(--ink); background: rgba(255,213,160,.07); }
+  .cue-edit:hover { color: var(--ink); background: rgba(255,255,255,.08); }
   .cue-edit:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 1px; }
 
   .newcue {
@@ -1856,10 +1856,10 @@ const HTML = /* html */ `<!doctype html>
     display: grid; gap: clamp(12px, 1.4vw, 18px); align-content: start;
     grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
     grid-auto-rows: min-content;
-    scrollbar-width: thin; scrollbar-color: rgba(255,213,160,.12) transparent;
+    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent;
   }
   .tiles::-webkit-scrollbar { width: 8px; }
-  .tiles::-webkit-scrollbar-thumb { background: rgba(255,213,160,.1); border-radius: 4px; }
+  .tiles::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
   .tiles::-webkit-scrollbar-track { background: transparent; }
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--faint); margin: 16px 0 -4px; }
   .group-label:first-child { margin-top: 0; }
@@ -1923,7 +1923,7 @@ const HTML = /* html */ `<!doctype html>
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
   .tile.on {
-    background: rgba(42,29,17,.34);
+    background: rgba(16,20,27,.34);
     border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
       /* the lit edge itself */
@@ -1951,30 +1951,22 @@ const HTML = /* html */ `<!doctype html>
   .tile.busy { opacity: .5; }
   .tile.refused { border-color: var(--clay); }
 
+  /* The light in a pane is one gradient across the whole face, not a box with
+     a height. It used to be a sized element with a separate bloom layered above
+     it, and where those two met there was a seam — a hard horizontal line
+     straight across the card, most obvious on a room that was only part lit.
+     Driving the stops from --fill instead means the light simply rises and
+     fades out; there is no element edge left to show. */
   .tile-fill {
-    position: absolute; left: 0; right: 0; bottom: 0; height: 0%; z-index: 0; pointer-events: none;
+    --fill: 0;
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
     background: linear-gradient(0deg,
-      color-mix(in oklab, var(--tint) 40%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 15%, transparent) 68%,
-      transparent 100%);
-    transition: height .5s cubic-bezier(.3,.8,.3,1), background .45s;
-  }
-  /* Light does not stop at an edge. This is the bloom where the lamp's own
-     brightness spills off the top of the fill.
-
-     It is a gradient, not a blurred ellipse. A blurred shape is still a shape:
-     it overhung the tile, the tile's own overflow clip cut it, and the cut read
-     as a hard translucent edge with the ellipse visible inside it. A radial
-     gradient fades to nothing by itself, stays inside the tile, and so has no
-     edge to clip. */
-  .tile-fill::after {
-    content: ''; position: absolute; left: 0; right: 0; top: -58px; height: 58px;
-    pointer-events: none;
-    background: radial-gradient(72% 118% at 50% 100%,
-      color-mix(in oklab, var(--tint) calc(var(--lit) * 55%), transparent) 0%,
-      color-mix(in oklab, var(--tint) calc(var(--lit) * 22%), transparent) 38%,
-      transparent 72%);
-    transition: background .45s;
+      color-mix(in oklab, var(--tint) 46%, transparent) 0%,
+      color-mix(in oklab, var(--tint) 32%, transparent) calc(var(--fill) * 44%),
+      color-mix(in oklab, var(--tint) 15%, transparent) calc(var(--fill) * 78%),
+      color-mix(in oklab, var(--tint)  6%, transparent) calc(var(--fill) * 100% + 6%),
+      transparent calc(var(--fill) * 100% + 34%));
+    transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }
   .tile:not(.on) .tile-fill::after { background: none; }
@@ -2137,7 +2129,7 @@ const HTML = /* html */ `<!doctype html>
                  font-size: 13px; color: var(--faint); }
   .sheet-facts b { color: var(--soft); font-weight: 500; }
   .sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 18px;
-                scrollbar-width: thin; scrollbar-color: rgba(255,213,160,.12) transparent; }
+                scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent; }
   .sheet-room { margin: 18px 0 4px; font-size: 12.5px; color: var(--faint); }
   .sheet-step { border-bottom: 1px solid rgba(255,213,160,.05); }
   .sheet-row {
@@ -2306,7 +2298,7 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; z-index: 46; right: 18px; bottom: 18px;
     width: min(330px, calc(100vw - 36px));
     padding: 15px; border-radius: 16px;
-    background: rgba(53,39,27,.96); border: 1px solid var(--edge-up);
+    background: rgba(14,17,23,.92); border: 1px solid var(--edge-up);
     backdrop-filter: blur(22px) saturate(1.25);
     -webkit-backdrop-filter: blur(22px) saturate(1.25);
     box-shadow: var(--cast);
@@ -2370,7 +2362,7 @@ const HTML = /* html */ `<!doctype html>
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
       padding-top: 9px; padding-right: 14px; padding-left: 14px;
       padding-bottom: calc(9px + env(safe-area-inset-bottom));
-      background: rgba(53,39,27,.88); border-top: 1px solid var(--edge);
+      background: rgba(12,15,20,.82); border-top: 1px solid var(--edge);
       backdrop-filter: blur(22px) saturate(1.25);
       -webkit-backdrop-filter: blur(22px) saturate(1.25);
     }
@@ -2982,7 +2974,7 @@ function roomTileState(tile, room) {
   const load = output(items);
   // A room with one lamp on glows faintly; a room lit throughout glows properly.
   tile.style.setProperty('--lit', Math.min(1, Math.sqrt(load * 1.7)).toFixed(3));
-  tile.querySelector('.tile-fill').style.height = (load * 100).toFixed(1) + '%';
+  tile.querySelector('.tile-fill').style.setProperty('--fill', load.toFixed(3));
   tile.querySelector('.tile-read').textContent =
     on.length ? on.length + ' of ' + items.length + ' on' : 'all ' + items.length + ' off';
   const key = tile.querySelector('.key');
@@ -3079,7 +3071,7 @@ function paintTile(tile, d) {
   const level = d.status ? (d.is_dimmable ? Math.max(d.level, 8) : 100) : 0;
   // How much light this circuit is making drives the glow, not just the fill.
   tile.style.setProperty('--lit', (level / 100).toFixed(3));
-  tile.querySelector('.tile-fill').style.height = level + '%';
+  tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
   tile.querySelector('.tile-read').textContent = readWord(d);
 
   for (const input of tile.querySelectorAll('.slider')) {
