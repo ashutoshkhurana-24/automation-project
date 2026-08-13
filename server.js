@@ -555,6 +555,19 @@ app.get('/api/stream', (req, res) => {
  * which is exactly the failure systemd cannot see. deploy/watchdog.sh restarts
  * the service on a 503.
  */
+/**
+ * The backdrop photograph. Everything on this page is glass, and glass over a
+ * flat field is just a tinted box — the picture is what the panes bend, so it
+ * is load-bearing rather than decoration. Drop a file at data/background.jpg
+ * and the whole app sits on it; with no file the page falls back to the painted
+ * gradient and still works.
+ */
+const BG_PATH = path.join(__dirname, 'data', 'background.jpg');
+app.get('/bg.jpg', (req, res) => {
+  if (!fs.existsSync(BG_PATH)) return res.status(404).end();
+  res.type('jpeg').set('Cache-Control', 'public, max-age=86400').sendFile(BG_PATH);
+});
+
 app.get('/api/health', (req, res) => {
   const now = Date.now();
   const age = hubSync.at ? now - hubSync.at : null;
@@ -1578,10 +1591,10 @@ const HTML = /* html */ `<!doctype html>
     --clay:   #d97158;      /* the one alarming colour, used almost never */
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
-    --pane:      rgba(255,213,160,.055);
-    --pane-up:   rgba(255,213,160,.085);
-    --edge:      rgba(255,213,160,.09);
-    --edge-up:   rgba(255,213,160,.17);
+    --pane:      rgba(28,20,14,.46);
+    --pane-up:   rgba(34,25,17,.56);
+    --edge:      rgba(255,226,190,.11);
+    --edge-up:   rgba(255,226,190,.20);
     --lip:       rgba(255,213,160,.10);
     --sheen: linear-gradient(152deg, rgba(255,213,160,.055) 0%, rgba(255,213,160,.014) 34%, transparent 62%);
     --cast: 0 14px 34px -20px rgba(0,0,0,.7);
@@ -1625,6 +1638,39 @@ const HTML = /* html */ `<!doctype html>
 
   /* Glass needs something behind it to bend. A slow tonal shift across the room
      gives the panes depth without adding a single visible edge. */
+  /* The photograph itself. Held still while the page scrolls, so the glass
+     slides over it rather than dragging it along. */
+  .photo {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    /* The photograph sits on top; the painted scene below it is what shows if
+       there is no file yet, and it is built to be worth looking at on its own —
+       a warm wash from a window, a lamp pool low and right, and soft vertical
+       masses standing in for curtains and a doorway, so the glass always has
+       structure to bend even before a picture is dropped in. */
+    background-image:
+      url('/bg.jpg'),
+      radial-gradient(58% 44% at 12% 6%,   rgba(255,214,164,.28) 0%, transparent 68%),
+      radial-gradient(46% 40% at 88% 88%,  rgba(255,186,116,.24) 0%, transparent 66%),
+      linear-gradient(102deg, transparent 10%, rgba(255,226,186,.05) 13%, transparent 17%),
+      linear-gradient(96deg,  transparent 46%, rgba(255,226,186,.07) 52%, transparent 58%),
+      linear-gradient(88deg,  transparent 78%, rgba(255,226,186,.04) 82%, transparent 86%),
+      radial-gradient(120% 100% at 50% 50%, #3a2c1e 0%, #241a12 62%, #160f0a 100%);
+    background-size: cover, auto, auto, auto, auto, auto, auto;
+    background-position: center;
+    background-repeat: no-repeat;
+    /* Held well back: white type must stay legible over any photograph, and the
+       lamps must remain the brightest thing on the screen. */
+    filter: saturate(.78) brightness(.62) contrast(1.06);
+    transform: scale(1.04);
+  }
+  /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
+  .photo::after {
+    content: ''; position: absolute; inset: 0;
+    background:
+      radial-gradient(120% 90% at 50% 0%, transparent 30%, rgba(0,0,0,.42) 100%),
+      linear-gradient(180deg, rgba(0,0,0,.30) 0%, transparent 26%, rgba(0,0,0,.46) 100%);
+  }
+
   .spill {
     position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background:
@@ -1671,8 +1717,8 @@ const HTML = /* html */ `<!doctype html>
     display: none; flex: 0 0 auto; width: 38px; height: 38px; padding: 0; cursor: pointer;
     place-items: center; border-radius: 11px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
-    backdrop-filter: blur(38px) saturate(142%);
-    -webkit-backdrop-filter: blur(38px) saturate(142%);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
   }
   .seek-toggle svg { width: 16px; height: 16px; }
   .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
@@ -1872,7 +1918,7 @@ const HTML = /* html */ `<!doctype html>
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
   .tile.on {
-    background: rgba(255,213,160,.085);
+    background: rgba(44,31,19,.44);
     border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
       /* the lit edge itself */
@@ -1888,6 +1934,15 @@ const HTML = /* html */ `<!doctype html>
         color-mix(in oklab, var(--tint) calc(var(--lit) * 30%), transparent),
       var(--cast);
   }
+  /* ── bento ───────────────────────────────────────────────────────────
+     Cards are not all one size, and the size is not arbitrary: a circuit takes
+     the room its controls actually need. A tunable lamp carries two sliders and
+     spans the row; a dimmable one is taller; a plain switch stays a small
+     square. Room cards stay uniform — they are navigation, and making the lit
+     ones wide meant a screen held one and a half rooms instead of four. */
+  .tile.wide { grid-column: span 2; }
+  .tile.tall { height: calc(var(--tile-h) + 58px); }
+
   .tile.busy { opacity: .5; }
   .tile.refused { border-color: var(--clay); }
 
@@ -2441,6 +2496,7 @@ const HTML = /* html */ `<!doctype html>
 </style>
 </head>
 <body>
+<div class="photo"></div>
 <div class="spill"></div>
 
 <div class="shell">
@@ -2936,7 +2992,11 @@ function roomTileState(tile, room) {
 function circuitTile(d) {
   const kind = kindOf(d);
   const tile = document.createElement('div');
-  tile.className = 'tile enter ' + kind + (d.is_dimmable ? ' dims' : '') + (d.is_tunable ? ' tunes' : '');
+  // Width follows what the circuit can actually do: two sliders need room, a
+  // plain switch does not.
+  const roomy = d.is_tunable || d.is_ac || d.is_curtain;
+  tile.className = 'tile enter ' + kind + (d.is_dimmable ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
+    + (roomy ? ' wide' : '') + (d.is_dimmable && !d.is_tunable ? ' tall' : '');
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
   // turning on a lamp, so it lives in the tooltip.
