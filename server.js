@@ -576,6 +576,50 @@ app.get('/icon-:size.png', (req, res) => {
   res.type('png').set('Cache-Control', 'public, max-age=604800').sendFile(file);
 });
 
+/**
+ * A service worker, which Chrome insists on before it will offer to install the
+ * app. It is written to be conservative about a dashboard: the shell and the
+ * backdrop are cached so a cold open is instant, but anything under /api is
+ * always fetched, because a cached reading of the house is a lie about the
+ * house. The page itself is network-first so a deploy is picked up at once,
+ * falling back to cache only when the hub is unreachable.
+ */
+const SW = `
+const SHELL = 'neo-shell-v1';
+const STATIC = ['/icon-180.png', '/icon-192.png', '/icon-512.png', '/bg.jpg', '/manifest.webmanifest'];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(STATIC)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k !== SHELL).map((k) => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+
+self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+
+  // Never serve the house from a cache — a stale reading is worse than none.
+  if (url.pathname.startsWith('/api/')) return;
+
+  if (url.pathname === '/') {
+    e.respondWith(fetch(e.request).catch(() => caches.match('/')));
+    return;
+  }
+  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+    if (res.ok) { const copy = res.clone(); caches.open(SHELL).then((c) => c.put(e.request, copy)); }
+    return res;
+  })));
+});
+`;
+
+app.get('/sw.js', (req, res) => {
+  res.type('application/javascript').set('Cache-Control', 'no-cache').send(SW);
+});
+
 app.get('/manifest.webmanifest', (req, res) => {
   res.type('application/manifest+json').json({
     name: "Pravita's Apartment",
@@ -4486,6 +4530,12 @@ document.addEventListener('click', (e) => {
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
 })();
+
+// Chrome will not offer to install without one of these. It only registers in a
+// secure context, so on plain http over the LAN this is simply skipped.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => { /* not fatal */ });
+}
 
 setInterval(loadAuto, 60000);
 loadAuto();
