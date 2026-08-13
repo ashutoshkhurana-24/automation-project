@@ -568,6 +568,29 @@ app.get('/bg.jpg', (req, res) => {
   res.type('jpeg').set('Cache-Control', 'public, max-age=86400').sendFile(BG_PATH);
 });
 
+// The home-screen icon, and the manifest that makes this installable. Generated
+// by tools/make-icon.js rather than checked in as an opaque binary.
+app.get('/icon-:size.png', (req, res) => {
+  const file = path.join(__dirname, 'data', `icon-${req.params.size}.png`);
+  if (!/^(180|192|512)$/.test(req.params.size) || !fs.existsSync(file)) return res.status(404).end();
+  res.type('png').set('Cache-Control', 'public, max-age=604800').sendFile(file);
+});
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').json({
+    name: "Pravita's Apartment",
+    short_name: 'The House',
+    start_url: '/',
+    display: 'standalone',
+    background_color: '#12151a',
+    theme_color: '#12151a',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ],
+  });
+});
+
 app.get('/api/health', (req, res) => {
   const now = Date.now();
   const age = hubSync.at ? now - hubSync.at : null;
@@ -1559,10 +1582,13 @@ const HTML = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#35271b">
+<meta name="theme-color" content="#12151a">
 <!-- Saved to a phone's home screen this opens without browser chrome, which is
      the only way the fixed, non-scrolling layout works properly on a phone. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Pravita's">
@@ -1801,11 +1827,6 @@ const HTML = /* html */ `<!doctype html>
   @keyframes breathe { 50% { opacity: .55; } }
   .cue-note {
     display: block; margin-top: 2px; font-size: 12px; color: var(--faint);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .cue-api {
-    display: block; margin-top: 7px; font-size: 10.5px; letter-spacing: .02em;
-    color: var(--faint); opacity: .75; font-family: var(--mono, ui-monospace, monospace);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cue-swatch { display: block; height: 2px; margin-top: 9px; border-radius: 1px;
@@ -2348,11 +2369,104 @@ const HTML = /* html */ `<!doctype html>
   /* The thumb bar is phone-only; a wide screen has the index down the left. */
   .quick { display: none; }
 
+  /* ══ desktop ═══════════════════════════════════════════════════════════
+     On a wide screen there is room to stop making a document and start making
+     a room: the chrome lifts off the page into floating pills, the house gets
+     stated in display type rather than a heading, and the rooms become a bento
+     where the most lit one is the largest. Everything here is scoped to wide
+     screens — the phone layout is deliberately untouched. */
+  @media (min-width: 861px) {
+    .shell {
+      max-width: 1500px;
+      padding-top: 104px; padding-bottom: 104px;
+      gap: 0;
+    }
+
+    /* ── the top pill ─────────────────────────────────────────────────────
+       The bar used to be a solid strip across the top while everything below
+       it floated, which made it read as furniture rather than as part of the
+       same material. It is now a pane like any other, hanging in the middle. */
+    .plate {
+      position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+      z-index: 40; width: auto; max-width: calc(100vw - 48px);
+      padding-top: 10px; padding-right: 14px; padding-bottom: 10px; padding-left: 20px;
+      border-radius: 22px; gap: 18px;
+      background: var(--pane); background-image: var(--sheen);
+      border: 1px solid var(--edge);
+      backdrop-filter: blur(26px) saturate(150%);
+      -webkit-backdrop-filter: blur(26px) saturate(150%);
+      box-shadow: var(--cast);
+    }
+    .plate .stamp h1 { font-size: 14px; }
+    .plate .seek { flex: 0 0 260px; margin-left: 0; }
+
+    /* ── the board ────────────────────────────────────────────────────────
+       A hero column that says what the house is doing, and the field beside it. */
+    .board { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 34px; align-items: start; }
+    .index { display: block; position: static; overflow: visible; }
+
+    /* the house, stated */
+    .hero { display: block; margin-bottom: 26px; }
+    .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+    .hero .say {
+      margin: 10px 0 0; font-weight: 300; letter-spacing: -.03em; line-height: .96;
+      font-size: clamp(40px, 4.4vw, 66px); color: var(--ink);
+    }
+    .hero .say b { font-weight: 400; color: var(--warm); }
+    .hero .say span { display: block; color: var(--soft); font-size: .42em; letter-spacing: -.01em;
+                      margin-top: 14px; line-height: 1.4; font-weight: 400; }
+
+    /* rooms leave the sidebar for a pill along the bottom, the way a room
+       switcher sits under your hand rather than up in a list */
+    #secrooms {
+      position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+      z-index: 40; margin: 0; max-width: calc(100vw - 48px);
+      padding-top: 8px; padding-right: 10px; padding-bottom: 8px; padding-left: 10px;
+      border-radius: 22px;
+      background: var(--pane); background-image: var(--sheen);
+      border: 1px solid var(--edge);
+      backdrop-filter: blur(26px) saturate(150%);
+      -webkit-backdrop-filter: blur(26px) saturate(150%);
+      box-shadow: var(--cast);
+    }
+    #secrooms .legend { display: none; }
+    #secrooms #tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+    #secrooms #tabs::-webkit-scrollbar { display: none; }
+    #secrooms .tab {
+      width: auto; flex: 0 0 auto; margin: 0; white-space: nowrap;
+      padding-top: 9px; padding-right: 15px; padding-bottom: 9px; padding-left: 15px;
+      border-radius: 15px; background: transparent; border-color: transparent;
+    }
+    #secrooms .tab .tab-load { display: none; }
+    #secrooms .tab.here { background: var(--pane-up); border-color: var(--edge-up); }
+
+    /* ── the bento ────────────────────────────────────────────────────────
+       Room cards are not a uniform grid here. There is width to spare, so the
+       room with the most light in it takes a double square and the rest fall in
+       around it — the board then reads at a glance the way the house does. */
+    /* The cue list is as long as you have made it, and the room pill is pinned
+       to the bottom of the window — so the column scrolls inside itself rather
+       than running underneath. */
+    #seccues #cues {
+      max-height: calc(100vh - 500px); min-height: 110px;
+      overflow-y: auto; scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.14) transparent;
+      padding-right: 4px;
+    }
+    #sechouse { margin-top: 14px; }
+
+    .field .tiles { grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .tile.hero-room { grid-column: span 2; grid-row: span 2; height: auto; min-height: 340px; }
+    .tile.hero-room .tile-name { font-size: 22px; }
+    .tile.hero-room .tile-read { font-size: 13.5px; }
+  }
+
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
     body { display: block; min-height: 100%; padding-top: 0; }
     /* Clear the thumb bar so the last tile is never trapped under it. */
     .shell { display: block; max-width: none; padding: 0 16px 104px; }
+    .hero { display: none; }
 
     /* ── the thumb bar ───────────────────────────────────────────────────
        The three things done most often, sitting where a thumb already is
@@ -2516,6 +2630,10 @@ const HTML = /* html */ `<!doctype html>
 
   <main class="board">
     <aside class="index">
+      <div class="hero" id="hero">
+        <p class="greet" id="herogreet"></p>
+        <p class="say" id="herosay"></p>
+      </div>
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
@@ -2745,6 +2863,31 @@ function tick() {
   if (sub) sub.innerHTML = fieldSub();
 }
 
+/* The house, said out loud: the time of day, then what is actually lit. This is
+   the one place the dashboard speaks rather than reports. */
+function drawHero() {
+  const greet = el('#herogreet');
+  if (!greet) return;
+  const h = new Date().getHours();
+  greet.textContent = h < 5 ? 'Late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon'
+    : h < 21 ? 'Good evening' : 'Good night';
+
+  const on = lit(state.devices);
+  const rooms = [...new Set(on.map(d => d.room))];
+  const say = el('#herosay');
+  if (!on.length) {
+    say.innerHTML = 'The house is<br>dark.<span></span>';
+    say.querySelector('span').textContent = state.devices.length + ' circuits, all off.';
+    return;
+  }
+  say.innerHTML = '<b></b> lit<span></span>';
+  say.querySelector('b').textContent = on.length;
+  say.querySelector('span').textContent = rooms.length === 1
+    ? 'in ' + title(rooms[0]) + '.'
+    : 'across ' + rooms.length + ' rooms — ' + rooms.slice(0, 3).map(title).join(', ')
+      + (rooms.length > 3 ? ' and more.' : '.');
+}
+
 function readout() {
   const on = lit(state.devices);
 
@@ -2754,6 +2897,8 @@ function readout() {
   const root = document.documentElement.style;
   root.setProperty('--glow', Math.min(1, Math.sqrt(on.length / 9)).toFixed(3));
   root.setProperty('--lamp', 'color-mix(in oklab, var(--warm) ' + Math.round(warmth) + '%, var(--cool))');
+
+  drawHero();
 
   const s = state.sync || {};
   let when = 'status unread';
@@ -2901,7 +3046,22 @@ function drawField() {
 
 // The house is a board of rooms.
 function fillHouse(stack) {
-  rooms().forEach(room => stack.appendChild(roomTile(room)));
+  // Whichever room is carrying the most light takes the big square. If the
+  // house is dark nothing is promoted — a hero card for an empty room would be
+  // a lie about where to look.
+  const all = rooms();
+  let hero = null, best = 0;
+  for (const room of all) {
+    const load = output(inRoom(room)) * lit(inRoom(room)).length;
+    if (load > best) { best = load; hero = room; }
+  }
+  // the big one leads, so the eye starts where the light is
+  const order = hero ? [hero, ...all.filter(r => r !== hero)] : all;
+  order.forEach(room => {
+    const tile = roomTile(room);
+    if (room === hero) tile.classList.add('hero-room');
+    stack.appendChild(tile);
+  });
 }
 
 // A room is a board of circuits, grouped by what they are.
@@ -3384,11 +3544,8 @@ function drawCues() {
     b.type = 'button';
     b.className = 'cue' + (firing === cue.id ? ' firing' : '');
     b.innerHTML = '<span class="cue-name"></span><span class="cue-note"></span>' +
-                  '<span class="cue-api"></span><span class="cue-swatch"><i></i></span>';
+                  '<span class="cue-swatch"><i></i></span>';
     b.querySelector('.cue-name').textContent = cue.name;
-    // The id is the cue's address for Siri, a widget or cron. Shown here so a
-    // shortcut can be written without going and looking it up.
-    b.querySelector('.cue-api').textContent = cue.id;
     b.querySelector('.cue-note').textContent = cueNote(cue);
     const look = cuePreview(cue);
     const fill = b.querySelector('.cue-swatch i');
