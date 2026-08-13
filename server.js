@@ -1129,39 +1129,83 @@ app.get('/api/cues', (req, res) => {
  * on is recorded — so replaying the scene also switches off what should be off
  * — while rooms that are entirely dark are left out of it altogether.
  */
+/**
+ * A cue's id is its address: shortcuts, Siri and cron all reach it as
+ * /api/cue/<id>/fire, so it is derived once from the name and then never
+ * changes — renaming a cue must not break a shortcut someone already built.
+ * Names are unique case-insensitively, which keeps ids unique and keeps the
+ * spoken name unambiguous.
+ */
+function apiId(name) {
+  const base = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  let id = base || 'cue';
+  for (let n = 2; scenes.some(sc => sc.id === id); n++) id = base + '-' + n;
+  return id;
+}
+
+const nameTaken = (name, exceptId) => scenes.some(sc =>
+  sc.id !== exceptId && sc.name.trim().toLowerCase() === String(name).trim().toLowerCase());
+
+/** Steps as the caller asked for them, checked against the hub this house has. */
+function cleanSteps(raw) {
+  const clean = [];
+  const seen = new Set();
+  for (const step of Array.isArray(raw) ? raw : []) {
+    const id = Number(step?.record_id);
+    const entry = devices.get(id);
+    if (!entry || seen.has(id)) continue;
+    seen.add(id);
+    const on = step.on !== false;
+    const out = { record_id: id, on };
+    if (on && entry.record.is_dimmable === 'true' && step.level != null) {
+      out.level = Math.max(1, Math.min(100, Math.round(Number(step.level) || 0)));
+    }
+    if (on && entry.record.is_tunable === 'true' && step.tune != null) {
+      out.tune = Math.max(0, Math.min(100, Math.round(Number(step.tune) || 0)));
+    }
+    clean.push(out);
+  }
+  return clean;
+}
+
+/** How a cue reads in one phrase: one room by name, or how many rooms. */
+function noteFor(steps) {
+  const rooms = [...new Set(steps.map(st => roomKey(devices.get(st.record_id).room).toLowerCase()))];
+  return rooms.length === 1 ? rooms[0] : rooms.length + ' rooms';
+}
+
 app.post('/api/scenes', (req, res) => {
   const name = String(req.body?.name || '').trim();
-  if (!name) return res.status(400).json({ ok: false, error: 'A scene needs a name' });
+  if (!name) return res.status(400).json({ ok: false, error: 'A cue needs a name' });
   if (name.length > 40) return res.status(400).json({ ok: false, error: 'Keep the name under 40 characters' });
-
-  const all = [...devices.values()];
-  const litRooms = new Set(all.filter(({ record }) => decodeLevel(record.device_status) > 0)
-    .map(({ room }) => roomKey(room)));
-  if (!litRooms.size) {
-    return res.status(400).json({ ok: false, error: 'Nothing is on — set the house how you want it first' });
+  if (nameTaken(name)) {
+    return res.status(409).json({ ok: false, error: 'There is already a cue called ' + name });
   }
 
-  const steps = all
-    .filter(({ room }) => litRooms.has(roomKey(room)))
-    .map(({ record }) => {
+  // Steps are chosen, not snapshotted. Recording whatever happened to be lit
+  // swept in every circuit of every lit room, which is almost never the cue you
+  // meant. `recapture: true` still asks for the old behaviour deliberately.
+  let steps = cleanSteps(req.body?.steps);
+  if (!steps.length && req.body?.recapture) {
+    const all = [...devices.values()];
+    const litRooms = new Set(all.filter(({ record }) => decodeLevel(record.device_status) > 0)
+      .map(({ room }) => roomKey(room)));
+    if (!litRooms.size) {
+      return res.status(400).json({ ok: false, error: 'Nothing is on — set the house how you want it first' });
+    }
+    steps = all.filter(({ room }) => litRooms.has(roomKey(room))).map(({ record }) => {
       const level = decodeLevel(record.device_status);
       const step = { record_id: record.record_id, on: level > 0 };
       if (record.is_dimmable === 'true' && level > 0) step.level = level;
       if (record.is_tunable === 'true' && level > 0) step.tune = decodeLevel(record.device_status_tunable);
       return step;
     });
-
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'scene-' + Date.now();
-  if (scenes.some(sc => sc.id === id)) {
-    return res.status(409).json({ ok: false, error: 'A scene by that name already exists' });
+  }
+  if (!steps.length) {
+    return res.status(400).json({ ok: false, error: 'A cue needs at least one circuit' });
   }
 
-  const rooms = [...litRooms].map(r => r.toLowerCase());
-  const scene = {
-    id, name,
-    note: rooms.length === 1 ? rooms[0] : rooms.length + ' rooms',
-    steps,
-  };
+  const scene = { id: apiId(name), name, note: noteFor(steps), steps };
   scenes.push(scene);
   saveScenes();
   res.json({ ok: true, scene: { ...scene, devices: steps.length } });
@@ -1185,35 +1229,22 @@ app.patch('/api/scenes/:id', (req, res) => {
     if (!Array.isArray(steps)) {
       return res.status(400).json({ ok: false, error: 'steps must be a list' });
     }
-    const clean = [];
-    const seen = new Set();
-    for (const raw of steps) {
-      const id = Number(raw?.record_id);
-      const entry = devices.get(id);
-      if (!entry || seen.has(id)) continue;
-      seen.add(id);
-      const on = raw.on !== false;
-      const step = { record_id: id, on };
-      if (on && entry.record.is_dimmable === 'true' && raw.level != null) {
-        step.level = Math.max(1, Math.min(100, Math.round(Number(raw.level) || 0)));
-      }
-      if (on && entry.record.is_tunable === 'true' && raw.tune != null) {
-        step.tune = Math.max(0, Math.min(100, Math.round(Number(raw.tune) || 0)));
-      }
-      clean.push(step);
-    }
+    const clean = cleanSteps(steps);
     if (!clean.length) {
       return res.status(400).json({ ok: false, error: 'A cue needs at least one circuit' });
     }
     scene.steps = clean;
-    const rooms = [...new Set(clean.map(st => roomKey(devices.get(st.record_id).room).toLowerCase()))];
-    scene.note = rooms.length === 1 ? rooms[0] : rooms.length + ' rooms';
+    scene.note = noteFor(clean);
   }
 
   if (name != null) {
     const next = String(name).trim();
     if (!next) return res.status(400).json({ ok: false, error: 'A scene needs a name' });
     if (next.length > 40) return res.status(400).json({ ok: false, error: 'Keep the name under 40 characters' });
+    // The id stays as it was, so a shortcut built against this cue keeps working.
+    if (nameTaken(next, scene.id)) {
+      return res.status(409).json({ ok: false, error: 'There is already a cue called ' + next });
+    }
     scene.name = next;
   }
 
@@ -1233,8 +1264,7 @@ app.patch('/api/scenes/:id', (req, res) => {
         if (record.is_tunable === 'true' && level > 0) step.tune = decodeLevel(record.device_status_tunable);
         return step;
       });
-    const names = [...litRooms].map(r => r.toLowerCase());
-    scene.note = names.length === 1 ? names[0] : names.length + ' rooms';
+    scene.note = noteFor(scene.steps);
   }
 
   if (name == null && !recapture && steps == null) {
@@ -1699,6 +1729,11 @@ const HTML = /* html */ `<!doctype html>
     display: block; margin-top: 2px; font-size: 12px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .cue-api {
+    display: block; margin-top: 7px; font-size: 10.5px; letter-spacing: .02em;
+    color: var(--faint); opacity: .75; font-family: var(--mono, ui-monospace, monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .cue-swatch { display: block; height: 2px; margin-top: 9px; border-radius: 1px;
                 background: rgba(255,213,160,.07); }
   .cue-swatch i { display: block; height: 100%; border-radius: 1px; opacity: .85; }
@@ -1720,25 +1755,6 @@ const HTML = /* html */ `<!doctype html>
   }
   .newcue:hover { color: var(--ink); border-color: var(--edge-up); }
   .newcue:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
-  .maker { display: grid; gap: 8px; margin-top: 8px; }
-  .maker[hidden] { display: none; }
-  .maker input {
-    width: 100%; padding: 9px 12px; color: var(--ink);
-    background: var(--pane); border: 1px solid var(--edge); border-radius: 10px;
-    font: 400 13px/1 var(--sans); outline: none;
-  }
-  .maker input:focus { border-color: var(--edge-up); }
-  .maker-row { display: flex; gap: 6px; }
-  .maker button {
-    flex: 1; padding: 8px; cursor: pointer; border-radius: 9px;
-    background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
-    font: 500 12.5px/1 var(--sans); transition: color .18s, background .18s;
-  }
-  .maker button.go { background: var(--ink); border-color: var(--ink); color: var(--base); }
-  .maker button:hover { color: var(--ink); background: var(--pane-up); }
-  .maker button.go:hover { color: var(--base); background: #fff; }
-  .maker button:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
-  .maker p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--faint); }
 
   /* ── the field ───────────────────────────────────────────────────────── */
   .field { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -1976,6 +1992,12 @@ const HTML = /* html */ `<!doctype html>
   @keyframes lift { from { opacity: 0; transform: translateY(12px) scale(.985); } }
   .sheet-head { padding: 22px 24px 18px; border-bottom: 1px solid var(--edge); }
   .sheet-eyebrow { font-size: 12px; color: var(--faint); }
+  /* The cue's address for Siri and cron. Selectable, because it gets copied. */
+  .sheet-api {
+    margin: 8px 0 0; font-size: 11px; letter-spacing: .02em; color: var(--faint);
+    font-family: var(--mono, ui-monospace, monospace); user-select: all;
+  }
+  .sheet-api::before { content: 'api id  '; opacity: .6; }
   .sheet-name {
     width: 100%; margin-top: 6px; padding: 6px 10px; color: var(--ink);
     background: none; border: 1px solid transparent; border-radius: 10px;
@@ -2306,7 +2328,7 @@ const HTML = /* html */ `<!doctype html>
     /* rooms and cues become sideways rails — stacked, they would eat the screen */
     .index-sec { min-width: 0; margin-bottom: 13px; }
     .legend { margin-bottom: 6px; font-size: 10.5px; }
-    .index-sec > div:not(.legend):not(.maker) {
+    .index-sec > div:not(.legend) {
       display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
       padding-bottom: 2px; margin: 0 -16px; padding-left: 16px; padding-right: 16px;
     }
@@ -2319,7 +2341,6 @@ const HTML = /* html */ `<!doctype html>
     .cue-name { font-size: 13px; }
     .cue-edit { opacity: 1; }
     .newcue { width: auto; margin-top: 8px; padding: 8px 12px; font-size: 12.5px; }
-    .maker { margin-top: 8px; }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
@@ -2382,16 +2403,7 @@ const HTML = /* html */ `<!doctype html>
       <div class="index-sec" id="seccues">
         <div class="legend">Cues</div>
         <div id="cues"></div>
-        <button class="newcue" id="newcue" type="button" aria-expanded="false">+ Save this as a cue</button>
-        <div class="maker" id="maker" hidden>
-          <input id="cuename" type="text" maxlength="40" placeholder="Name it" aria-label="Cue name">
-          <div class="maker-row">
-            <button class="go" id="cuesave" type="button">Save</button>
-            <button id="cuecancel" type="button">Cancel</button>
-          </div>
-          <p>Records every circuit in the rooms that have something on.</p>
-        </div>
-      </div>
+        <button class="newcue" id="newcue" type="button">+ Create a cue</button>
       <div class="index-sec" id="sechouse">
         <div class="legend">The house itself</div>
         <div class="settings-row">
@@ -2461,9 +2473,10 @@ const HTML = /* html */ `<!doctype html>
 <div class="scrim" id="scrim" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetname">
     <div class="sheet-head" id="sheethead">
-      <div class="sheet-eyebrow">Cue</div>
+      <div class="sheet-eyebrow" id="sheeteyebrow">Cue</div>
       <input class="sheet-name" id="sheetname" type="text" maxlength="40" aria-label="Cue name">
       <p class="sheet-facts" id="sheetfacts"></p>
+      <p class="sheet-api" id="sheetapi" title="Use this in Shortcuts and cron"></p>
     </div>
     <div class="sheet-body" id="sheetbody"></div>
     <div class="sheet-foot" id="sheetfoot">
@@ -3246,8 +3259,11 @@ function drawCues() {
     b.type = 'button';
     b.className = 'cue' + (firing === cue.id ? ' firing' : '');
     b.innerHTML = '<span class="cue-name"></span><span class="cue-note"></span>' +
-                  '<span class="cue-swatch"><i></i></span>';
+                  '<span class="cue-api"></span><span class="cue-swatch"><i></i></span>';
     b.querySelector('.cue-name').textContent = cue.name;
+    // The id is the cue's address for Siri, a widget or cron. Shown here so a
+    // shortcut can be written without going and looking it up.
+    b.querySelector('.cue-api').textContent = cue.id;
     b.querySelector('.cue-note').textContent = cueNote(cue);
     const look = cuePreview(cue);
     const fill = b.querySelector('.cue-swatch i');
@@ -3304,6 +3320,17 @@ const CHEV_LEFT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const deviceOf = (id) => state.devices.find(d => d.record_id === id);
 const stepFor = (id) => (sheetCue?.steps || []).find(st => st.record_id === id);
 
+/**
+ * A new cue starts as a draft held here, not on the server: you pick the
+ * circuits and set each one before it exists at all. Saving whatever happened
+ * to be lit — the old "save this as a cue" — swept in every circuit of every
+ * lit room, which is almost never the cue anyone meant.
+ */
+function newCue() {
+  openSheet({ id: null, name: '', note: '', steps: [], devices: 0, draft: true });
+  setTimeout(() => el('#sheetname').focus(), 60);
+}
+
 function openSheet(cue) {
   sheetCue = cue;
   sheetView = 'steps';
@@ -3336,6 +3363,15 @@ function drawSheet() {
   const picking = sheetView !== 'steps';
   el('#sheethead').style.display = picking ? 'none' : '';
   el('#sheetfoot').style.display = picking ? 'none' : '';
+
+  // A draft has nothing to fire, re-record or delete yet — it can only be made.
+  const draft = !!sheetCue.draft;
+  el('#sheeteyebrow').textContent = draft ? 'New cue' : 'Cue';
+  el('#sheetapply').textContent = draft ? 'Create this cue' : 'Set this cue';
+  el('#sheetrecapture').hidden = draft;
+  el('#sheetdelete').hidden = draft;
+  el('#sheetapi').textContent = draft ? '' : sheetCue.id;
+  el('#sheetapi').hidden = draft;
 
   const body = el('#sheetbody');
   body.innerHTML = '';
@@ -3525,10 +3561,14 @@ function drawCircuitPicker(body) {
       if (st) {
         sheetCue.steps = sheetCue.steps.filter(x => x !== st);
       } else {
-        // A newly added circuit starts as the lamp is right now.
-        const next = { record_id: d.record_id, on: d.status };
-        if (d.status && d.is_dimmable) next.level = d.level > 0 ? d.level : 100;
-        if (d.status && d.is_tunable) next.tune = d.tune;
+        // A circuit added to a cue starts on. Almost every cue is a list of
+        // things to light, and most lamps are off when you sit down to build
+        // one — inheriting "off" meant adding eight lights and then opening
+        // all eight to say what you plainly meant. A step that should be off
+        // is the exception, and it is one tap away in the row below.
+        const next = { record_id: d.record_id, on: true };
+        if (d.is_dimmable) next.level = d.status && d.level > 0 ? d.level : 100;
+        if (d.is_tunable) next.tune = d.tune;
         sheetCue.steps = [...(sheetCue.steps || []), next];
       }
       saveSteps();
@@ -3562,6 +3602,8 @@ function stepWord(st) {
 let saveTimer = null;
 function saveSteps() {
   if (!sheetCue) return;
+  // A draft is not on the server yet, so its edits are simply kept in hand.
+  if (sheetCue.draft) { sheetCue.devices = sheetCue.steps.length; drawSheet(); return; }
   clearTimeout(saveTimer);
   const cue = sheetCue;
   saveTimer = setTimeout(async () => {
@@ -3578,6 +3620,27 @@ function saveSteps() {
       note(err.message + '.');
     }
   }, 350);
+}
+
+async function createCue() {
+  const cue = sheetCue;
+  if (!cue) return;
+  const name = el('#sheetname').value.trim();
+  if (!name) { note('Give the cue a name first.'); el('#sheetname').focus(); return; }
+  if (!cue.steps.length) { note('Add at least one circuit first.'); return; }
+  try {
+    const body = await fetch('/api/scenes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, steps: cue.steps }),
+    }).then(r => r.json());
+    if (!body.ok) throw new Error(body.error || 'Could not save it');
+    closeSheet();
+    // The id is what a shortcut will address, so say it once, here.
+    note('Saved ' + body.scene.name + ' — ' + body.scene.devices + ' circuits · id ' + body.scene.id, true);
+    loadCues();
+  } catch (err) {
+    note(err.message + '.');
+  }
 }
 
 async function patchCue(patch, said) {
@@ -3601,13 +3664,17 @@ async function patchCue(patch, said) {
 function wireSheet() {
   el('#scrim').addEventListener('click', (e) => { if (e.target === el('#scrim')) closeSheet(); });
   el('#sheetclose').onclick = closeSheet;
-  el('#sheetapply').onclick = () => { const c = sheetCue; closeSheet(); fire(c); };
+  el('#sheetapply').onclick = () => {
+    if (sheetCue && sheetCue.draft) return createCue();
+    const c = sheetCue; closeSheet(); fire(c);
+  };
   el('#sheetrecapture').onclick = () =>
     patchCue({ recapture: true }, 'Updated to match the house as it is now.');
 
   const name = el('#sheetname');
   const rename = () => {
     if (!sheetCue || name.value.trim() === sheetCue.name) return;
+    if (sheetCue.draft) { sheetCue.name = name.value.trim(); return; }
     patchCue({ name: name.value }, 'Renamed to ' + name.value.trim() + '.');
   };
   name.addEventListener('blur', rename);
@@ -3692,42 +3759,6 @@ async function undoCue() {
     drawCues();
     await sync(true);
     drawField();
-  }
-}
-
-function wireMaker() {
-  const maker = el('#maker');
-  const name = el('#cuename');
-  const add = el('#newcue');
-  add.onclick = () => {
-    maker.hidden = !maker.hidden;
-    add.setAttribute('aria-expanded', String(!maker.hidden));
-    if (!maker.hidden) name.focus();
-  };
-  const close = () => { maker.hidden = true; name.value = ''; add.setAttribute('aria-expanded', 'false'); };
-  el('#cuecancel').onclick = close;
-  el('#cuesave').onclick = () => saveCue(name.value);
-  name.onkeydown = (e) => {
-    if (e.key === 'Enter') saveCue(name.value);
-    if (e.key === 'Escape') close();
-  };
-}
-
-async function saveCue(name) {
-  if (!name.trim()) { note('Give the cue a name first.'); return; }
-  try {
-    const body = await fetch('/api/scenes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    }).then(r => r.json());
-    if (!body.ok) throw new Error(body.error || 'Could not save it');
-    el('#maker').hidden = true;
-    el('#cuename').value = '';
-    el('#newcue').setAttribute('aria-expanded', 'false');
-    note('Saved ' + body.scene.name + ' — ' + body.scene.devices + ' circuits.');
-    loadCues();
-  } catch (err) {
-    note(err.message + '.');
   }
 }
 
@@ -3839,8 +3870,8 @@ addEventListener('keydown', (e) => {
 });
 
 wireMain();
-wireMaker();
 wireSheet();
+el('#newcue').onclick = newCue;
 
 // The server pushes a snapshot the moment the house moves, so the page is live
 // instead of up to ten seconds behind, and two phones never disagree. Polling

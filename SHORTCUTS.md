@@ -19,18 +19,34 @@ They answer to `GET` as well as `POST` because a widget or a bookmark can only
 manage a `GET`. Each reply carries a `spoken` field — a sentence rather than a
 count — which is what Siri should read back.
 
-Find your cue ids:
+## Cue ids — the naming convention
+
+Every cue has an **api id**, shown in small type on its card in the dashboard and
+in its edit sheet. That id is the cue's address, and it is what every shortcut,
+widget and cron line uses:
+
+```
+http://192.168.1.3:3000/api/cue/<api id>/fire
+```
+
+The id is made from the name once, lowercased with spaces as hyphens —
+`Good Night · Ashu` becomes `ashu-good-night` — and then **it never changes**.
+Renaming a cue keeps its id, so a shortcut you built months ago keeps working.
+Cue names are unique, case-insensitively, so an id is never ambiguous.
+
+Read them off the cards, or list them all:
 
 ```bash
-curl -s http://192.168.1.8:3000/api/cues
+curl -s http://192.168.1.3:3000/api/cues
 ```
 
 ```json
 {"cues":[{"id":"ashu-good-night","name":"Good Night · Ashu","circuits":11}, …]}
 ```
 
-Replace `192.168.1.8` throughout with whatever `ipconfig getifaddr en0` prints
-if the Mac's address has changed.
+The dashboard now runs on the hub itself at **`192.168.1.3:3000`**, so these work
+with the Mac shut. (Older recipes pointing at the Mac's address still work while
+it is awake, but the hub is the stable one — it cannot move.)
 
 ---
 
