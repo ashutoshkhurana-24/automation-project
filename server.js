@@ -739,6 +739,19 @@ app.get('/api/devices', async (req, res) => {
   res.json(snapshot());
 });
 
+/* Circuits whose colour was chosen by hand.
+ *
+ * Circadian fills in the colour of the hour as a lamp comes on, which is right
+ * for a lamp with no opinion and wrong for one you have just set. The rule was
+ * already "never re-tune a lit lamp" — but a lamp set while it is OFF was not
+ * covered, and that is exactly what the group's warmth slider does. Worse, the
+ * fill-in decides per lamp from the cache, so a partly stale cache overrode
+ * some of a group and not others and left one ceiling burning two colours.
+ *
+ * So a colour asked for explicitly is remembered, and circadian leaves that
+ * circuit alone until the next time a colour is asked for. */
+const handTuned = new Map();
+
 // Latest intent per device, so a quick second click invalidates the first verdict.
 const intents = new Map();
 let intentSeq = 0;
@@ -876,6 +889,7 @@ app.post('/api/tune', async (req, res) => {
 
   try {
     await sendToHub(recordId, { channel_id: tunableChannel, device_status: encodeLevel(level) });
+    handTuned.set(recordId, Date.now());
     nudgeRefresh();
     res.json({ ok: true, record_id: recordId, tune: level });
   } catch (err) {
@@ -917,11 +931,15 @@ async function setRecords(records, { on, level, tune }) {
   // A colour asked for goes to every tunable lamp. With none asked for, the
   // colour of the hour fills in — but only for lamps that are coming on, so a
   // brightness drag never re-tunes a lit lamp and fights a colour set by hand.
+  if (wantTune != null) for (const rec of records) handTuned.set(rec.record_id, Date.now());
+
   const colour = wantTune != null ? wantTune
     : wantLevel > 0 && settings.circadian.on ? circadianTune() : null;
   const tunable = colour == null ? []
-    : records.filter((rec) => canTune(rec)
-        && (wantTune != null || decodeLevel(rec.device_status) === 0));
+    : records.filter((rec) => canTune(rec) && (wantTune != null
+        // Coming on with no colour named: the hour decides, unless this circuit
+        // has been given one by hand, in which case that stands.
+        || (decodeLevel(rec.device_status) === 0 && !handTuned.has(rec.record_id))));
 
   let sent = 0;
   if (colour != null && tunable.length) {
@@ -1187,6 +1205,8 @@ async function sendSteps(list) {
       });
     }
   }
+
+  for (const { step } of order) if (step.tune != null) handTuned.set(step.record_id, Date.now());
 
   if (tunes.length) {
     await sendBatchToHub(tunes);
