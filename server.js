@@ -677,8 +677,8 @@ app.get('/manifest.webmanifest', (req, res) => {
     short_name: 'The House',
     start_url: '/',
     display: 'standalone',
-    background_color: '#e7ecf1',
-    theme_color: '#e7ecf1',
+    background_color: '#12151a',
+    theme_color: '#12151a',
     icons: [
       { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
@@ -2033,8 +2033,7 @@ const HTML = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#e7ecf1">
-<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#12151a">
 <!-- Saved to a phone's home screen this opens without browser chrome, which is
      the only way the fixed, non-scrolling layout works properly on a phone. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2050,49 +2049,39 @@ const HTML = /* html */ `<!doctype html>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* Daylight. The page is paper held up against an alpine morning, and the
-       greys carry a trace of the sky's blue so white glass reads as cold and a
-       lamp reads as the one warm thing in the room. */
-    --base:   #e7ecf1;
-    --raise:  #ffffff;
-    --ink:    #10161d;
-    --soft:   #414c57;
-    --faint:  #59636e;      /* 4.6:1 on the pane — the floor for small type */
+    /* Warm charcoal, no blue anywhere in the greys. The interface is greyscale;
+       the only colour on the page is the light a lamp is actually making. */
+    --base:   #12151a;
+    --raise:  #1b2027;
+    --ink:    #f2f5f8;
+    --soft:   #b6bec8;
+    --faint:  #8a939e;      /* lifted: on the deeper base, the old value fell under 4:1 */
 
-    /* Lamp colour. On a dark page these could be pale, because they were
-       emitting; on paper they are pigment, and a pale amber on white is not a
-       lamp, it is a smudge. So both ends are taken down until they hold their
-       own against the sheet: a deep tungsten, and a true daylight blue. */
-    --warm:   #e08c14;
-    --cool:   #5f9fd6;
-    --neutral:#6e7c8a;      /* a fan or a curtain: moving, but making no light */
-    --clay:   #c2412a;      /* the one alarming colour, used almost never */
+    /* Lamp colour, at full strength now: a tungsten bulb is genuinely amber.
+       Cool stays a muted blue-grey — it is the contrast that carries meaning. */
+    --warm:   #ffab42;
+    /* The cool end of a tunable lamp, kept inside the warm family: pale
+       champagne rather than blue-grey, which read as a hole in a bronze page.
+       Warm against cool is still obvious — deep amber against pale gold. */
+    --cool:   #cfe2f2;
+    --neutral:#c9d3dd;      /* bronze: a fan or a curtain, lit but not glowing */
+    --clay:   #e8705a;      /* the one alarming colour, used almost never */
 
-    /* The number in the display type, and only that. It does not borrow --warm,
-       which is the colour a lamp is making — the count of lit circuits must not
-       be drawn in the same ink as the light itself. This is type, not emission. */
-    --accent: #d9531b;
+    /* The number in the display type, and only that. It used to borrow --warm,
+       which is the colour a lamp is making — so the count of lit circuits was
+       drawn in the same ink as the light itself, and the page said two
+       different things in one colour. This is type, not emission: a true
+       orange, off the lamp palette on purpose. */
+    --accent: #ff7d3f;
 
-    /* Glass, in daylight. The pane is white and the light comes from in front,
-       so the rim that used to catch a highlight now casts a hairline shadow —
-       and the drop shadow does the lifting that a glow did in the dark. */
-    --pane:      rgba(255,255,255,.72);
-    --pane-up:   rgba(255,255,255,.86);
-    --edge:      rgba(255,255,255,.34);
-    --edge-up:   rgba(255,255,255,.52);
-    --lip:       rgba(255,255,255,.92);
-    /* The sheen is doing real work now, not decoration: the pane is transparent,
-       so the type needs the one part of the glass that is reliably bright to sit
-       under it. Strongest at the top-left, where every label starts. */
-    --sheen: linear-gradient(152deg, rgba(255,255,255,.50) 0%, rgba(255,255,255,.18) 40%, rgba(255,255,255,.02) 72%);
-    --cast: 0 16px 34px -16px rgba(16,34,56,.44), 0 2px 8px -4px rgba(16,34,56,.20);
-
-    /* Type that sits on the photograph rather than on a pane has nothing under
-       it to guarantee contrast, and a pane behind every label would undo the
-       point of the glass. A halo does the same job locally: it is invisible
-       over the sky and it is what keeps a heading readable where the picture
-       goes to dark forest. */
-    --halo: 0 1px 14px rgba(255,255,255,.82), 0 0 3px rgba(255,255,255,.72);
+    /* glass: a pane, lit along its top edge, with nothing glowing through it */
+    --pane:      rgba(9,12,17,.34);
+    --pane-up:   rgba(14,18,25,.46);
+    --edge:      rgba(255,255,255,.13);
+    --edge-up:   rgba(255,255,255,.24);
+    --lip:       rgba(255,255,255,.13);
+    --sheen: linear-gradient(152deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,.018) 34%, transparent 62%);
+    --cast: 0 14px 34px -20px rgba(0,0,0,.7);
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
@@ -2100,33 +2089,22 @@ const HTML = /* html */ `<!doctype html>
     --lamp: var(--warm);
     --glow: 0;
 
-    /* The edge that makes a pane read as glass rather than as a flat card.
-       In the dark this was a specular highlight — white where the light fell.
-       In daylight the light is in front of the glass, so the same edge is read
-       instead as the shadow the pane's thickness casts: darkest where it turns
-       away, almost gone where it faces the sky. Uneven on purpose; an even
-       border reads as a stroke rather than an edge. */
+    /* The specular edge that makes a pane read as glass rather than as a tinted
+       box: bright where the light falls, almost gone across the middle, picking
+       up again where the surface curves away. Uneven on purpose — an even
+       border reads as a stroke, not as a lit edge. */
     --rim: linear-gradient(145deg,
-      rgba(255,255,255,.95) 0%,
-      rgba(255,255,255,.34) 18%,
-      rgba(255,255,255,.10) 44%,
-      rgba(255,255,255,.26) 68%,
-      rgba(255,255,255,.72) 100%);
-    /* A lit pane is edged in its own lamp's colour, which is the one thing on
-       paper that a glow cannot do for us. */
-    /* Chosen, but not lit — a tab or a button is not making light. */
-    --rim-sel: linear-gradient(145deg,
-      rgba(255,255,255,.9) 0%,
-      rgba(24,46,72,.42) 26%,
-      rgba(24,46,72,.52) 54%,
-      rgba(24,46,72,.44) 78%,
-      rgba(24,46,72,.24) 100%);
+      rgba(255,255,255,.52) 0%,
+      rgba(255,255,255,.13) 20%,
+      rgba(255,255,255,.03) 46%,
+      rgba(255,255,255,.09) 72%,
+      rgba(255,255,255,.34) 100%);
     --rim-lit: linear-gradient(145deg,
-      rgba(255,255,255,.9) 0%,
-      color-mix(in oklab, var(--tint, var(--warm)) 62%, transparent) 26%,
-      color-mix(in oklab, var(--tint, var(--warm)) 78%, transparent) 54%,
-      color-mix(in oklab, var(--tint, var(--warm)) 66%, transparent) 78%,
-      color-mix(in oklab, var(--tint, var(--warm)) 40%, transparent) 100%);
+      rgba(255,252,246,.88) 0%,
+      rgba(255,236,206,.28) 22%,
+      rgba(255,236,206,.07) 50%,
+      rgba(255,236,206,.22) 76%,
+      rgba(255,246,230,.66) 100%);
   }
 
   * { box-sizing: border-box; }
@@ -2160,34 +2138,37 @@ const HTML = /* html */ `<!doctype html>
       linear-gradient(102deg, transparent 10%, rgba(226,238,250,.05) 13%, transparent 17%),
       linear-gradient(96deg,  transparent 46%, rgba(226,238,250,.06) 52%, transparent 58%),
       linear-gradient(88deg,  transparent 78%, rgba(226,238,250,.04) 82%, transparent 86%),
-      radial-gradient(120% 100% at 50% 50%, #f4f8fc 0%, #dfe7f0 62%, #cdd8e4 100%);
+      radial-gradient(120% 100% at 50% 50%, #26303b 0%, #161c24 62%, #0c1014 100%);
     background-size: cover, auto, auto, auto, auto, auto, auto;
     /* A wide screen sees only a horizontal band of this tall picture, so it
        is told which band: high in the frame is all warm rock, and the page
        then reads amber-on-amber. Half way down catches the meadow and the
        tree line, where a lamp is once again the warmest thing on screen.
        On a phone the crop is horizontal instead, so this changes nothing there. */
-    background-position: center 26%;
+    background-position: center 38%;
     background-repeat: no-repeat;
-    /* Left alone, almost. Glass is only glass if there is something worth
-       looking at behind it, and the first light-mode pass washed the picture
-       out with a white veil until the panes read as frosting on fog. The
-       contrast a pane needs is made *inside the pane*, by what its
-       backdrop-filter does to the picture — not by painting over the picture
-       for the whole page. */
-    filter: saturate(1.16) brightness(1.0);
+    /* Held well back: white type must stay legible over any photograph, and the
+       lamps must remain the brightest thing on the screen. This picture is a
+       warm one — lit peaks, sunlit grass — so it is desaturated harder than a
+       cold backdrop needs to be, or the page would read as amber-on-amber and
+       a lamp would stop being the only warm thing on it. */
+    filter: saturate(.46) brightness(.40) contrast(1.06);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
   .photo::after {
     content: ''; position: absolute; inset: 0;
     background:
-      /* Barely anything. Enough to keep loose type off the busiest part of the
-         picture, and no more — the panes make their own contrast. */
+      /* A pale sky sits exactly where the header does, so the top is held down
+         hardest — and unlike the cold picture before it, this one never goes
+         dark further down: the meadow is luminous most of the way to the foot
+         of the frame, so the fade keeps a floor rather than releasing at the
+         middle. Nine stops, because fewer shows as a band. */
       linear-gradient(180deg,
-        rgba(238,245,252,.10) 0%, rgba(238,245,252,.04) 34%,
-        rgba(238,245,252,.06) 66%, rgba(238,245,252,.14) 100%),
-      radial-gradient(120% 80% at 50% 6%, transparent 58%, rgba(232,240,248,.14) 100%);
+        rgba(10,8,6,.74) 0%,  rgba(10,8,6,.56) 11%, rgba(10,8,6,.38) 20%,
+        rgba(10,8,6,.24) 29%, rgba(10,8,6,.14) 38%, rgba(10,8,6,.10) 48%,
+        rgba(10,8,6,.18) 60%, rgba(10,8,6,.34) 78%, rgba(10,8,6,.56) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 34%, rgba(8,6,4,.50) 100%);
   }
 
   .spill {
@@ -2195,9 +2176,9 @@ const HTML = /* html */ `<!doctype html>
     background:
       /* Standing warmth, well off-centre, so no two panes sit over the same
          tone — glass only reads as glass when what is behind it varies. */
-      radial-gradient(74% 52% at 8% -14%,  rgba(255,255,255,.30) 0%, transparent 64%),
-      radial-gradient(52% 42% at 96% 4%,   rgba(255,255,255,.22) 0%, transparent 62%),
-      radial-gradient(46% 38% at 62% 30%,  rgba(255,255,255,.16) 0%, transparent 70%),
+      radial-gradient(74% 52% at 8% -14%,  rgba(214,230,246,.10) 0%, transparent 64%),
+      radial-gradient(52% 42% at 96% 4%,   rgba(206,224,244,.06) 0%, transparent 62%),
+      radial-gradient(46% 38% at 62% 30%,  rgba(220,234,248,.035) 0%, transparent 70%),
       /* The house's own light, rising from the foot of the room. This is the
          part that moves: brighter and warmer as more of the house comes on. */
       radial-gradient(120% 78% at 50% 124%,
@@ -2206,7 +2187,7 @@ const HTML = /* html */ `<!doctype html>
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 34%), transparent) 0%, transparent 66%),
       radial-gradient(58% 46% at 14% 104%,
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 22%), transparent) 0%, transparent 64%),
-      linear-gradient(180deg, rgba(255,255,255,.16) 0%, transparent 42%, rgba(126,148,172,.16) 100%);
+      linear-gradient(180deg, rgba(244,248,252,.03) 0%, transparent 38%, rgba(0,0,0,.36) 100%);
     transition: background 1.2s ease;
   }
 
@@ -2236,8 +2217,8 @@ const HTML = /* html */ `<!doctype html>
     display: none; flex: 0 0 auto; width: 38px; height: 38px; padding: 0; cursor: pointer;
     place-items: center; border-radius: 11px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
-    backdrop-filter: var(--lens);
-    -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
   }
   .seek-toggle svg { width: 16px; height: 16px; }
   .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
@@ -2246,7 +2227,7 @@ const HTML = /* html */ `<!doctype html>
   .seek input {
     width: 100%; padding: 10px 14px 10px 34px; color: var(--ink);
     background: var(--pane); border: 1px solid var(--edge); border-radius: 12px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
     box-shadow: inset 0 1px 0 var(--lip);
     font: 400 13.5px/1 var(--sans); outline: none; transition: border-color .2s, background .2s;
   }
@@ -2260,7 +2241,7 @@ const HTML = /* html */ `<!doctype html>
     position: relative; flex: 0 0 auto; padding: 10px 16px; cursor: pointer; overflow: hidden;
     display: flex; align-items: center; gap: 8px;
     background: var(--pane); border: 1px solid var(--edge); border-radius: 12px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
     box-shadow: inset 0 1px 0 var(--lip);
     color: var(--soft); font: 500 13px/1 var(--sans);
     transition: color .2s, border-color .2s, background .2s;
@@ -2304,7 +2285,7 @@ const HTML = /* html */ `<!doctype html>
     position: relative; width: 100%; display: block; text-align: left; cursor: pointer;
     padding: 10px 34px 11px 12px; border-radius: 12px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--ink);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(26px) saturate(125%); -webkit-backdrop-filter: blur(26px) saturate(125%);
     box-shadow: inset 0 1px 0 var(--lip);
     font: 400 13.5px/1.3 var(--sans); transition: background .18s, border-color .18s, transform .16s;
   }
@@ -2318,7 +2299,7 @@ const HTML = /* html */ `<!doctype html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cue-swatch { display: block; height: 2px; margin-top: 9px; border-radius: 1px;
-                background: rgba(22,40,62,.07); }
+                background: rgba(255,255,255,.08); }
   .cue-swatch i { display: block; height: 100%; border-radius: 1px; opacity: .85; }
   .cue-edit {
     position: absolute; top: 9px; right: 9px; width: 22px; height: 22px; padding: 0;
@@ -2328,7 +2309,7 @@ const HTML = /* html */ `<!doctype html>
   }
   .cue-edit svg { width: 13px; height: 13px; }
   .cue-wrap:hover .cue-edit, .cue-edit:focus-visible { opacity: 1; }
-  .cue-edit:hover { color: var(--ink); background: rgba(22,40,62,.07); }
+  .cue-edit:hover { color: var(--ink); background: rgba(255,255,255,.08); }
   .cue-edit:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 1px; }
 
   .newcue {
@@ -2351,8 +2332,8 @@ const HTML = /* html */ `<!doctype html>
     padding-bottom: 6px; padding-left: 9px;
     font: inherit; font-size: 12.5px; color: var(--soft);
     background: var(--pane); border: 1px solid var(--edge); border-radius: 999px;
-    backdrop-filter: var(--lens);
-    -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
     transition: color .18s, border-color .18s, background .18s, transform .18s;
   }
   .back[hidden] { display: none; }
@@ -2361,10 +2342,9 @@ const HTML = /* html */ `<!doctype html>
   .back:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .field-head h2 {
     margin: 0; font-size: clamp(24px, 3.6vh, 34px); font-weight: 400;
-    text-shadow: var(--halo);
     letter-spacing: -.018em; line-height: 1.1;
   }
-  .field-sub { margin: 5px 0 3px; font-size: 13px; color: var(--soft); text-shadow: var(--halo); }
+  .field-sub { margin: 5px 0 3px; font-size: 13px; color: var(--faint); }
   .field-sub b { color: var(--soft); font-weight: 500; }
   .cut {
     margin-left: auto; flex: 0 0 auto; padding: 9px 14px; cursor: pointer;
@@ -2383,13 +2363,12 @@ const HTML = /* html */ `<!doctype html>
     display: grid; gap: clamp(12px, 1.4vw, 18px); align-content: start;
     grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
     grid-auto-rows: min-content;
-    scrollbar-width: thin; scrollbar-color: rgba(30,50,74,.22) transparent;
+    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent;
   }
   .tiles::-webkit-scrollbar { width: 8px; }
-  .tiles::-webkit-scrollbar-thumb { background: rgba(30,50,74,.20); border-radius: 4px; }
+  .tiles::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
   .tiles::-webkit-scrollbar-track { background: transparent; }
-  .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--faint); margin: 16px 0 -4px;
-                 text-shadow: var(--halo); }
+  .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--faint); margin: 16px 0 -4px; }
   .group-label:first-child { margin-top: 0; }
   .empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--faint); padding: 30px 2px; }
 
@@ -2401,14 +2380,9 @@ const HTML = /* html */ `<!doctype html>
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
     position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
     border-radius: 20px; border: 1px solid var(--edge); background: var(--pane);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    /* What makes it read as a solid piece of glass rather than a translucent
-       rectangle: a bright catch along the top-left where the light enters, a
-       second one along the inside of the bottom edge where it leaves, and a
-       soft internal sheen. Three insets, all white, none of them a fill. */
-    box-shadow: inset 1.5px 1.5px 0 -.5px rgba(255,255,255,.72),
-                inset -1px -1.5px 0 -.5px rgba(255,255,255,.36),
-                inset 0 0 26px -6px rgba(255,255,255,.30),
+    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
+    box-shadow: inset 0 1px 0 var(--lip),
+                inset 0 -18px 26px -26px rgba(0,0,0,.55),
                 var(--cast);
     transition: border-color .25s, background .25s, transform .18s, box-shadow .3s;
   }
@@ -2422,15 +2396,8 @@ const HTML = /* html */ `<!doctype html>
     .tile::after, .cue::after, .tab::after, .sheet::after,
     .timerpop::after, .quick button::after, .key::after {
       content: ''; position: absolute; inset: 0; z-index: 3;
-      border-radius: inherit; padding: 2px; pointer-events: none;
+      border-radius: inherit; padding: 1px; pointer-events: none;
       background: var(--rim);
-      /* The edge is a lens in its own right: light entering the curve of the
-         glass is bent and concentrated, so the picture directly under the rim
-         comes back brighter and more saturated than the picture under the
-         middle. This is the single detail that separates a pane of glass from
-         a translucent rectangle with a white border. */
-      backdrop-filter: brightness(1.34) saturate(1.7) blur(1px);
-      -webkit-backdrop-filter: brightness(1.34) saturate(1.7) blur(1px);
       -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -2445,13 +2412,13 @@ const HTML = /* html */ `<!doctype html>
     .tile.on::after { opacity: 1; background: var(--rim-lit); }
     .tab::after { opacity: 0; }
     .tab.here::after, .tab.awake::after { opacity: 1; }
-    .tab.here::after { background: var(--rim-sel); }
+    .tab.here::after { background: var(--rim-lit); }
     .cue::after { opacity: .38; }
     .cue:hover::after, .cue.firing::after { opacity: 1; }
     .key::after { opacity: 0; }
     .key.on::after { opacity: 1; background: var(--rim-lit); }
     .quick button::after { opacity: .4; }
-    .quick button.on::after { opacity: 1; background: var(--rim-sel); }
+    .quick button.on::after { opacity: 1; background: var(--rim-lit); }
   }
 
   .tile::before {
@@ -2462,21 +2429,21 @@ const HTML = /* html */ `<!doctype html>
   /* A lit circuit throws light: the pane lifts, its edge catches the colour, and
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
-  /* On a dark page a lit circuit glowed, and that was the whole language. On
-     paper a glow is invisible — white cannot be made brighter — so light is
-     carried by colour instead: the pane itself takes the lamp's temperature,
-     deepening with how much light is actually being made, and its edge is
-     drawn in that same colour. A halo survives, but small and close: on white
-     a wide one is not light, it is blur. */
   .tile.on {
-    background: color-mix(in oklab, var(--tint) calc(12% + var(--lit) * 26%), var(--pane-up));
-    border-color: color-mix(in oklab, var(--tint) calc(44% + var(--lit) * 40%), var(--edge));
+    background: rgba(16,20,27,.34);
+    border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
-      inset 0 1px 0 rgba(255,255,255,.7),
+      /* the lit edge itself */
+      inset 0 1px 0 color-mix(in oklab, var(--tint) calc(var(--lit) * 42%), var(--glass-hi)),
       /* the pool of light standing in the bottom of the pane */
-      inset 0 -44px 60px -30px color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 58%), transparent),
-      0 0 calc(6px + var(--lit) * 12px) calc(var(--lit) * -3px)
-        color-mix(in oklab, var(--tint) calc(var(--lit) * 40%), transparent),
+      inset 0 -44px 64px -32px color-mix(in oklab, var(--tint) calc(var(--lit) * 88%), transparent),
+      /* a tight halo hugging the glass, then a wide one thrown onto the page —
+         two falloffs rather than one, which is what a real lamp does and what
+         a single blur radius can never look like */
+      0 0 calc(10px + var(--lit) * 18px) calc(var(--lit) * -2px)
+        color-mix(in oklab, var(--tint) calc(var(--lit) * 46%), transparent),
+      0 0 calc(30px + var(--lit) * 78px) calc(var(--lit) * 2px)
+        color-mix(in oklab, var(--tint) calc(var(--lit) * 30%), transparent),
       var(--cast);
   }
   /* ── bento ───────────────────────────────────────────────────────────
@@ -2534,12 +2501,12 @@ const HTML = /* html */ `<!doctype html>
     background: none; border: 0; border-radius: 50%;
     transition: background .2s;
   }
-  .key:hover { background: rgba(22,40,62,.06); }
+  .key:hover { background: rgba(255,213,160,.06); }
   .key:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 0; }
   .key:disabled { opacity: .3; cursor: default; }
   .key i {
     display: block; width: 13px; height: 13px; border-radius: 50%;
-    border: 1.5px solid rgba(22,40,62,.26); background: transparent;
+    border: 1.5px solid rgba(255,213,160,.26); background: transparent;
     transition: background .22s, border-color .22s, box-shadow .22s;
   }
   .tile.on .key i {
@@ -2571,10 +2538,10 @@ const HTML = /* html */ `<!doctype html>
 
   /* brightness fills to its level in the lamp's own colour */
   .slider.dim::-webkit-slider-runnable-track {
-    background: linear-gradient(90deg, var(--tint) var(--pct), rgba(22,40,62,.14) var(--pct));
+    background: linear-gradient(90deg, var(--tint) var(--pct), rgba(255,213,160,.14) var(--pct));
   }
   .slider.dim::-moz-range-track {
-    background: linear-gradient(90deg, var(--tint) var(--pct), rgba(22,40,62,.14) var(--pct));
+    background: linear-gradient(90deg, var(--tint) var(--pct), rgba(255,213,160,.14) var(--pct));
   }
   /* warmth is a scale, not a level: the whole track is the range it can burn */
   .slider.warm::-webkit-slider-runnable-track {
@@ -2602,10 +2569,10 @@ const HTML = /* html */ `<!doctype html>
   .pull.halt:hover { color: var(--ink); }
   .pull {
     flex: 1; padding: 8px 6px; cursor: pointer; border-radius: 9px;
-    background: rgba(22,40,62,.05); border: 1px solid var(--edge);
+    background: rgba(255,213,160,.05); border: 1px solid var(--edge);
     color: var(--soft); font: 400 12.5px/1 var(--sans); transition: color .18s, background .18s;
   }
-  .pull:hover { color: var(--ink); background: rgba(22,40,62,.1); }
+  .pull:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .pull:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .pull.working { color: var(--ink); border-color: var(--edge-up); }
 
@@ -2613,39 +2580,39 @@ const HTML = /* html */ `<!doctype html>
   .degrees b { flex: 1; text-align: center; font-weight: 500; font-size: 14px; color: var(--ink); }
   .step {
     width: 28px; height: 26px; padding: 0; cursor: pointer; border-radius: 8px;
-    background: rgba(22,40,62,.05); border: 1px solid var(--edge); color: var(--soft);
+    background: rgba(255,213,160,.05); border: 1px solid var(--edge); color: var(--soft);
     font: 400 14px/1 var(--sans);
   }
-  .step:hover:not(:disabled) { color: var(--ink); background: rgba(22,40,62,.1); }
+  .step:hover:not(:disabled) { color: var(--ink); background: rgba(255,213,160,.1); }
   .step:disabled { opacity: .3; cursor: default; }
   .step:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .seg-label { font-size: 11px; color: var(--faint); margin-bottom: 4px; }
   .segs { display: flex; gap: 5px; }
   .seg {
     flex: 1; padding: 6px 2px; cursor: pointer; border-radius: 8px;
-    background: rgba(22,40,62,.05); border: 1px solid var(--edge);
+    background: rgba(255,213,160,.05); border: 1px solid var(--edge);
     color: var(--soft); font: 400 11px/1 var(--sans);
   }
-  .seg:hover { color: var(--ink); background: rgba(22,40,62,.1); }
+  .seg:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .seg:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
-  .seg.sent { color: var(--ink); border-color: var(--edge-up); background: rgba(22,40,62,.12); }
+  .seg.sent { color: var(--ink); border-color: var(--edge-up); background: rgba(255,213,160,.12); }
   /* chosen, but the unit has not been told yet — the command is still waiting */
   .pending { opacity: .5; }
 
   /* ── the sheet ───────────────────────────────────────────────────────── */
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
-    padding: 22px; background: rgba(28,44,64,.34);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    padding: 22px; background: rgba(16,12,9,.7);
+    backdrop-filter: blur(14px) saturate(80%); -webkit-backdrop-filter: blur(14px) saturate(80%);
     animation: fade .22s ease both;
   }
   .scrim[hidden] { display: none; }
   @keyframes fade { from { opacity: 0; } }
   .sheet {
     width: min(540px, 100%); max-height: min(680px, 88vh); display: flex; flex-direction: column;
-    border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(252,253,255,.94);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    box-shadow: inset 0 1px 0 var(--lip), 0 40px 80px -28px rgba(18,38,62,.34);
+    border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(70,60,51,.74);
+    backdrop-filter: blur(50px) saturate(130%); -webkit-backdrop-filter: blur(50px) saturate(130%);
+    box-shadow: inset 0 1px 0 var(--lip), 0 40px 80px -28px rgba(0,0,0,.75);
     animation: lift .3s cubic-bezier(.2,.8,.3,1) both;
   }
   @keyframes lift { from { opacity: 0; transform: translateY(12px) scale(.985); } }
@@ -2664,14 +2631,14 @@ const HTML = /* html */ `<!doctype html>
     transition: border-color .18s, background .18s;
   }
   .sheet-name:hover { border-color: var(--edge); }
-  .sheet-name:focus { border-color: var(--edge-up); background: rgba(22,40,62,.05); }
+  .sheet-name:focus { border-color: var(--edge-up); background: rgba(255,213,160,.05); }
   .sheet-facts { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 4px 18px;
                  font-size: 13px; color: var(--faint); }
   .sheet-facts b { color: var(--soft); font-weight: 500; }
   .sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 18px;
-                scrollbar-width: thin; scrollbar-color: rgba(30,50,74,.22) transparent; }
+                scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent; }
   .sheet-room { margin: 18px 0 4px; font-size: 12.5px; color: var(--faint); }
-  .sheet-step { border-bottom: 1px solid rgba(22,40,62,.05); }
+  .sheet-step { border-bottom: 1px solid rgba(255,213,160,.05); }
   .sheet-row {
     width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer;
     background: none; border: 0; color: var(--soft); font: 400 14px/1.4 var(--sans); text-align: left;
@@ -2679,7 +2646,7 @@ const HTML = /* html */ `<!doctype html>
   .sheet-row:hover { color: var(--ink); }
   .sheet-row:focus-visible { outline: 2px solid var(--edge-up); outline-offset: -2px; border-radius: 8px; }
   .sheet-step .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-                     border: 1.5px solid rgba(22,40,62,.2); }
+                     border: 1.5px solid rgba(255,213,160,.2); }
   .sheet-step.lit .dot { background: var(--pip); border-color: transparent; }
   .sheet-step .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sheet-step.lit .what { color: var(--ink); }
@@ -2693,10 +2660,10 @@ const HTML = /* html */ `<!doctype html>
   .onoff { display: flex; gap: 6px; }
   .onoff button {
     padding: 7px 16px; cursor: pointer; border-radius: 9px;
-    background: rgba(22,40,62,.05); border: 1px solid var(--edge);
+    background: rgba(255,213,160,.05); border: 1px solid var(--edge);
     color: var(--soft); font: 400 13px/1 var(--sans); transition: color .18s, background .18s;
   }
-  .onoff button:hover { color: var(--ink); background: rgba(22,40,62,.1); }
+  .onoff button:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .onoff button:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .onoff button.picked { background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500; }
   .step-slider { display: flex; align-items: center; gap: 12px; }
@@ -2707,8 +2674,8 @@ const HTML = /* html */ `<!doctype html>
     height: 18px; margin: 0; background: none; cursor: pointer;
   }
   .step-slider input:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; border-radius: 4px; }
-  .step-slider input::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: rgba(22,40,62,.12); }
-  .step-slider input::-moz-range-track { height: 3px; border-radius: 2px; background: rgba(22,40,62,.12); }
+  .step-slider input::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: rgba(255,213,160,.12); }
+  .step-slider input::-moz-range-track { height: 3px; border-radius: 2px; background: rgba(255,213,160,.12); }
   .step-slider.warm input::-webkit-slider-runnable-track {
     background: linear-gradient(90deg, var(--cool), #f3e3c4 46%, var(--warm)); }
   .step-slider.warm input::-moz-range-track {
@@ -2736,7 +2703,7 @@ const HTML = /* html */ `<!doctype html>
   .sheet-add:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
   .pick {
     width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 2px; cursor: pointer;
-    background: none; border: 0; border-bottom: 1px solid rgba(22,40,62,.05);
+    background: none; border: 0; border-bottom: 1px solid rgba(255,213,160,.05);
     color: var(--soft); font: 400 14px/1.4 var(--sans); text-align: left;
   }
   .pick:hover { color: var(--ink); }
@@ -2746,7 +2713,7 @@ const HTML = /* html */ `<!doctype html>
   .pick .chev { font-size: 11px; color: var(--faint); }
   .pick .box {
     width: 18px; height: 18px; flex: 0 0 auto; border-radius: 5px;
-    border: 1.5px solid rgba(22,40,62,.22); display: grid; place-items: center;
+    border: 1.5px solid rgba(255,213,160,.22); display: grid; place-items: center;
     transition: background .18s, border-color .18s;
   }
   .pick .box svg { width: 11px; height: 11px; color: var(--base); opacity: 0; }
@@ -2759,17 +2726,17 @@ const HTML = /* html */ `<!doctype html>
     background: none; border: 1px solid var(--edge); color: var(--soft);
     font: 400 13px/1 var(--sans); transition: color .18s, background .18s;
   }
-  .sheet-back:hover { color: var(--ink); background: rgba(22,40,62,.06); }
+  .sheet-back:hover { color: var(--ink); background: rgba(255,213,160,.06); }
   .sheet-back:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .sheet-back svg { width: 13px; height: 13px; }
   .sheet-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 24px 20px;
                 border-top: 1px solid var(--edge); }
   .sheet-btn {
     padding: 10px 15px; cursor: pointer; border-radius: 11px;
-    background: rgba(22,40,62,.05); border: 1px solid var(--edge);
+    background: rgba(255,213,160,.05); border: 1px solid var(--edge);
     color: var(--soft); font: 400 13px/1 var(--sans); transition: color .18s, background .18s;
   }
-  .sheet-btn:hover { color: var(--ink); background: rgba(22,40,62,.1); }
+  .sheet-btn:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .sheet-btn:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
   .sheet-btn.go { background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500; }
   .sheet-btn.go:hover { color: var(--base); background: #fff; }
@@ -2781,9 +2748,9 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; left: 50%; bottom: 26px; z-index: 60;
     transform: translate(-50%, 180%); visibility: hidden; opacity: 0;
     max-width: min(92vw, 440px); padding: 13px 18px;
-    background: rgba(252,253,255,.95); border: 1px solid var(--edge-up); border-radius: 14px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    box-shadow: inset 0 1px 0 var(--lip), 0 24px 50px -20px rgba(18,38,62,.30);
+    background: rgba(70,60,51,.78); border: 1px solid var(--edge-up); border-radius: 14px;
+    backdrop-filter: blur(40px) saturate(130%); -webkit-backdrop-filter: blur(40px) saturate(130%);
+    box-shadow: inset 0 1px 0 var(--lip), 0 24px 50px -20px rgba(0,0,0,.7);
     font-size: 13.5px; color: var(--ink);
     transition: transform .34s cubic-bezier(.2,.8,.3,1), opacity .22s, visibility .34s;
   }
@@ -2819,8 +2786,8 @@ const HTML = /* html */ `<!doctype html>
       margin-bottom: 14px; padding: 14px 14px 10px; border-radius: 18px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge); box-shadow: var(--cast);
-      backdrop-filter: var(--lens);
-      -webkit-backdrop-filter: var(--lens);
+      backdrop-filter: blur(22px) saturate(150%);
+      -webkit-backdrop-filter: blur(22px) saturate(150%);
       font: inherit; color: var(--ink);
     }
     .glance-say { display: block; font-size: 15px; line-height: 1.35; color: var(--soft); }
@@ -2863,8 +2830,8 @@ const HTML = /* html */ `<!doctype html>
     padding-top: 10px; padding-right: 11px; padding-bottom: 10px; padding-left: 13px;
     border-radius: 13px; background: var(--pane); background-image: var(--sheen);
     border: 1px solid var(--edge);
-    backdrop-filter: var(--lens);
-    -webkit-backdrop-filter: var(--lens);
+    backdrop-filter: blur(14px) saturate(1.15);
+    -webkit-backdrop-filter: blur(14px) saturate(1.15);
   }
   .nudge .pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--neutral); }
   .nudge.ac .pip { background: var(--clay); }
@@ -2885,9 +2852,9 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; z-index: 46; right: 18px; bottom: 18px;
     width: min(330px, calc(100vw - 36px));
     padding: 15px; border-radius: 16px;
-    background: rgba(252,253,255,.95); border: 1px solid var(--edge-up);
-    backdrop-filter: var(--lens);
-    -webkit-backdrop-filter: var(--lens);
+    background: rgba(14,17,23,.92); border: 1px solid var(--edge-up);
+    backdrop-filter: blur(22px) saturate(1.25);
+    -webkit-backdrop-filter: blur(22px) saturate(1.25);
     box-shadow: var(--cast);
   }
   .timerpop[hidden] { display: none; }
@@ -2959,8 +2926,8 @@ const HTML = /* html */ `<!doctype html>
       border-radius: 22px; gap: 18px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge);
-      backdrop-filter: var(--lens);
-      -webkit-backdrop-filter: var(--lens);
+      backdrop-filter: blur(26px) saturate(150%);
+      -webkit-backdrop-filter: blur(26px) saturate(150%);
       box-shadow: var(--cast);
     }
     .plate .stamp h1 { font-size: 14px; }
@@ -2978,12 +2945,10 @@ const HTML = /* html */ `<!doctype html>
 
     /* the house, stated */
     .hero { display: block; margin-bottom: 26px; }
-    .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint);
-                   text-shadow: var(--halo); }
+    .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
     .hero .say {
       margin: 10px 0 0; font-weight: 300; letter-spacing: -.03em; line-height: .96;
       font-size: clamp(40px, 4.4vw, 66px); color: var(--ink);
-      text-shadow: var(--halo);
     }
     .hero .say b { font-weight: 400; color: var(--accent); }
     .hero .say span { display: block; color: var(--soft); font-size: .42em; letter-spacing: -.01em;
@@ -2998,8 +2963,8 @@ const HTML = /* html */ `<!doctype html>
       border-radius: 22px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge);
-      backdrop-filter: var(--lens);
-      -webkit-backdrop-filter: var(--lens);
+      backdrop-filter: blur(26px) saturate(150%);
+      -webkit-backdrop-filter: blur(26px) saturate(150%);
       box-shadow: var(--cast);
     }
     #secrooms .legend { display: none; }
@@ -3023,7 +2988,7 @@ const HTML = /* html */ `<!doctype html>
     #seccues #cues {
       max-height: calc(100vh - 500px); min-height: 110px;
       overflow-y: auto; scrollbar-width: thin;
-      scrollbar-color: rgba(30,50,74,.22) transparent;
+      scrollbar-color: rgba(255,255,255,.14) transparent;
       padding-right: 4px;
     }
     #sechouse { margin-top: 14px; }
@@ -3049,9 +3014,9 @@ const HTML = /* html */ `<!doctype html>
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
       padding-top: 9px; padding-right: 14px; padding-left: 14px;
       padding-bottom: calc(9px + env(safe-area-inset-bottom));
-      background: rgba(248,251,254,.86); border-top: 1px solid var(--edge);
-      backdrop-filter: var(--lens);
-      -webkit-backdrop-filter: var(--lens);
+      background: rgba(12,15,20,.82); border-top: 1px solid var(--edge);
+      backdrop-filter: blur(22px) saturate(1.25);
+      -webkit-backdrop-filter: blur(22px) saturate(1.25);
     }
     .quick button {
       display: grid; justify-items: center; gap: 4px;
@@ -3112,7 +3077,7 @@ const HTML = /* html */ `<!doctype html>
       margin: 0 -16px 18px; padding: calc(11px + env(safe-area-inset-top)) 16px 11px;
       gap: 12px; align-items: center;
       background: color-mix(in oklab, var(--base) 86%, transparent);
-      backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+      backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
       border-bottom: 1px solid var(--edge);
     }
     .stamp { flex: 1 1 auto; min-width: 0; }
@@ -3607,7 +3572,7 @@ function tabState(b, room) {
   b.querySelector('.tab-n').textContent = on.length ? String(on.length) : '';
   const fill = b.querySelector('.tab-load i');
   fill.style.width = (output(items) * 100).toFixed(1) + '%';
-  fill.style.setProperty('--tint', on.length ? roomTint(on) : 'rgba(22,40,62,.09)');
+  fill.style.setProperty('--tint', on.length ? roomTint(on) : 'rgba(255,213,160,.09)');
   b.setAttribute('aria-label', title(room) + ', ' +
     (on.length ? on.length + ' of ' + items.length + ' on' : 'all off'));
 }
@@ -3619,7 +3584,7 @@ function houseTabState(b) {
   b.querySelector('.tab-n').textContent = on.length ? String(on.length) : '';
   const fill = b.querySelector('.tab-load i');
   fill.style.width = (output(state.devices) * 100).toFixed(1) + '%';
-  fill.style.setProperty('--tint', on.length ? roomTint(on) : 'rgba(22,40,62,.09)');
+  fill.style.setProperty('--tint', on.length ? roomTint(on) : 'rgba(255,213,160,.09)');
 }
 
 // The colour a room is burning: the average temperature of its lit lamps.
@@ -4838,11 +4803,11 @@ function wireSheet() {
  */
 function cuePreview(cue) {
   const steps = cue.steps || [];
-  if (!steps.length) return { brightness: 0, colour: 'rgba(22,40,62,.09)' };
+  if (!steps.length) return { brightness: 0, colour: 'rgba(255,213,160,.09)' };
   const brightness = Math.round(steps.reduce((sum, st) =>
     sum + (st.on === false ? 0 : (st.level == null ? 100 : st.level)), 0) / steps.length);
   const on = steps.filter(st => st.on !== false);
-  if (!on.length) return { brightness: 0, colour: 'rgba(22,40,62,.09)' };
+  if (!on.length) return { brightness: 0, colour: 'rgba(255,213,160,.09)' };
   const tuned = on.filter(st => st.tune != null);
   if (!tuned.length) return { brightness, colour: 'var(--warm)' };
   const warmth = Math.round(tuned.reduce((sum, st) => sum + st.tune, 0) / tuned.length);
