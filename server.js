@@ -449,8 +449,32 @@ const BATCH_GAP_MS = Number(process.env.BATCH_GAP_MS || 60);
    the verify pass below catches what it misses. */
 const gapFor = (n) => (n > 6 ? Math.max(BATCH_GAP_MS, 130) : BATCH_GAP_MS);
 
-function sendBatchToHub(commands) {
+/* Colour is not brightness, and it is far slower to land.
+ *
+ * Measured 2026-08-15 on ASHU's five COBs by eye, because the hub cannot be
+ * asked: it writes device_status_tunable into its own database whether or not
+ * the lamp obeyed, so a read back says only what we told it. Counting lamps in
+ * the room instead:
+ *
+ *     spacing   colour     brightness
+ *      60ms     1 of 5      5 of 5
+ *     300ms     1 of 5        —
+ *     500ms     3 of 5        —
+ *     800ms     5 of 5        —      (twice)
+ *
+ * So brightness at 60ms is fine and always was; colour at 60ms was changing a
+ * single lamp and reporting five. That is the whole of "All COBs doesn't change
+ * all COBs", and it is why a ceiling could end up burning two temperatures.
+ *
+ * 800ms is the vendor's own GRP_DELAY_T (BMS_host, DeviceGroup.models), which
+ * we can now see they arrived at for the same reason. Every COB in this house
+ * is on one module — device_id 19, all 36 of them — so there is nothing to be
+ * gained by pacing per module; the queue is shared whatever the room. */
+const TUNE_GAP_MS = Number(process.env.TUNE_GAP_MS || 800);
+
+function sendBatchToHub(commands, gapMs) {
   if (!commands.length) return Promise.resolve(0);
+  const gap = gapMs != null ? gapMs : gapFor(commands.length);
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -486,7 +510,7 @@ function sendBatchToHub(commands) {
           } else if (fields.device_status !== undefined) {
             entry.record.device_status = fields.device_status;
           }
-          await sleep(gapFor(commands.length));
+          await sleep(gap);
         }
         pushSoon();
         done();
@@ -1059,7 +1083,7 @@ async function setRecords(records, { on, level, tune }) {
     sent += await sendBatchToHub(tunable.map((rec) => ({
       recordId: rec.record_id,
       fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) },
-    })));
+    })), TUNE_GAP_MS);
     if (wantLevel != null) await sleep(SCENE_SETTLE_MS);
   }
   if (wantLevel != null) {
@@ -1109,11 +1133,13 @@ async function verifyGroup(records, { wantLevel, colour, tokens, sentAt }) {
         continue;
       }
     }
-    if (colour != null && rec.is_tunable === 'true' && rec.channel_id_tunable != null
-        && decodeLevel(rec.device_status_tunable) !== colour) {
-      missed.push({ recordId: rec.record_id,
-        fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) } });
-    }
+    /* Colour is deliberately not judged here. device_status_tunable is the
+       hub's own note of what it was told, not a reading of the lamp — it said
+       five of five while four lamps in the room had not moved. Checking it
+       meant this pass always saw success and never resent, so the net that was
+       supposed to catch a dropped colour had never once fired. With TUNE_GAP_MS
+       the colour lands on the first send; claiming to verify it would only be
+       a way of being wrong more confidently. */
   }
   if (!missed.length) return;
   console.log(`group: ${missed.length} of ${records.length} did not take — resending`);
@@ -1322,7 +1348,7 @@ async function sendSteps(list) {
   for (const { step } of order) if (step.tune != null) handTuned.set(step.record_id, Date.now());
 
   if (tunes.length) {
-    await sendBatchToHub(tunes);
+    await sendBatchToHub(tunes, TUNE_GAP_MS);
     await sleep(SCENE_SETTLE_MS);
   }
 
@@ -1336,13 +1362,17 @@ async function sendSteps(list) {
 const sceneTargets = (steps) =>
   steps.map((step) => ({ step, t: stepTarget(step) })).filter(({ t }) => t);
 
-/** Which steps the hub has not actually taken. */
+/** Which steps the hub has not actually taken.
+ *
+ *  Brightness only. device_status_tunable is what the hub was told rather than
+ *  what the lamp did, so a colour judged by it is a coin toss dressed as a
+ *  reading — see the note in verifyGroup. Colour rides on TUNE_GAP_MS landing
+ *  first time instead. */
 function outstanding(scene) {
   return scene.steps.filter((step) => {
     const t = stepTarget(step);
     if (!t) return false;
-    if (decodeLevel(t.rec.device_status) !== t.level) return true;
-    return t.tune != null && t.level > 0 && decodeLevel(t.rec.device_status_tunable) !== t.tune;
+    return decodeLevel(t.rec.device_status) !== t.level;
   });
 }
 

@@ -36,6 +36,10 @@ This was reverse-engineered by probing, not from documentation. Getting it wrong
 
 **Colour temperature** lives in `device_status_tunable` but **cannot be written directly** — that field is silently ignored. Address the tunable channel instead: send `channel_id: <channel_id_tunable>` with the level in `device_status`. On this installation 0 is cool and 100 is warm.
 
+**`device_status_tunable` is a belief, not a reading — the same trap as IR, on every tunable lamp in the house.** The hub writes that field into its own database when it is told a colour, whether or not the lamp obeyed. So reading it back tells you what you asked for, not what happened: on 2026-08-15 it reported five of five COBs at the new colour while **four of the five had not moved**, which the room made obvious and the API never could. Two consequences, both learned the hard way:
+- **Never measure a colour change by reading it back.** A whole sweep of gap timings was run this way and produced a confident, wrong answer (100% at every gap that mattered). The only instrument that works is a person looking at the ceiling — or, for "did the hub try", its own log (below).
+- **Never let a verify pass judge colour.** `verifyGroup()` and `outstanding()` both used to, so they always saw success, never resent, and the safety net for a dropped colour had never once fired. They check brightness only now. Brightness is genuine feedback — the modules do report back, which is why a wall-switch change appears on the next read — so `device_status` can be trusted where `device_status_tunable` cannot.
+
 **An IR device's state is a belief, not a reading.** Six of the seven ACs are `device_type: IR` (the exception is HOME THEATRE 496, `RL`, a real relay). IR is one-way: the hub blasts a code and never hears back, so `device_status` for those units is **only what the hub last sent**. Anyone using the AC's own remote is invisible to it, and the unit's real state can differ indefinitely. Never report an IR device's state as fact — it is "the hub last sent off", not "it is off". This is not a bug to fix; there is no feedback channel to read.
 
 Consequences worth remembering: the left-on advisory for an AC can only catch one switched on *through the hub* — an AC started by its remote will never nudge, which is exactly the case you would most want caught. It can also nudge for a unit someone has since switched off by remote. The advisory is still worth having (forgetting the dashboard's own AC is the common case) but it is not a guarantee, and any UI wording must not imply certainty.
@@ -48,9 +52,39 @@ Re-measured 2026-08-13 (tune changes on ASHU COB 1, read connecting at increasin
 
 **Commanding many devices at once.** One socket per command means a cue of eleven lights is eleven handshakes, and the hub drops most of them — this is what the ~200ms spacing between *single* sends is for. A whole cue therefore goes down **one shared socket** (`sendBatchToHub`), commands spaced `BATCH_GAP_MS` (60ms) apart on the wire, which the hub takes without dropping. Measured: firing 5 lights this way missed 0 with zero retries, twice, in both directions; simply firing the old per-command sends *concurrently* missed 100% (every cue logged a full retry pass). The fix is the shared connection, not concurrency.
 
+**Colour needs 800ms between commands. Brightness does not.** The one gap was applied to both, and colour was quietly changing a single lamp. Measured 2026-08-15 on ASHU's five COBs, counted by eye because the hub cannot be asked (above):
+
+| spacing | colour landed | brightness landed |
+|---|---|---|
+| 60ms (`BATCH_GAP_MS`) | **1 of 5** | **5 of 5** |
+| 300ms | 1 of 5 | — |
+| 500ms | 3 of 5 | — |
+| 800ms | **5 of 5** (twice) | — |
+
+So brightness at 60ms was always fine, and `TUNE_GAP_MS = 800` now paces colour batches — `sendBatchToHub(commands, gapMs)` takes the gap, and both colour senders (`setRecords`, `sendSteps`) pass it. This is exactly the vendor's own `GRP_DELAY_T = 0.8` against `GRP_DELAY_D = 0.2` (`DeviceGroup/models.py`); they clearly hit the same wall. **This was the real "All COBs doesn't change all COBs"**, and the reason a ceiling could end up burning two temperatures. The cost is unavoidable: five COBs take 3.2s of wire time to re-colour, seven take 5.6s, and since the hub reports nothing back about colour there is no way to send fast and repair afterwards. Do not shave it — 500ms already loses two lamps.
+
+**Every COB in the house is on one module: `device_id` 19, all 36 of them.** So pacing per module would buy nothing — the queue is shared no matter which room. Worth re-checking with `device_id` after any vendor visit, because if a later fitting lands on a second module, batches split across the two need not wait for each other.
+
 **Eleven is not five, and the loss is intermittent.** Re-measured 2026-08-14 on LIVING's eleven COBs: at the 60ms spacing that is flawless for five, one run dropped **three of eleven** and the next dropped none, with nothing changed between them. So there is no gap that can be trusted — `gapFor()` widens to 130ms above six commands, which helps and is not a guarantee. What makes it reliable is checking: `setRecords()` schedules `verifyGroup()` in the background, which re-reads and resends **only** the members that did not take. Two rules keep that safe — it skips any record whose `intents` token has changed (something newer owns it), and it refuses to judge a reading taken less than `SETTLE_MS` after its own command, since that reading describes the house before it and acting on it would undo a newer instruction. The caller never waits for any of this.
 
-**Groups are not a shortcut.** `site_config` carries a `groups` array — 40 of them, including real per-room ones the installer made (e.g. id 47 `COB'S` in ASHU/area 41 with 5 devices, id 55 `COB'S` in LIVING with 8). Tempting, but the vendor client contains **no group-command payload at all**: its only group code is HTTP management (`/group/addDeviceGroup|updateDeviceGroup|deleteDeviceGroup`), and it never even reads `group_status_dimmable`. The `vgroup_opr` verb in the client is *create a merged virtual device* (`{opr_type:"vgroup_opr", opr:"add", data:{record_id,name,merged_devices}}`), not "command this group". So there is no evidence the hub accepts a group command; guessing shapes against a controller that answers nothing is how you get silent breakage. Batching already gets the same result.
+**The hub does accept a group command — but batching is still the right call.** An earlier note here said there was no evidence of one, reasoning from the Android client, which indeed carries no group-command payload (its only group code is HTTP management, and `vgroup_opr` is *create a merged virtual device*, not "command this group"). Reading the hub's own Python on 2026-08-15 settled it: `BMS_host/operations.py:142` handles `opr_type: 'group_opr'`, taking `{group_id, group_status_dimmable, group_status_tunable?, tuned?}`, resolving membership from its own database and calling `device_operations.update_lights_parallel()`. **The lesson is the general one in this file — read the source on the box rather than reason from the client.**
+
+Still, do not switch to it:
+- It is **not atomic**. `update_lights_parallel` submits one `relay_opr` per device to a thread pool with `time.sleep(GRP_DELAY_D|GRP_DELAY_T)` between submissions — the same one-command-per-lamp loop we already run, just paced on the hub.
+- The installer's groups **do not match ours**. `site_config` carries `group_devices` per group: Parent, Ashu, Master, Home Theatre and Dining match our All COBs exactly, but **LIVING's group holds 8 of our 11 COBs** and Harshit's single COB is in no group at all. Driving Living by `group_id` would silently skip COB 9, 10 and 11 — precisely the bug the group tile exists to avoid.
+- `tuned = bool(record['tuned'])` in Python makes the **string** `"false"` truthy, so a mistyped flag turns a brightness command into a colour one.
+
+Batching gets the same result, on membership we control.
+
+**`relay_opr` broadcasts UDP and never hears back.** `device_operations.py` ends every command with `urls.s.sendto(udp_pack_new, ('255.255.255.255', 6000))` — one fire-and-forget broadcast per lamp, no ACK, no retry. That is the whole reason spacing matters at all, and why nothing about colour can be confirmed.
+
+**The hub's own log says what it tried, which separates our bugs from its.** The vendor app runs as `tistron_backend.service`, `abneo` is in `adm`, so no sudo is needed:
+
+```bash
+ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pager | grep 'Sending Operation'"
+```
+
+Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
 ## Architecture
 
@@ -141,13 +175,18 @@ Two CSS traps already hit here: shorthand `padding` on `.tools` silently wiped `
 
 ## Working against the live hub
 
-Changing a device physically switches something in someone's home. Prefer a light in `ASHU ROOM` (the user's own room), restore what you changed, and report what you touched. Read hub state directly for verification rather than trusting the dashboard's own view:
+Changing a device physically switches something in someone's home. Prefer a light in `ASHU ROOM` (the user's own room), restore what you changed, and report what you touched. **Check the hour before touching anything** — bedrooms at midnight are not test rigs, and a colour command can bleed onto the main channel and light a room. Read hub state directly for verification rather than trusting the dashboard's own view:
 
 ```bash
 node -e 'const W=require("ws");const ws=new W("ws://192.168.1.3:8090/bms/1/0/A/",{perMessageDeflate:true,headers:{Host:"192.168.1.3:8090","User-Agent":"Dart/3.10 (dart:io)","Accept-Encoding":"gzip","Cache-Control":"no-cache"}});ws.on("message",m=>{const j=JSON.parse(m);if(j.payload?.type!=="site_config")return;console.log(j.payload.response.devices.filter(d=>d.device_status!=="false").map(d=>d.record_id+" "+d.device_name.trim()+" "+d.device_status).join("\n")||"nothing on");process.exit(0)})'
 ```
 
 The hub is only reachable from the same LAN; `EHOSTUNREACH` means the machine is off that network, not that the code is broken.
+
+**A read is not a measurement.** Brightness reads back honestly, so `device_status` can verify a level. Colour does not (see `device_status_tunable` above), so anything about colour has to be counted by eye, and the person at the other end of the conversation is the instrument. When measuring timing this way:
+- **Interleave the conditions, never run them in blocks.** Both dashboards poll every 15s and a trial takes seconds, so block-running one gap at a time lets a burst of interference land entirely on one condition — which is how a flat truth acquires a shape. A blocked sweep produced a clean-looking curve with a trough in it that a shuffled re-run did not reproduce.
+- **Re-baseline between trials**, so a count is read against a known starting state rather than a mixed one.
+- **Restore and verify at the end**, and say what was touched.
 
 ## The hub's HTTP API (Django, alongside the WebSocket)
 
