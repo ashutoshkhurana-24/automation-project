@@ -3167,7 +3167,8 @@ const HTML = /* html */ `<!doctype html>
     #sechouse { margin-top: 14px; }
 
     .field .tiles { grid-template-columns: repeat(4, 1fr); gap: 16px; }
-    .tile.hero-room { grid-column: span 2; grid-row: span 2; height: auto; min-height: 340px; }
+    .tile.hero-room { grid-column: span 2; grid-row: span 2; height: auto;
+                      min-height: calc(var(--tile-h) * 2 + clamp(12px, 1.4vw, 18px)); }
     .tile.hero-room .tile-name { font-size: 22px; }
     .tile.hero-room .tile-read { font-size: 13.5px; }
   }
@@ -5457,8 +5458,22 @@ function fitTiles() {
   if (!tiles) return;
   const top = tiles.getBoundingClientRect().top;
   const avail = window.innerHeight - top - 104;      // the room pill sits under it
-  const h = Math.round((avail - 18) / 2);            // two rows and the gap between
-  root.style.setProperty('--tile-h', Math.max(104, Math.min(182, h)) + 'px');
+  let h = Math.max(104, Math.min(182, Math.round((avail - 18) / 2)));
+  root.style.setProperty('--tile-h', h + 'px');
+
+  /* The whole house has to be on the screen. Seven rooms with the lit one
+     taking a double square needs three rows on a four-column grid, so the
+     landing page scrolled and Home Theatre and Dining fell off the bottom —
+     and a board you have to scroll is not a board you can read at a glance.
+     Rather than compute it (the hero spans two rows, tiles differ in height,
+     and the column count comes from auto-fill), it shrinks until it fits.
+     A room's own board is left alone: fourteen circuits will never fit, and
+     squeezing them to nothing to pretend otherwise would be worse. */
+  if (state.view !== 'house' || state.q) return;
+  for (let i = 0; i < 10 && tiles.scrollHeight > tiles.clientHeight + 2 && h > 78; i++) {
+    h = Math.max(78, h - 8);
+    root.style.setProperty('--tile-h', h + 'px');
+  }
 }
 
 window.addEventListener('resize', fitTiles);
