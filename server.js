@@ -2119,7 +2119,13 @@ const HTML = /* html */ `<!doctype html>
        would undo the point of the glass. A halo does it locally: invisible
        over the dark forest, and the thing that keeps a heading readable where
        the picture goes bright. */
-    --halo: 0 1px 16px rgba(8,12,18,.58), 0 1px 3px rgba(8,12,18,.42);
+/* Tight on purpose. This was a 16px blur, and a wide blur cast by every
+       glyph merges across stacked lines into a rectangular block of shade —
+       whose left boundary is a straight vertical edge running the full height
+       of the text. It reads as a faint line ruled down the page, and no amount
+       of looking at the backdrop finds it, because it is cast by the type
+       itself. A 2px shadow hugs the letters and never pools. */
+    --halo: 0 1px 2px rgba(8,12,18,.62);
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     /* One voice for the interface and another for the sentence it speaks. The
