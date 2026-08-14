@@ -517,6 +517,7 @@ function snapshot() {
     synced_at: hubSync.taken || null,
     hub_ok: hubSync.ok,
     hub_error: hubSync.error,
+    backdrop_v: backdropVersion(),
   };
 }
 
@@ -600,6 +601,45 @@ app.get('/api/stream', (req, res) => {
  */
 const BG_PATH = path.join(__dirname, 'data', 'background.jpg');
 
+/* A library of backdrops rather than one file over SSH.
+ *
+ * data/backdrops/ holds them; settings.backdrop names the one in use, and with
+ * none named the original data/background.jpg still serves — so an install that
+ * has never opened the picker behaves exactly as before. Photographs are
+ * per-install and git-ignored, but build-bundle.sh packs data/, so a library
+ * built on the Mac ships to the hub. */
+const BACKDROP_DIR = path.join(__dirname, 'data', 'backdrops');
+const SAFE_NAME = /^[a-zA-Z0-9._-]{1,64}\.(jpg|jpeg|png)$/;
+
+function backdropList() {
+  try {
+    return fs.readdirSync(BACKDROP_DIR).filter((f) => SAFE_NAME.test(f)).sort();
+  } catch { return []; }
+}
+
+function activeBackdrop() {
+  const chosen = settings.backdrop;
+  if (chosen && SAFE_NAME.test(chosen)) {
+    const file = path.join(BACKDROP_DIR, chosen);
+    if (fs.existsSync(file)) return file;
+  }
+  return fs.existsSync(BG_PATH) ? BG_PATH : null;
+}
+
+/* The backdrop is cached hard, so its version has to move when the picture
+   does — and unlike ASSET_V this cannot be computed once at startup, because
+   the whole point is changing it without a restart. */
+function backdropVersion() {
+  const file = activeBackdrop();
+  if (!file) return 'none';
+  try {
+    const st = fs.statSync(file);
+    return require('crypto').createHash('sha1')
+      .update(`${path.basename(file)}:${st.size}:${Math.round(st.mtimeMs)}`)
+      .digest('hex').slice(0, 8);
+  } catch { return 'none'; }
+}
+
 /**
  * A fingerprint of the assets that are cached hard, used both as the service
  * worker's cache name and as `?v=` on the backdrop.
@@ -622,8 +662,74 @@ const ASSET_V = (() => {
 })();
 
 app.get('/bg.jpg', (req, res) => {
-  if (!fs.existsSync(BG_PATH)) return res.status(404).end();
-  res.type('jpeg').set('Cache-Control', 'public, max-age=86400').sendFile(BG_PATH);
+  const file = activeBackdrop();
+  if (!file) return res.status(404).end();
+  res.type(file.endsWith('.png') ? 'png' : 'jpeg')
+     .set('Cache-Control', 'public, max-age=86400').sendFile(file);
+});
+
+/* One of the library, by name, for the picker's thumbnails. */
+app.get('/backdrops/:file', (req, res) => {
+  if (!SAFE_NAME.test(req.params.file)) return res.status(400).end();
+  const file = path.join(BACKDROP_DIR, req.params.file);
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.type(file.endsWith('.png') ? 'png' : 'jpeg')
+     .set('Cache-Control', 'public, max-age=604800').sendFile(file);
+});
+
+app.get('/api/backdrops', (req, res) => {
+  res.json({
+    current: settings.backdrop || null,
+    has_original: fs.existsSync(BG_PATH),
+    version: backdropVersion(),
+    items: backdropList().map((file) => {
+      let kb = null;
+      try { kb = Math.round(fs.statSync(path.join(BACKDROP_DIR, file)).size / 1024); } catch {}
+      return { file, kb };
+    }),
+  });
+});
+
+app.post('/api/backdrops/choose', (req, res) => {
+  const file = req.body?.file;
+  // null means the one that was there before there was a picker.
+  if (file !== null && !SAFE_NAME.test(String(file || ''))) {
+    return res.status(400).json({ ok: false, error: 'No backdrop by that name' });
+  }
+  if (file !== null && !fs.existsSync(path.join(BACKDROP_DIR, file))) {
+    return res.status(404).json({ ok: false, error: 'No backdrop by that name' });
+  }
+  settings.backdrop = file;
+  saveSettings();
+  pushSnapshot(true);            // every open browser changes its own picture
+  res.json({ ok: true, current: settings.backdrop, version: backdropVersion() });
+});
+
+/* The browser resizes and re-encodes before sending, so this takes a finished
+   JPEG and writes it. That keeps the box free of image libraries, which it has
+   none of, and keeps a 4MB phone photograph off the wire. */
+app.post('/api/backdrops/upload', express.raw({ type: ['image/jpeg', 'image/png'], limit: '8mb' }), (req, res) => {
+  const name = String(req.query.name || 'photo.jpg').replace(/[^a-zA-Z0-9._-]/g, '');
+  const file = SAFE_NAME.test(name) ? name : 'photo-' + Date.now() + '.jpg';
+  if (!req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'No image arrived' });
+  try {
+    fs.mkdirSync(BACKDROP_DIR, { recursive: true });
+    fs.writeFileSync(path.join(BACKDROP_DIR, file), req.body);
+    settings.backdrop = file;
+    saveSettings();
+    pushSnapshot(true);
+    res.json({ ok: true, file, kb: Math.round(req.body.length / 1024), version: backdropVersion() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete('/api/backdrops/:file', (req, res) => {
+  if (!SAFE_NAME.test(req.params.file)) return res.status(400).json({ ok: false, error: 'No such backdrop' });
+  try { fs.unlinkSync(path.join(BACKDROP_DIR, req.params.file)); } catch { /* already gone */ }
+  if (settings.backdrop === req.params.file) { settings.backdrop = null; saveSettings(); }
+  pushSnapshot(true);
+  res.json({ ok: true, current: settings.backdrop, version: backdropVersion() });
 });
 
 // The home-screen icon, and the manifest that makes this installable. Generated
@@ -1865,6 +1971,8 @@ const DEFAULT_SETTINGS = {
   // which is the least surprising thing a lamp can do. The switch stays on the
   // settings rail for anyone who wants the hour to decide.
   circadian: { on: false },
+  // Which of data/backdrops/ is showing. null keeps the original file.
+  backdrop: null,
   // Left-on watching. Advisory only — it reports, it never switches anything off.
   nudges: { on: true, ac_hours: 4, fan_hours: 8, light_hours: 6 },
 };
@@ -1876,6 +1984,7 @@ function loadSettings() {
     settings = {
       circadian: { ...DEFAULT_SETTINGS.circadian, ...(saved.circadian || {}) },
       nudges: { ...DEFAULT_SETTINGS.nudges, ...(saved.nudges || {}) },
+      backdrop: typeof saved.backdrop === 'string' ? saved.backdrop : null,
     };
   } catch { /* first run: defaults are already in place */ }
 }
@@ -2161,6 +2270,10 @@ const HTML = /* html */ `<!doctype html>
        photograph, which is why it carries at a glance. */
     --accent: #ff6f61;
 
+    /* The backdrop, as a property rather than a fixed url, so choosing another
+       one repaints every open browser instead of waiting for a restart. */
+    --shot: url('/bg.jpg?v=${ASSET_V}');
+
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
        rectangle — what makes a pane read as glass is the lens acting on the
@@ -2259,7 +2372,7 @@ const HTML = /* html */ `<!doctype html>
        masses standing in for curtains and a doorway, so the glass always has
        structure to bend even before a picture is dropped in. */
     background-image:
-      url('/bg.jpg?v=${ASSET_V}'),
+      var(--shot),
       radial-gradient(58% 44% at 12% 6%,   rgba(196,216,238,.22) 0%, transparent 68%),
       radial-gradient(46% 40% at 88% 88%,  rgba(176,200,226,.18) 0%, transparent 66%),
       linear-gradient(102deg, transparent 10%, rgba(226,238,250,.05) 13%, transparent 17%),
@@ -2282,7 +2395,12 @@ const HTML = /* html */ `<!doctype html>
        The old note about the backdrop washing the page out was written when
        the panes were opaque paint; they are lenses now, and they need
        something to bend. */
-    filter: saturate(.78) brightness(.76) contrast(1.06);
+/* Brightness is not a constant, because a photograph is not a constant:
+       the fog measures 153 mean luminance, the glacier 171, an alpenglow
+       ridge far less. The page sets --shot-dim from the picture itself, so
+       any photograph — including one just taken on a phone — lands at a
+       luminance the white type and the lamps can live with. */
+    filter: saturate(.78) brightness(var(--shot-dim, .76)) contrast(1.06);
     /* Zoomed past the buildings. This photograph has an apartment block at
        each edge, and the left one put a faint vertical line straight through
        the hero text — read as a rendering artefact, but it was masonry. The
@@ -2525,6 +2643,34 @@ const HTML = /* html */ `<!doctype html>
   }
   .cmd-bad { cursor: default; border-color: var(--edge); color: var(--faint); }
   .cmd-bad:hover { transform: none; border-color: var(--edge); }
+
+  /* The picker shows the photographs at a size worth judging them at — a
+     backdrop chosen from a postage stamp is chosen blind. */
+  .bgsheet { max-width: 720px; }
+  .bggrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+  .bgshot {
+    position: relative; aspect-ratio: 16 / 10; cursor: pointer; overflow: hidden;
+    padding: 0; border-radius: 14px; border: 1px solid var(--edge);
+    background-size: cover; background-position: center; background-color: var(--raise);
+    transition: border-color .2s, transform .16s;
+  }
+  .bgshot:hover { transform: translateY(-2px); }
+  .bgshot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .bgshot.on { border-color: var(--accent); }
+  .bgshot .tag {
+    position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 7px;
+    font-size: 11.5px; color: var(--ink); background: rgba(10,14,20,.55);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .bgshot .drop {
+    position: absolute; right: 6px; top: 6px; width: 24px; height: 24px; padding: 0;
+    border-radius: 8px; border: 1px solid var(--edge); cursor: pointer;
+    color: var(--soft); background: rgba(10,14,20,.55); font: inherit; font-size: 13px;
+    opacity: 0; transition: opacity .18s, color .18s;
+  }
+  .bgshot:hover .drop, .bgshot .drop:focus-visible { opacity: 1; }
+  .bgshot .drop:hover { color: var(--clay); }
+  .bgadd { cursor: pointer; }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
@@ -3389,6 +3535,10 @@ const HTML = /* html */ `<!doctype html>
           <span class="dot"></span>
           <span>Tell me what's been left on</span>
         </button>
+        <button class="setting" id="setbg" type="button">
+          <span class="dot on"></span>
+          <span>Change the backdrop</span>
+        </button>
         </div>
       </div>
     </aside>
@@ -3452,6 +3602,25 @@ const HTML = /* html */ `<!doctype html>
     <button type="button" data-min="120">2 hours</button>
   </div>
   <div class="running" id="timerrunning"></div>
+</div>
+
+<div class="scrim" id="bgscrim" hidden>
+  <div class="sheet bgsheet" role="dialog" aria-modal="true" aria-labelledby="bgtitle">
+    <div class="sheet-head">
+      <div class="sheet-eyebrow">Backdrop</div>
+      <h2 class="sheet-name" id="bgtitle">The picture behind the glass</h2>
+      <p class="sheet-facts">Everything on this page is glass, so what is behind it is
+        half the design. Pick one, or add a photograph of your own.</p>
+    </div>
+    <div class="sheet-body"><div class="bggrid" id="bggrid"></div></div>
+    <div class="sheet-foot">
+      <label class="pull bgadd">
+        Add a photograph
+        <input type="file" id="bgfile" accept="image/jpeg,image/png" hidden>
+      </label>
+      <button class="pull" type="button" id="bgdone">Done</button>
+    </div>
+  </div>
 </div>
 
 <div class="scrim" id="scrim" hidden>
@@ -3588,6 +3757,12 @@ const markCommanded = (id) => commandedAt.set(id, Date.now());
 // and moves the screen to match it.
 function applySnapshot(snap) {
   state.sync = snap;
+  if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
+    // On first load the CSS already points at the right picture, but nothing
+    // has measured it yet, so the dimming still has to be worked out.
+    if (state.bgv) setShot(snap.backdrop_v); else fitShot(snap.backdrop_v);
+    state.bgv = snap.backdrop_v;
+  }
   const fresh = new Map(snap.devices.map(d => [d.record_id, d]));
   let moved = false;
   for (const d of state.devices) {
@@ -5307,6 +5482,139 @@ async function switchOffMany(devs, saying) {
     setTimeout(() => { for (const d of devs) inFlight.delete(d.record_id); }, 4500);
   }
 }
+
+/* ───────────────────────────────────────────────── the picture behind it */
+
+const setShot = (v) => {
+  document.documentElement.style.setProperty('--shot', "url('/bg.jpg?v=" + v + "')");
+  fitShot(v);
+};
+
+/* What the backdrop should be dimmed to.
+ *
+ * Every photograph swapped in so far has needed its own number — the fog at
+ * .76, the glacier at .56 for the same result — and getting it wrong is what
+ * made the page look washed out or dead. So the picture is measured instead of
+ * guessed: mean luminance off a canvas, and a multiplier that lands it at the
+ * value the fog was approved at. Any photograph then behaves, including one
+ * uploaded from a phone thirty seconds ago. */
+const SHOT_TARGET = 116;
+
+function fitShot(v) {
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = 120;
+    c.height = Math.max(1, Math.round(120 * img.height / img.width));
+    const x = c.getContext('2d');
+    x.drawImage(img, 0, 0, c.width, c.height);
+    let sum = 0;
+    const d = x.getImageData(0, 0, c.width, c.height).data;
+    for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    const mean = sum / (d.length / 4);
+    const dim = Math.max(0.28, Math.min(1, SHOT_TARGET / Math.max(1, mean)));
+    document.documentElement.style.setProperty('--shot-dim', dim.toFixed(3));
+  };
+  img.src = '/bg.jpg?v=' + v;
+}
+
+async function drawBackdrops() {
+  const grid = el('#bggrid');
+  grid.innerHTML = '';
+  let lib;
+  try { lib = await fetch('/api/backdrops').then(r => r.json()); }
+  catch { grid.innerHTML = '<p class="empty">The backdrops could not be read.</p>'; return; }
+
+  const shot = (file, label, on) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bgshot' + (on ? ' on' : '');
+    b.style.backgroundImage = "url('" + (file ? '/backdrops/' + file : '/bg.jpg?v=' + lib.version) + "')";
+    b.setAttribute('aria-label', on ? label + ', showing now' : 'Use ' + label);
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = on ? label + ' · showing' : label;
+    b.appendChild(tag);
+    b.onclick = async () => {
+      const r = await fetch('/api/backdrops/choose', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r || !r.ok) return note('That backdrop could not be set.');
+      setShot(r.version);
+      drawBackdrops();
+    };
+    if (file) {
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'drop';
+      drop.textContent = '×';
+      drop.setAttribute('aria-label', 'Remove ' + label);
+      drop.onclick = async (e) => {
+        e.stopPropagation();
+        const r = await fetch('/api/backdrops/' + file, { method: 'DELETE' })
+          .then(x => x.json()).catch(() => null);
+        if (r && r.ok) { setShot(r.version); drawBackdrops(); }
+      };
+      b.appendChild(drop);
+    }
+    return b;
+  };
+
+  if (lib.has_original) grid.appendChild(shot(null, 'The one it came with', !lib.current));
+  for (const it of lib.items) {
+    grid.appendChild(shot(it.file, it.file.replace(/\.(jpg|jpeg|png)$/i, '') +
+      (it.kb ? ' · ' + it.kb + 'KB' : ''), lib.current === it.file));
+  }
+  if (!lib.has_original && !lib.items.length) {
+    grid.innerHTML = '<p class="empty">No photographs yet. Add one below.</p>';
+  }
+}
+
+/* The photograph is resized and re-encoded here, in the browser, before it is
+   sent. The hub has no image libraries — that is why the icon and the lens map
+   are hand-rolled PNG encoders — and a 4MB phone picture would otherwise be
+   pushed to every device that opens the page. A canvas does it for nothing. */
+function shrinkPhoto(file, max) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => (b ? res(b) : rej(new Error('The image could not be read'))), 'image/jpeg', 0.82);
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => rej(new Error('That file is not an image this browser can open'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+el('#setbg').onclick = () => { el('#bgscrim').hidden = false; drawBackdrops(); };
+el('#bgdone').onclick = () => { el('#bgscrim').hidden = true; };
+el('#bgscrim').addEventListener('click', (e) => { if (e.target === el('#bgscrim')) el('#bgscrim').hidden = true; });
+
+el('#bgfile').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  note('Preparing ' + file.name + '…');
+  try {
+    const blob = await shrinkPhoto(file, 2600);
+    const name = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 40) + '.jpg';
+    const r = await fetch('/api/backdrops/upload?name=' + encodeURIComponent(name), {
+      method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob,
+    }).then(x => x.json());
+    if (!r.ok) throw new Error(r.error || 'The hub would not take it');
+    setShot(r.version);
+    drawBackdrops();
+    note(name.replace('.jpg', '') + ' is now the backdrop · ' + r.kb + 'KB');
+  } catch (err) {
+    note(err.message + '.');
+  }
+});
 
 /* ──────────────────────────────────────────────────────────── messages */
 
