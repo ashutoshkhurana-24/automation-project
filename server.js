@@ -2096,7 +2096,7 @@ const HTML = /* html */ `<!doctype html>
        the colour of the photograph behind it, so its alpha moves the result by
        about two RGB levels and cannot be seen; the blur decides whether the
        ridge behind a card survives as a ridge or averages into a flat wash. */
-    --lens: blur(5px) saturate(150%) brightness(.62) contrast(1.06);
+    --lens: blur(5px) saturate(150%) brightness(.90) contrast(1.06);
 
     --edge:      rgba(255,255,255,.22);
     --edge-up:   rgba(255,255,255,.24);
@@ -2185,7 +2185,7 @@ const HTML = /* html */ `<!doctype html>
        The old note about the backdrop washing the page out was written when
        the panes were opaque paint; they are lenses now, and they need
        something to bend. */
-    filter: saturate(.70) brightness(.78) contrast(1.10);
+    filter: saturate(.70) brightness(.90) contrast(1.10);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
