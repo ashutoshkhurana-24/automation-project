@@ -2427,6 +2427,29 @@ const HTML = /* html */ `<!doctype html>
   .tiles::-webkit-scrollbar { width: 8px; }
   .tiles::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
   .tiles::-webkit-scrollbar-track { background: transparent; }
+  /* The command row. It is not a search result, so it does not look like one:
+     wider, warmer at the rim, and carrying the return key it answers to. */
+  .cmd {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 14px;
+    width: 100%; padding: 14px 16px; margin-bottom: 4px; cursor: pointer;
+    font: inherit; text-align: left; color: var(--ink);
+    border: 1px solid color-mix(in oklab, var(--accent) 42%, var(--edge));
+    border-radius: 15px; background: var(--pane);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    box-shadow: var(--cast);
+    transition: border-color .2s, transform .16s, opacity .2s;
+  }
+  .cmd:hover { transform: translateY(-1px); border-color: var(--accent); }
+  .cmd:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .cmd.running { opacity: .55; }
+  .cmd-says { flex: 1 1 auto; font-size: 14.5px; }
+  .cmd-key {
+    flex: 0 0 auto; padding: 3px 9px; border-radius: 7px;
+    border: 1px solid var(--edge); color: var(--soft); font-size: 12px;
+  }
+  .cmd-bad { cursor: default; border-color: var(--edge); color: var(--faint); }
+  .cmd-bad:hover { transform: none; border-color: var(--edge); }
+
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
   .group-label:first-child { margin-top: 0; }
@@ -3705,11 +3728,88 @@ function go(view, room) {
 function fieldSub() {
   if (state.q) {
     const n = matches().length;
+    const cmd = parseCommand(state.q);
+    // Offering to run something and reporting nothing found are different
+    // states, and saying both at once reads as a failure.
+    if (cmd && !cmd.bad && !n) return 'Press ↵ to run it';
     return n + (n === 1 ? ' circuit matches' : ' circuits match');
   }
   const items = state.view === 'room' ? inRoom(state.room) : state.devices;
   const on = lit(items).length;
-  return on ? '<b>' + on + '</b> of ' + items.length + ' on' : 'all ' + items.length + ' off';
+  if (on) return '<b>' + on + '</b> of ' + items.length + ' on';
+  // A count of things that are off is not information anybody wants.
+  return state.view === 'room' ? 'This room is dark' : 'The house is dark';
+}
+
+/* ─────────────────────────────────────────────────────── the command bar
+
+   The server already speaks an address grammar — /do/ashu/cobs/down — and it
+   is one word per segment, so what you type maps onto it directly. The field
+   keeps searching as you type; when the words happen to form a command, a row
+   appears offering to run it, and Enter does.
+
+   Worth knowing: Enter does not clear the field, so pressing it again repeats
+   the command. That is what makes 'ashu cobs down' worth typing — three
+   presses and you are at a quarter brightness. */
+let grammar = null;
+const loadGrammar = () => fetch('/do').then(r => r.json()).then(g => { grammar = g; }).catch(() => {});
+
+const ACTION_SAYS = {
+  on: 'on', off: 'off', toggle: 'the other way', up: '20% brighter', down: '20% dimmer',
+  warm: 'warm', cool: 'cool', warmer: 'a little warmer', cooler: 'a little cooler',
+  open: 'open', close: 'closed', stop: 'stopped',
+};
+
+function parseCommand(q) {
+  if (!grammar) return null;
+  const w = q.trim().toLowerCase().split(/\\s+/).filter(Boolean);
+  if (w.length < 2 || w.length > 3) return null;
+
+  const action = w[w.length - 1];
+  const level = /^\\d{1,3}$/.test(action);
+  const warmth = /^(warmth|tune)-\\d{1,3}$/.test(action);
+  if (!level && !warmth && !ACTION_SAYS[action]) return null;
+
+  const room = grammar.rooms.find(r => r.room.startsWith(w[0]));
+  if (!room) return null;
+
+  let circuit = null;
+  if (w.length === 3) {
+    const hits = room.circuits.filter(c => c.startsWith(w[1]));
+    if (hits.length !== 1) {
+      return { bad: hits.length
+        ? 'That could be ' + hits.slice(0, 5).join(', ')
+        : 'No circuit called ' + w[1] + ' in ' + title(room.room.replace('-', ' ')) };
+    }
+    circuit = hits[0];
+  }
+
+  const what = circuit ? title(circuit.replace(/-/g, ' ')) : 'Everything';
+  const where = title(room.room.replace(/-/g, ' '));
+  const does = level ? 'to ' + Number(action) + '%'
+    : warmth ? 'to warmth ' + action.split('-')[1]
+    : ACTION_SAYS[action];
+  return {
+    path: '/do/' + [room.room, circuit, action].filter(Boolean).join('/'),
+    says: what + ' in ' + where + ' — ' + does,
+  };
+}
+
+async function runCommand(cmd) {
+  const row = el('#cmdrow');
+  if (row) row.classList.add('running');
+  try {
+    const body = await fetch(cmd.path).then(r => r.json());
+    if (!body.ok) throw new Error(body.error || 'The hub did not answer');
+    tick_haptic(9);
+    note(body.spoken + '.');
+    setTimeout(() => sync(true), 900);
+  } catch (err) {
+    tick_haptic([12, 60, 12]);
+    note(err.message + '.');
+  } finally {
+    if (row) row.classList.remove('running');
+  }
 }
 
 const matches = () => {
@@ -3727,7 +3827,8 @@ function drawField() {
   stack.scrollTop = 0;
 
   el('#fieldname').textContent =
-    state.q ? 'Search' : state.view === 'room' ? title(state.room) : 'The house';
+    state.q ? (parseCommand(state.q) ? 'Command' : 'Search')
+      : state.view === 'room' ? title(state.room) : 'The house';
   el('#fieldsub').innerHTML = fieldSub();
 
   const back = el('#back');
@@ -3740,8 +3841,7 @@ function drawField() {
     cut.disabled = !lit(inRoom(state.room)).length;
     cut.onclick = () => {
       const on = lit(inRoom(state.room));
-      on.forEach(d => setDevice(d, false));
-      note('Switching off ' + on.length + ' in ' + title(state.room) + '.');
+      switchOffMany(on, 'Switching off ' + on.length + ' in ' + title(state.room) + '.');
     };
   }
 
@@ -3761,11 +3861,18 @@ function fillHouse(stack) {
     const load = output(inRoom(room)) * lit(inRoom(room)).length;
     if (load > best) { best = load; hero = room; }
   }
-  // the big one leads, so the eye starts where the light is
-  const order = hero ? [hero, ...all.filter(r => r !== hero)] : all;
-  order.forEach(room => {
+  // The big one leads, and the rest follow in the order of how much light they
+  // are carrying — so the cards arrive brightest first and the eye lands where
+  // the light is before a single word has been read. The order is the
+  // information; there is no stagger for its own sake.
+  const byLight = (a, b) => output(inRoom(b)) - output(inRoom(a));
+  const order = hero
+    ? [hero, ...all.filter(r => r !== hero).sort(byLight)]
+    : all;
+  order.forEach((room, i) => {
     const tile = roomTile(room);
     if (room === hero) tile.classList.add('hero-room');
+    tile.style.animationDelay = (i * 42) + 'ms';
     stack.appendChild(tile);
   });
 }
@@ -3789,8 +3896,21 @@ function fillRoom(stack, room) {
 }
 
 function fillSearch(stack) {
+  const cmd = parseCommand(state.q);
+  if (cmd) {
+    const row = document.createElement(cmd.bad ? 'div' : 'button');
+    row.id = 'cmdrow';
+    row.className = 'cmd' + (cmd.bad ? ' cmd-bad' : '');
+    if (!cmd.bad) { row.type = 'button'; row.onclick = () => runCommand(cmd); }
+    row.innerHTML = '<span class="cmd-says"></span>' +
+      (cmd.bad ? '' : '<span class="cmd-key">↵</span>');
+    row.querySelector('.cmd-says').textContent = cmd.bad || cmd.says;
+    stack.appendChild(row);
+  }
+
   const found = matches();
   if (!found.length) {
+    if (cmd && !cmd.bad) return;          // the command is the answer
     const p = document.createElement('p');
     p.className = 'empty';
     p.textContent = 'No circuit by that name. Try a room, or part of a label.';
@@ -3829,8 +3949,7 @@ function roomTile(room) {
   tile.querySelector('.tile-body').onclick = () => go('room', room);
   tile.querySelector('.key').onclick = () => {
     const on = lit(inRoom(room));
-    on.forEach(d => setDevice(d, false));
-    note('Switching off ' + on.length + ' in ' + title(room) + '.');
+    switchOffMany(on, 'Switching off ' + on.length + ' in ' + title(room) + '.');
   };
   roomTileState(tile, room);
   return tile;
@@ -5009,8 +5128,60 @@ function wireMain() {
 
 function allOff() {
   const on = lit(state.devices);
-  on.forEach(d => setDevice(d, false));
-  note(on.length + (on.length === 1 ? ' circuit' : ' circuits') + ' switching off.');
+  switchOffMany(on, on.length + (on.length === 1 ? ' circuit' : ' circuits') + ' switching off.');
+}
+
+/**
+ * Switching several circuits off at once.
+ *
+ * This used to be one setDevice call per circuit, fired at once, which is the one
+ * thing this hub cannot take: a separate socket per command, all opened in the
+ * same millisecond. Measured on a five-circuit room — the tiles go off, then
+ * every confirmation comes back refused and puts them ALL back on for about
+ * seven seconds, before a later read finds they had landed after all. The room
+ * appears to switch itself back on.
+ *
+ * So it goes down one shared socket, the way a cue does, and takes one verdict
+ * instead of five. Air conditioners still go one at a time, because an IR unit
+ * needs its command string rather than a bare record.
+ */
+async function switchOffMany(devs, saying) {
+  if (!devs.length) return;
+  const was = devs.map(d => ({ d, status: d.status, level: d.level }));
+  for (const d of devs) {
+    d.status = false;
+    if (d.is_dimmable) d.level = 0;
+    paint(d);
+    inFlight.add(d.record_id);
+    markCommanded(d.record_id);
+  }
+  tick();
+  note(saying);
+
+  const acs = devs.filter(d => d.is_ac);
+  const rest = devs.filter(d => !d.is_ac);
+  try {
+    const calls = [];
+    if (rest.length) calls.push(fetch('/api/group', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record_ids: rest.map(d => d.record_id), on: false }),
+    }));
+    for (const ac of acs) calls.push(fetch('/api/ac', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record_id: ac.record_id, power: false }),
+    }));
+    const res = await Promise.all(calls);
+    if (res.some(r => !r.ok)) throw new Error('The hub refused part of that');
+    tick_haptic(9);
+  } catch (err) {
+    for (const { d, status, level } of was) { d.status = status; d.level = level; paint(d); }
+    tick();
+    tick_haptic([12, 60, 12]);
+    note('Nothing switched off — ' + err.message);
+  } finally {
+    // No per-circuit verdict here; the next read speaks for all of them.
+    setTimeout(() => { for (const d of devs) inFlight.delete(d.record_id); }, 4500);
+  }
 }
 
 /* ──────────────────────────────────────────────────────────── messages */
@@ -5040,6 +5211,14 @@ function note(msg, hold, action) {
 /* ────────────────────────────────────────────────────────────── wiring */
 
 el('#seek').addEventListener('input', (e) => { state.q = e.target.value; drawField(); });
+el('#seek').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const cmd = parseCommand(state.q);
+  if (!cmd || cmd.bad) return;
+  e.preventDefault();
+  runCommand(cmd);        // the field keeps its text, so Enter again repeats it
+});
+loadGrammar();
 
 // On a phone the search field is folded away behind its icon; opening it gives
 // it the row it needs, and leaving it empty folds it back.
