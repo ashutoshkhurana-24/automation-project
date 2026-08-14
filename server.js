@@ -2417,7 +2417,6 @@ const HTML = /* html */ `<!doctype html>
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
                 inset -1px -1.4px 0 -.4px rgba(255,255,255,.15),
-                inset 0 0 30px -8px rgba(255,255,255,.10),
                 var(--cast);
     transition: border-color .25s, background .25s, transform .18s, box-shadow .3s;
   }
@@ -2467,7 +2466,10 @@ const HTML = /* html */ `<!doctype html>
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
   .tile.on {
-    background: rgba(16,20,27,.34);
+    /* Was a .34 near-black wash, which quietly put the overlay back on every
+       card that is lit — the ones you look at. The glow below supplies all the
+       contrast a lit tile needs. */
+    background: transparent;
     border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
     box-shadow:
       /* the lit edge itself */
@@ -2639,7 +2641,7 @@ const HTML = /* html */ `<!doctype html>
   /* ── the sheet ───────────────────────────────────────────────────────── */
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
-    padding: 22px; background: rgba(16,12,9,.7);
+    padding: 22px; background: rgba(16,20,27,.34);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     animation: fade .22s ease both;
   }
@@ -2647,7 +2649,7 @@ const HTML = /* html */ `<!doctype html>
   @keyframes fade { from { opacity: 0; } }
   .sheet {
     width: min(540px, 100%); max-height: min(680px, 88vh); display: flex; flex-direction: column;
-    border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(70,60,51,.74);
+    border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(22,28,38,.40);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip), 0 40px 80px -28px rgba(0,0,0,.75);
     animation: lift .3s cubic-bezier(.2,.8,.3,1) both;
@@ -2785,7 +2787,7 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; left: 50%; bottom: 26px; z-index: 60;
     transform: translate(-50%, 180%); visibility: hidden; opacity: 0;
     max-width: min(92vw, 440px); padding: 13px 18px;
-    background: rgba(70,60,51,.78); border: 1px solid var(--edge-up); border-radius: 14px;
+    background: rgba(22,28,38,.42); border: 1px solid var(--edge-up); border-radius: 14px;
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip), 0 24px 50px -20px rgba(0,0,0,.7);
     font-size: 13.5px; color: var(--ink);
@@ -2889,7 +2891,7 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; z-index: 46; right: 18px; bottom: 18px;
     width: min(330px, calc(100vw - 36px));
     padding: 15px; border-radius: 16px;
-    background: rgba(14,17,23,.92); border: 1px solid var(--edge-up);
+    background: rgba(14,17,23,.52); border: 1px solid var(--edge-up);
     backdrop-filter: var(--lens);
     -webkit-backdrop-filter: var(--lens);
     box-shadow: var(--cast);
@@ -3052,7 +3054,7 @@ const HTML = /* html */ `<!doctype html>
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
       padding-top: 9px; padding-right: 14px; padding-left: 14px;
       padding-bottom: calc(9px + env(safe-area-inset-bottom));
-      background: rgba(12,15,20,.82); border-top: 1px solid var(--edge);
+      background: rgba(12,15,20,.44); border-top: 1px solid var(--edge);
       backdrop-filter: var(--lens);
       -webkit-backdrop-filter: var(--lens);
     }
