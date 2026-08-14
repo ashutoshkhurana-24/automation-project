@@ -4097,9 +4097,18 @@ function cobTile(room, members) {
   return tile;
 }
 
-// What the whole set reads as: its mean, since they are set together.
-const gangMean = (members, key) =>
-  Math.round(members.reduce((s, d) => s + (d[key] || 0), 0) / members.length);
+/* What the set reads as.
+ *
+ * Brightness is averaged over the lamps that are ON, not over all of them.
+ * Four dark lamps and one at full is a ceiling set to 100 with most of it
+ * switched off — it is not a ceiling at 20%, and showing 20 meant a single
+ * nudge of the slider slammed every lamp down to a fifth. Colour averages over
+ * everything, because a lamp keeps its colour while it is off. */
+function gangMean(members, key) {
+  const pool = key === 'level' ? members.filter(d => d.status) : members;
+  if (!pool.length) return 0;
+  return Math.round(pool.reduce((s, d) => s + (d[key] || 0), 0) / pool.length);
+}
 
 function gangRead(members) {
   const on = lit(members);
@@ -4133,7 +4142,8 @@ function paintGang(tile) {
 
   const key = tile.querySelector('.key');
   key.setAttribute('aria-pressed', String(on.length > 0));
-  key.setAttribute('aria-label', (on.length ? 'Turn off' : 'Turn on') + ' all ' + members.length + ' COBs');
+  key.setAttribute('aria-label',
+    (members.every(d => d.status) ? 'Turn off' : 'Turn on') + ' all ' + members.length + ' COBs');
   tile.querySelector('.tile-body').setAttribute('aria-label',
     'All COBs in ' + title(tile.dataset.gang) + ', ' + gangRead(members));
 }
@@ -4322,15 +4332,25 @@ async function sendSlider(d, key) {
 
 /* ────────────────────────────────────── switching a room's COBs together */
 
-// Part on reads as on, so the key finishes the job rather than undoing it.
+/* The key makes them all the same, which is the only thing "all" can mean.
+ *
+ * It used to switch off whenever any single lamp was lit, so pressing All COBs
+ * on a ceiling with one lamp on put that one out — the opposite of what the
+ * control appears to offer. Now anything short of all-on turns them all on, and
+ * only a ceiling that is already fully lit switches off. Coming on, they match
+ * the brightest lamp already burning rather than jumping to full, so pressing
+ * it with one lamp at 40% gives you five at 40%. */
 async function setGang(tile) {
   const members = cobsIn(tile.dataset.gang);
-  const next = !lit(members).length;
+  const next = !members.every(d => d.status);
+  const level = next
+    ? Math.max(100 * 0, ...members.filter(d => d.status).map(d => (d.is_dimmable ? d.level : 100)), 0) || 100
+    : 0;
   const was = members.map(d => ({ d, status: d.status, level: d.level }));
 
   for (const d of members) {
     d.status = next;
-    if (d.is_dimmable) d.level = next ? 100 : 0;
+    if (d.is_dimmable) d.level = next ? level : 0;
     paint(d);
     inFlight.add(d.record_id);
     markCommanded(d.record_id);
@@ -4341,7 +4361,9 @@ async function setGang(tile) {
   try {
     const res = await fetch('/api/group', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ record_ids: members.map(d => d.record_id), on: next }),
+      body: JSON.stringify(next
+        ? { record_ids: members.map(d => d.record_id), on: true, level }
+        : { record_ids: members.map(d => d.record_id), on: false }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.ok) throw new Error(body.error || 'Hub did not respond');
