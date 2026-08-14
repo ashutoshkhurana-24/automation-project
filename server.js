@@ -2966,26 +2966,7 @@ const HTML = /* html */ `<!doctype html>
      house does not switch off a room someone may be sitting in — so they are
      written as observations rather than alarms. */
   .nudges { display: grid; gap: 8px; margin-bottom: 16px; }
-  /* The deck. Past two alerts the rest sit behind the newest, each a little
-     lower and a little smaller, so the pile reads as a pile without costing
-     the height of a pile. */
-  .deck { display: grid; gap: 8px; }
-  .nudges.stacked .deck { position: relative; padding-bottom: 15px; }
-  .nudges.stacked .nudge { transition: transform .32s cubic-bezier(.3,.8,.3,1), opacity .32s; }
-  .nudges.stacked .nudge:not(:first-child) {
-    position: absolute; left: 0; right: 0; top: 0; pointer-events: none;
-    z-index: calc(9 - var(--i));
-    transform: translateY(calc(var(--i) * 7px)) scale(calc(1 - var(--i) * .04));
-    opacity: calc(1 - var(--i) * .34);
-  }
-  .deck-more {
-    justify-self: start; padding: 7px 13px; cursor: pointer;
-    font: inherit; font-size: 12.5px; color: var(--soft);
-    background: var(--pane); border: 1px solid var(--edge); border-radius: 999px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    transition: color .18s, border-color .18s;
-  }
-  .deck-more:hover { color: var(--ink); border-color: var(--edge-up); }
+
   .nudge {
     display: flex; align-items: center; gap: 11px;
     padding-top: 10px; padding-right: 11px; padding-bottom: 10px; padding-left: 13px;
@@ -5399,24 +5380,9 @@ async function loadAuto() {
   } catch { /* the next pass picks it up */ }
 }
 
-/* Alerts arrive one per circuit left on too long, so a forgetful evening can
-   produce five at once — and five rows of chrome push the house itself off the
-   screen, which is the opposite of what an alert is for. Past two they become a
-   deck: the newest in front, the rest peeking below it, and a count you can
-   press to open them out. */
-const STACK_AT = 2;
-let nudgesOpen = false;
-
 function drawNudges() {
   const host = el('#nudges');
   host.innerHTML = '';
-  const stacked = auto.nudges.length > STACK_AT && !nudgesOpen;
-  host.classList.toggle('stacked', stacked);
-
-  const deck = document.createElement('div');
-  deck.className = 'deck';
-  host.appendChild(deck);
-
   for (const n of auto.nudges) {
     const row = document.createElement('div');
     row.className = 'nudge' + (n.kind === 'ac' ? ' ac' : '');
@@ -5444,30 +5410,23 @@ function drawNudges() {
       await fetch('/api/nudges/' + n.record_id + '/dismiss', { method: 'POST' }).catch(() => {});
     };
     row.append(off, seen);
-    row.style.setProperty('--i', deck.children.length);
-    deck.appendChild(row);
+    host.appendChild(row);
   }
-
-  if (auto.nudges.length > STACK_AT) {
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'deck-more';
-    more.textContent = stacked
-      ? auto.nudges.length + ' circuits left on — show them'
-      : 'Stack them again';
-    more.onclick = () => { nudgesOpen = !nudgesOpen; drawNudges(); fitTiles(); };
-    host.appendChild(more);
-  }
-  fitTiles();
+  fitTiles();          // the alerts have taken their space; the tiles take the rest
 }
 
-/* The tiles take the room the alerts leave them.
+/* The tiles take whatever room is left above them.
  *
- * The board is a fixed column on a wide screen — it does not scroll with the
- * page — so anything above the tiles is taken straight out of their height.
- * Two alerts cost about 120px, which is most of a row. Rather than let the
- * grid spill below the fold, the tiles measure what is left and size
- * themselves to it, so two rows always fit and the room pill stays put. */
+ * On a wide screen the board is a fixed column — it does not scroll with the
+ * page — so everything stacked above the tiles comes straight out of their
+ * height. An alert costs about 55px, the header pill another 65, and four
+ * alerts on a forgetful evening is most of a row. Rather than let the grid
+ * spill below the fold, the tiles measure what is actually left and size
+ * themselves to it, so two rows fit whatever else is on screen.
+ *
+ * It has to be measured rather than calculated, because the things above are
+ * not fixed: an alert is dismissed by removing its row, with nothing redrawn,
+ * so a ResizeObserver is what notices. */
 function fitTiles() {
   const root = document.documentElement;
   if (window.innerWidth < 861) { root.style.removeProperty('--tile-h'); return; }
@@ -5475,11 +5434,20 @@ function fitTiles() {
   if (!tiles) return;
   const top = tiles.getBoundingClientRect().top;
   const avail = window.innerHeight - top - 104;      // the room pill sits under it
-  const h = Math.round((avail - 18) / 2);            // two rows, one gap
-  root.style.setProperty('--tile-h', Math.max(108, Math.min(182, h)) + 'px');
+  const h = Math.round((avail - 18) / 2);            // two rows and the gap between
+  root.style.setProperty('--tile-h', Math.max(104, Math.min(182, h)) + 'px');
 }
 
 window.addEventListener('resize', fitTiles);
+// Anything that can change height above the tiles is watched. The tiles
+// themselves are not, or setting their height would wake the observer again.
+if (window.ResizeObserver) {
+  const watch = new ResizeObserver(() => fitTiles());
+  for (const sel of ['#nudges', '.field-head', '.plate', '#timerrunning']) {
+    const node = document.querySelector(sel);
+    if (node) watch.observe(node);
+  }
+}
 
 function drawTimers() {
   const host = el('#timerrunning');
