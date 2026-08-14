@@ -2053,16 +2053,16 @@ const HTML = /* html */ `<!doctype html>
 <title>Pravita's Apartment</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <style>
   :root {
     /* Warm charcoal, no blue anywhere in the greys. The interface is greyscale;
        the only colour on the page is the light a lamp is actually making. */
     --base:   #12151a;
     --raise:  #1b2027;
-    --ink:    #f2f5f8;
-    --soft:   #b6bec8;
-    --faint:  #8a939e;      /* lifted: on the deeper base, the old value fell under 4:1 */
+    --ink:    #ffffff;
+    --soft:   #dfe5ec;
+    --faint:  #b3bcc7;      /* lifted: on the deeper base, the old value fell under 4:1 */
 
     /* Lamp colour, at full strength now: a tungsten bulb is genuinely amber.
        Cool stays a muted blue-grey — it is the contrast that carries meaning. */
@@ -2079,14 +2079,18 @@ const HTML = /* html */ `<!doctype html>
        drawn in the same ink as the light itself, and the page said two
        different things in one colour. This is type, not emission: a true
        orange, off the lamp palette on purpose. */
-    --accent: #ff7d3f;
+    /* Coral, not amber. The backdrop is cold and the lamps are warm-yellow,
+       so a yellow accent said the same thing twice; coral sits between them —
+       unmistakably not lamp light, and the complement of a blue-grey
+       photograph, which is why it carries at a glance. */
+    --accent: #ff6f61;
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
        rectangle — what makes a pane read as glass is the lens acting on the
        picture behind THIS pane, not paint laid over it. */
-    --pane:      rgba(12,17,24,0);
-    --pane-up:   rgba(20,28,38,.10);
+    --pane:      rgba(18,24,32,.26);
+    --pane-up:   rgba(24,32,42,.38);
 
     /* Glass catches light even in a dark room, so the lens lifts slightly
        rather than darkening. The blur is the number that matters most: at the
@@ -2096,7 +2100,13 @@ const HTML = /* html */ `<!doctype html>
        the colour of the photograph behind it, so its alpha moves the result by
        about two RGB levels and cannot be seen; the blur decides whether the
        ridge behind a card survives as a ridge or averages into a flat wash. */
-    --lens: blur(5px) saturate(150%) brightness(.90) contrast(1.06);
+    /* Read off an iOS notification. The heavy blur is right here and was
+       wrong before, because it depends entirely on the picture: over pine
+       needles it destroyed the only thing worth seeing, and over smooth fog
+       there is nothing to destroy — the material just takes the colour of the
+       weather behind it. The tint darkens, because white type has to sit on
+       it and the fog is pale. */
+    --lens: blur(30px) saturate(145%) brightness(.72) contrast(1.02);
 
     --edge:      rgba(255,255,255,.22);
     --edge-up:   rgba(255,255,255,.24);
@@ -2109,9 +2119,14 @@ const HTML = /* html */ `<!doctype html>
        would undo the point of the glass. A halo does it locally: invisible
        over the dark forest, and the thing that keeps a heading readable where
        the picture goes bright. */
-    --halo: 0 1px 12px rgba(6,10,16,.88), 0 0 3px rgba(6,10,16,.75);
+    --halo: 0 1px 16px rgba(8,12,18,.58), 0 1px 3px rgba(8,12,18,.42);
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    /* One voice for the interface and another for the sentence it speaks. The
+       hero is the only place the dashboard talks rather than reports, so it
+       gets a high-contrast serif; everything that labels or measures stays in
+       the grotesque. Two faces, each with one job. */
+    --display: "Instrument Serif", ui-serif, Georgia, serif;
 
     --tile-h: clamp(146px, 20vh, 182px);
     --lamp: var(--warm);
@@ -2185,7 +2200,7 @@ const HTML = /* html */ `<!doctype html>
        The old note about the backdrop washing the page out was written when
        the panes were opaque paint; they are lenses now, and they need
        something to bend. */
-    filter: saturate(.70) brightness(.90) contrast(1.10);
+    filter: saturate(.78) brightness(.76) contrast(1.06);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
@@ -2413,7 +2428,7 @@ const HTML = /* html */ `<!doctype html>
     --tint: var(--warm);
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
     position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
-    border-radius: 20px; border: 1px solid var(--edge); background: var(--pane);
+    border-radius: 26px; border: 1px solid var(--edge); background: var(--pane);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
                 inset -1px -1.4px 0 -.4px rgba(255,255,255,.15),
@@ -2987,10 +3002,11 @@ const HTML = /* html */ `<!doctype html>
     .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--soft);
                    text-shadow: var(--halo); }
     .hero .say {
-      margin: 10px 0 0; font-weight: 300; letter-spacing: -.03em; line-height: .96;
-      font-size: clamp(40px, 4.4vw, 66px); color: var(--ink); text-shadow: var(--halo);
+      margin: 12px 0 0; font-family: var(--display); font-weight: 400;
+      letter-spacing: -.012em; line-height: 1.02;
+      font-size: clamp(44px, 5vw, 74px); color: var(--ink); text-shadow: var(--halo);
     }
-    .hero .say b { font-weight: 400; color: var(--accent); }
+    .hero .say b { font-weight: 400; color: var(--accent); font-style: italic; }
     .hero .say span { display: block; color: var(--soft); font-size: .42em; letter-spacing: -.01em;
                       margin-top: 14px; line-height: 1.4; font-weight: 400; }
 
