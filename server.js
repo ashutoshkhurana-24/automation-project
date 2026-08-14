@@ -2085,8 +2085,8 @@ const HTML = /* html */ `<!doctype html>
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
        rectangle — what makes a pane read as glass is the lens acting on the
        picture behind THIS pane, not paint laid over it. */
-    --pane:      rgba(12,17,24,.24);
-    --pane-up:   rgba(20,28,38,.36);
+    --pane:      rgba(12,17,24,0);
+    --pane-up:   rgba(20,28,38,.10);
 
     /* Glass catches light even in a dark room, so the lens lifts slightly
        rather than darkening. The blur is the number that matters most: at the
@@ -2418,7 +2418,6 @@ const HTML = /* html */ `<!doctype html>
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
                 inset -1px -1.4px 0 -.4px rgba(255,255,255,.15),
                 inset 0 0 30px -8px rgba(255,255,255,.10),
-                inset 0 -18px 26px -26px rgba(0,0,0,.55),
                 var(--cast);
     transition: border-color .25s, background .25s, transform .18s, box-shadow .3s;
   }
