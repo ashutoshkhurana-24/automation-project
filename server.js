@@ -2075,11 +2075,21 @@ const HTML = /* html */ `<!doctype html>
     --accent: #ff7d3f;
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
-    --pane:      rgba(9,12,17,.34);
-    --pane-up:   rgba(14,18,25,.46);
-    --edge:      rgba(255,255,255,.13);
+    /* Nearly nothing. A dark fill over a dark photograph is just a dark
+       rectangle — what makes a pane read as glass is the lens acting on the
+       picture behind THIS pane, not paint laid over it. */
+    --pane:      rgba(16,22,30,.16);
+    --pane-up:   rgba(24,32,42,.28);
+
+    /* Glass catches light even in a dark room, so the lens lifts slightly
+       rather than darkening. The blur is the number that matters most: at the
+       30px this used to run at, everything behind resolved to one flat colour
+       and you could not tell there was a photograph there at all. */
+    --lens: blur(12px) saturate(165%) brightness(1.16) contrast(1.02);
+
+    --edge:      rgba(255,255,255,.22);
     --edge-up:   rgba(255,255,255,.24);
-    --lip:       rgba(255,255,255,.13);
+    --lip:       rgba(255,255,255,.40);
     --sheen: linear-gradient(152deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,.018) 34%, transparent 62%);
     --cast: 0 14px 34px -20px rgba(0,0,0,.7);
 
@@ -2152,7 +2162,7 @@ const HTML = /* html */ `<!doctype html>
        warm one — lit peaks, sunlit grass — so it is desaturated harder than a
        cold backdrop needs to be, or the page would read as amber-on-amber and
        a lamp would stop being the only warm thing on it. */
-    filter: saturate(.46) brightness(.40) contrast(1.06);
+    filter: saturate(.62) brightness(.50) contrast(1.16);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
@@ -2165,10 +2175,10 @@ const HTML = /* html */ `<!doctype html>
          of the frame, so the fade keeps a floor rather than releasing at the
          middle. Nine stops, because fewer shows as a band. */
       linear-gradient(180deg,
-        rgba(10,8,6,.74) 0%,  rgba(10,8,6,.56) 11%, rgba(10,8,6,.38) 20%,
-        rgba(10,8,6,.24) 29%, rgba(10,8,6,.14) 38%, rgba(10,8,6,.10) 48%,
-        rgba(10,8,6,.18) 60%, rgba(10,8,6,.34) 78%, rgba(10,8,6,.56) 100%),
-      radial-gradient(130% 86% at 50% 8%, transparent 34%, rgba(8,6,4,.50) 100%);
+        rgba(10,8,6,.70) 0%,  rgba(10,8,6,.44) 11%, rgba(10,8,6,.24) 20%,
+        rgba(10,8,6,.12) 29%, rgba(10,8,6,.05) 38%, rgba(10,8,6,.03) 48%,
+        rgba(10,8,6,.09) 60%, rgba(10,8,6,.26) 78%, rgba(10,8,6,.48) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 40%, rgba(8,6,4,.44) 100%);
   }
 
   .spill {
@@ -2217,8 +2227,8 @@ const HTML = /* html */ `<!doctype html>
     display: none; flex: 0 0 auto; width: 38px; height: 38px; padding: 0; cursor: pointer;
     place-items: center; border-radius: 11px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--soft);
-    backdrop-filter: blur(22px) saturate(150%);
-    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    backdrop-filter: var(--lens);
+    -webkit-backdrop-filter: var(--lens);
   }
   .seek-toggle svg { width: 16px; height: 16px; }
   .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
@@ -2227,7 +2237,7 @@ const HTML = /* html */ `<!doctype html>
   .seek input {
     width: 100%; padding: 10px 14px 10px 34px; color: var(--ink);
     background: var(--pane); border: 1px solid var(--edge); border-radius: 12px;
-    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip);
     font: 400 13.5px/1 var(--sans); outline: none; transition: border-color .2s, background .2s;
   }
@@ -2241,7 +2251,7 @@ const HTML = /* html */ `<!doctype html>
     position: relative; flex: 0 0 auto; padding: 10px 16px; cursor: pointer; overflow: hidden;
     display: flex; align-items: center; gap: 8px;
     background: var(--pane); border: 1px solid var(--edge); border-radius: 12px;
-    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip);
     color: var(--soft); font: 500 13px/1 var(--sans);
     transition: color .2s, border-color .2s, background .2s;
@@ -2285,7 +2295,7 @@ const HTML = /* html */ `<!doctype html>
     position: relative; width: 100%; display: block; text-align: left; cursor: pointer;
     padding: 10px 34px 11px 12px; border-radius: 12px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--ink);
-    backdrop-filter: blur(26px) saturate(125%); -webkit-backdrop-filter: blur(26px) saturate(125%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip);
     font: 400 13.5px/1.3 var(--sans); transition: background .18s, border-color .18s, transform .16s;
   }
@@ -2332,8 +2342,8 @@ const HTML = /* html */ `<!doctype html>
     padding-bottom: 6px; padding-left: 9px;
     font: inherit; font-size: 12.5px; color: var(--soft);
     background: var(--pane); border: 1px solid var(--edge); border-radius: 999px;
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: var(--lens);
+    -webkit-backdrop-filter: var(--lens);
     transition: color .18s, border-color .18s, background .18s, transform .18s;
   }
   .back[hidden] { display: none; }
@@ -2349,7 +2359,7 @@ const HTML = /* html */ `<!doctype html>
   .cut {
     margin-left: auto; flex: 0 0 auto; padding: 9px 14px; cursor: pointer;
     background: var(--pane); border: 1px solid var(--edge); border-radius: 11px;
-    backdrop-filter: blur(26px); -webkit-backdrop-filter: blur(26px);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     color: var(--soft); font: 400 13px/1 var(--sans); transition: color .18s, background .18s;
   }
   .cut:hover:not(:disabled) { color: var(--ink); background: var(--pane-up); }
@@ -2380,8 +2390,10 @@ const HTML = /* html */ `<!doctype html>
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
     position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
     border-radius: 20px; border: 1px solid var(--edge); background: var(--pane);
-    backdrop-filter: blur(30px) saturate(125%); -webkit-backdrop-filter: blur(30px) saturate(125%);
-    box-shadow: inset 0 1px 0 var(--lip),
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
+                inset -1px -1.4px 0 -.4px rgba(255,255,255,.15),
+                inset 0 0 30px -8px rgba(255,255,255,.10),
                 inset 0 -18px 26px -26px rgba(0,0,0,.55),
                 var(--cast);
     transition: border-color .25s, background .25s, transform .18s, box-shadow .3s;
@@ -2396,8 +2408,10 @@ const HTML = /* html */ `<!doctype html>
     .tile::after, .cue::after, .tab::after, .sheet::after,
     .timerpop::after, .quick button::after, .key::after {
       content: ''; position: absolute; inset: 0; z-index: 3;
-      border-radius: inherit; padding: 1px; pointer-events: none;
+      border-radius: inherit; padding: 2px; pointer-events: none;
       background: var(--rim);
+      backdrop-filter: brightness(1.5) saturate(1.8);
+      -webkit-backdrop-filter: brightness(1.5) saturate(1.8);
       -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -2603,7 +2617,7 @@ const HTML = /* html */ `<!doctype html>
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
     padding: 22px; background: rgba(16,12,9,.7);
-    backdrop-filter: blur(14px) saturate(80%); -webkit-backdrop-filter: blur(14px) saturate(80%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     animation: fade .22s ease both;
   }
   .scrim[hidden] { display: none; }
@@ -2611,7 +2625,7 @@ const HTML = /* html */ `<!doctype html>
   .sheet {
     width: min(540px, 100%); max-height: min(680px, 88vh); display: flex; flex-direction: column;
     border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(70,60,51,.74);
-    backdrop-filter: blur(50px) saturate(130%); -webkit-backdrop-filter: blur(50px) saturate(130%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip), 0 40px 80px -28px rgba(0,0,0,.75);
     animation: lift .3s cubic-bezier(.2,.8,.3,1) both;
   }
@@ -2749,7 +2763,7 @@ const HTML = /* html */ `<!doctype html>
     transform: translate(-50%, 180%); visibility: hidden; opacity: 0;
     max-width: min(92vw, 440px); padding: 13px 18px;
     background: rgba(70,60,51,.78); border: 1px solid var(--edge-up); border-radius: 14px;
-    backdrop-filter: blur(40px) saturate(130%); -webkit-backdrop-filter: blur(40px) saturate(130%);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip), 0 24px 50px -20px rgba(0,0,0,.7);
     font-size: 13.5px; color: var(--ink);
     transition: transform .34s cubic-bezier(.2,.8,.3,1), opacity .22s, visibility .34s;
@@ -2786,8 +2800,8 @@ const HTML = /* html */ `<!doctype html>
       margin-bottom: 14px; padding: 14px 14px 10px; border-radius: 18px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge); box-shadow: var(--cast);
-      backdrop-filter: blur(22px) saturate(150%);
-      -webkit-backdrop-filter: blur(22px) saturate(150%);
+      backdrop-filter: var(--lens);
+      -webkit-backdrop-filter: var(--lens);
       font: inherit; color: var(--ink);
     }
     .glance-say { display: block; font-size: 15px; line-height: 1.35; color: var(--soft); }
@@ -2830,8 +2844,8 @@ const HTML = /* html */ `<!doctype html>
     padding-top: 10px; padding-right: 11px; padding-bottom: 10px; padding-left: 13px;
     border-radius: 13px; background: var(--pane); background-image: var(--sheen);
     border: 1px solid var(--edge);
-    backdrop-filter: blur(14px) saturate(1.15);
-    -webkit-backdrop-filter: blur(14px) saturate(1.15);
+    backdrop-filter: var(--lens);
+    -webkit-backdrop-filter: var(--lens);
   }
   .nudge .pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--neutral); }
   .nudge.ac .pip { background: var(--clay); }
@@ -2853,8 +2867,8 @@ const HTML = /* html */ `<!doctype html>
     width: min(330px, calc(100vw - 36px));
     padding: 15px; border-radius: 16px;
     background: rgba(14,17,23,.92); border: 1px solid var(--edge-up);
-    backdrop-filter: blur(22px) saturate(1.25);
-    -webkit-backdrop-filter: blur(22px) saturate(1.25);
+    backdrop-filter: var(--lens);
+    -webkit-backdrop-filter: var(--lens);
     box-shadow: var(--cast);
   }
   .timerpop[hidden] { display: none; }
@@ -2926,8 +2940,8 @@ const HTML = /* html */ `<!doctype html>
       border-radius: 22px; gap: 18px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge);
-      backdrop-filter: blur(26px) saturate(150%);
-      -webkit-backdrop-filter: blur(26px) saturate(150%);
+      backdrop-filter: var(--lens);
+      -webkit-backdrop-filter: var(--lens);
       box-shadow: var(--cast);
     }
     .plate .stamp h1 { font-size: 14px; }
@@ -2963,8 +2977,8 @@ const HTML = /* html */ `<!doctype html>
       border-radius: 22px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge);
-      backdrop-filter: blur(26px) saturate(150%);
-      -webkit-backdrop-filter: blur(26px) saturate(150%);
+      backdrop-filter: var(--lens);
+      -webkit-backdrop-filter: var(--lens);
       box-shadow: var(--cast);
     }
     #secrooms .legend { display: none; }
@@ -3015,8 +3029,8 @@ const HTML = /* html */ `<!doctype html>
       padding-top: 9px; padding-right: 14px; padding-left: 14px;
       padding-bottom: calc(9px + env(safe-area-inset-bottom));
       background: rgba(12,15,20,.82); border-top: 1px solid var(--edge);
-      backdrop-filter: blur(22px) saturate(1.25);
-      -webkit-backdrop-filter: blur(22px) saturate(1.25);
+      backdrop-filter: var(--lens);
+      -webkit-backdrop-filter: var(--lens);
     }
     .quick button {
       display: grid; justify-items: center; gap: 4px;
@@ -3077,7 +3091,7 @@ const HTML = /* html */ `<!doctype html>
       margin: 0 -16px 18px; padding: calc(11px + env(safe-area-inset-top)) 16px 11px;
       gap: 12px; align-items: center;
       background: color-mix(in oklab, var(--base) 86%, transparent);
-      backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
+      backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
       border-bottom: 1px solid var(--edge);
     }
     .stamp { flex: 1 1 auto; min-width: 0; }
