@@ -1860,8 +1860,11 @@ app.delete('/api/scenes/:id', (req, res) => {
  * override a decision someone made by hand.
  */
 const DEFAULT_SETTINGS = {
-  // Colour temperature applied as a tunable light switches on.
-  circadian: { on: true },
+  // Colour temperature applied as a tunable light switches on. Off by default
+  // (the user's call, 2026-08-14): a lamp comes on at the colour it was left,
+  // which is the least surprising thing a lamp can do. The switch stays on the
+  // settings rail for anyone who wants the hour to decide.
+  circadian: { on: false },
   // Left-on watching. Advisory only — it reports, it never switches anything off.
   nudges: { on: true, ac_hours: 4, fan_hours: 8, light_hours: 6 },
 };
