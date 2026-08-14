@@ -2371,6 +2371,26 @@ const HTML = /* html */ `<!doctype html>
     -webkit-font-smoothing: antialiased;
   }
 
+  /* ── nothing here is prose, so nothing here selects ──────────────────────
+     A tile is a switch whose face happens to carry words. Tapping one used to
+     select the label, and the phone then drew its own selection handles over
+     the page — the stray glyphs that appeared behind the panes — and a drag
+     across the board smeared a selection instead of turning the page. The
+     tap highlight goes with it: a grey rectangle flashing inside a rounded
+     glass pane is the one thing the material cannot survive.
+     Selection stays where it is genuinely wanted: real inputs, and the cue id
+     you are meant to copy into Shortcuts. */
+  button, .tile, .cue, .tab, .seg, .key, .pull, .step, .setting, .nudge,
+  .glance, .quick, .plate, .legend, .group-label, .tile-name, .tile-read,
+  .hero, .field-head, .warmth, .slider, .sheet-row, .pick {
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  * { -webkit-tap-highlight-color: transparent; }
+  input, textarea, [contenteditable] {
+    -webkit-user-select: text; user-select: text;
+  }
+  .sheet-api { -webkit-user-select: all; user-select: all; }
+
   /* Glass needs something behind it to bend. A slow tonal shift across the room
      gives the panes depth without adding a single visible edge. */
   /* The photograph itself. Held still while the page scrolls, so the glass
@@ -2699,6 +2719,24 @@ const HTML = /* html */ `<!doctype html>
   .index[data-less]:not([data-more]), .tiles[data-less]:not([data-more]) {
     -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 26px);
     mask-image: linear-gradient(180deg, transparent 0, #000 26px);
+  }
+
+  /* The same statement, sideways. The rooms, cues and settings rails scroll
+     horizontally with the scrollbar hidden, so a chip sliced off at the right
+     edge read as the end of the list rather than the middle of it — on a phone
+     that is most of them. Same rule as the columns: fade only the side that
+     actually has more behind it. */
+  [data-more-x] {
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+    mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+  }
+  [data-less-x][data-more-x] {
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 30px), transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 30px), transparent 100%);
+  }
+  [data-less-x]:not([data-more-x]) {
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px);
+    mask-image: linear-gradient(90deg, transparent 0, #000 22px);
   }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
@@ -3326,19 +3364,27 @@ const HTML = /* html */ `<!doctype html>
     #secrooms .tab .tab-load { display: none; }
     #secrooms .tab.here { background: var(--pane-up); border-color: var(--edge-up); }
 
+    /* An advisory is one short sentence and two small answers to it. Run the
+       full width of the field it put most of a thousand pixels between the
+       thing being said and the buttons that answer it, and the eye had to
+       travel the whole way to act on a nine-word observation. It stays a
+       plain list — the deck was tried and rejected — but a row is now only as
+       wide as the sentence needs, so the answer sits beside the question. */
+    .nudge { max-width: 620px; }
+
     /* ── the bento ────────────────────────────────────────────────────────
        Room cards are not a uniform grid here. There is width to spare, so the
        room with the most light in it takes a double square and the rest fall in
        around it — the board then reads at a glance the way the house does. */
-    /* The cue list is as long as you have made it, and the room pill is pinned
-       to the bottom of the window — so the column scrolls inside itself rather
-       than running underneath. */
-    #seccues #cues {
-      max-height: calc(100vh - 500px); min-height: 110px;
-      overflow-y: auto; scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,.14) transparent;
-      padding-right: 4px;
-    }
+    /* The cue list is as long as you have made it, and the column it sits in
+       already scrolls — so it must not scroll too. It used to carry its own
+       max-height and overflow, which made two scrollers stacked inside each
+       other: a wheel over the cues turned the inner list, then the outer
+       column, and the inner one cut off mid-card with no fade, because the
+       fade is drawn from data-more and only .index is watched for it. The
+       column is the one scroller; the cue list simply runs its natural height
+       inside it. */
+    #seccues #cues { padding-right: 4px; }
     #sechouse { margin-top: 14px; }
 
     .field .tiles { grid-template-columns: repeat(4, 1fr); gap: 16px; }
@@ -3401,12 +3447,21 @@ const HTML = /* html */ `<!doctype html>
        siblings of the house itself, so the rooms rail stays up top, the house
        follows immediately, and the settings — which are read once a month —
        drop below it instead of pushing it off the screen. */
+    /* Both rails stay above the house, because a cue put below it is not
+       reachable: the board is 555px on the house view and 1938px in a room,
+       so the rail landed at y=1080 and y=2505 — you would scroll the whole
+       house to fire Good Night. What pays for that space is the two legends.
+       "Rooms" over a row of room names and "Cues" over a row of cue names
+       label what is already legible, and cost 22px each on the one screen
+       with none to spare. The settings keep theirs: they sit below the house
+       and their chips are sentences rather than names. */
     .board { display: flex; flex-direction: column; }
     .index { display: contents; }
     #secrooms { order: 1; }
     #seccues  { order: 2; }
     .field    { order: 3; }
     #sechouse { order: 4; margin-top: 4px; }
+    #secrooms .legend, #seccues .legend { display: none; }
 
     /* A cue on a phone is a chip: the name is the whole target. The reading and
        the colour swatch are detail for a screen with room to spare. The name
@@ -3460,7 +3515,22 @@ const HTML = /* html */ `<!doctype html>
     .cue { padding: 9px 11px; }
     .cue-name { font-size: 13px; }
     .cue-edit { opacity: 1; }
-    .newcue { width: auto; margin-top: 8px; padding: 8px 12px; font-size: 12.5px; }
+    /* "+ Create a cue" is a sibling of the rail rather than a member of it, so
+       it dropped onto a line of its own under the chips and cost another 50px
+       on the screen that has none. It joins the rail as the chip at the end. */
+    #seccues { display: flex; align-items: center; gap: 8px; }
+    #seccues #cues { flex: 1 1 auto; min-width: 0; }
+    /* Pinned beside a rail that fades at its right edge, the full label read as
+       though it were sitting on top of a half-erased chip. At the end of a row
+       of named cues the plus needs no sentence. The label stays in the
+       accessibility tree — font-size does not remove it — so it is still
+       announced as "Create a cue". */
+    .newcue {
+      flex: 0 0 auto; width: auto; margin-top: 0; padding: 0;
+      min-width: 40px; height: 38px; border-radius: 999px;
+      font-size: 0; display: grid; place-items: center;
+    }
+    .newcue::before { content: '+'; font-size: 19px; line-height: 1; }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
@@ -4929,6 +4999,11 @@ function drawCues() {
 
     host.appendChild(wrap);
   }
+  /* The cue list is drawn after watchScroll has already measured, and it is
+     the thing that decides how far the column runs — so both the column and
+     the rail have to be re-read here or neither draws its fade on load. */
+  markScrollX(host);
+  markScroll(document.querySelector('.index'));
 }
 
 /**
@@ -5818,7 +5893,12 @@ function fitTiles() {
   }
 }
 
-window.addEventListener('resize', fitTiles);
+window.addEventListener('resize', () => {
+  fitTiles();
+  /* fitTiles leaves early on a phone, and rotating one is exactly when a rail
+     changes from fitting to not. */
+  for (const rail of document.querySelectorAll(RAILS)) markScrollX(rail);
+});
 
 /* Says, at the edge, whether a column has more to show. Without it the cue
    list simply looked as though it ended halfway through — the scrollbar was
@@ -5831,6 +5911,17 @@ function markScroll(node) {
   less ? node.setAttribute('data-less', '') : node.removeAttribute('data-less');
 }
 
+/* The same, sideways, for the rails that scroll across rather than down. */
+function markScrollX(node) {
+  if (!node) return;
+  const more = node.scrollWidth - node.clientWidth - node.scrollLeft > 4;
+  const less = node.scrollLeft > 4;
+  more ? node.setAttribute('data-more-x', '') : node.removeAttribute('data-more-x');
+  less ? node.setAttribute('data-less-x', '') : node.removeAttribute('data-less-x');
+}
+
+const RAILS = '#secrooms #tabs, #seccues #cues, .settings-row';
+
 function watchScroll() {
   for (const sel of ['.index', '#stack']) {
     const node = document.querySelector(sel);
@@ -5840,6 +5931,14 @@ function watchScroll() {
   }
   markScroll(document.querySelector('.index'));
   markScroll(el('#stack'));
+
+  for (const rail of document.querySelectorAll(RAILS)) {
+    if (!rail.dataset.watchedx) {
+      rail.dataset.watchedx = '1';
+      rail.addEventListener('scroll', () => markScrollX(rail), { passive: true });
+    }
+    markScrollX(rail);
+  }
 }
 
 /* The board is a column with its own scrollbar, so a wheel over the heading or
