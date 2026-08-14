@@ -664,8 +664,13 @@ const ASSET_V = (() => {
 app.get('/bg.jpg', (req, res) => {
   const file = activeBackdrop();
   if (!file) return res.status(404).end();
+  // Revalidate every time. This file's contents change the moment someone
+  // picks another backdrop, and a URL baked into the page at server start
+  // cannot carry a version that knows about it — which is exactly how the page
+  // ended up showing one photograph while measuring another. sendFile still
+  // sets an ETag, so an unchanged picture costs a 304 and nothing more.
   res.type(file.endsWith('.png') ? 'png' : 'jpeg')
-     .set('Cache-Control', 'public, max-age=86400').sendFile(file);
+     .set('Cache-Control', 'no-cache').sendFile(file);
 });
 
 /* One of the library, by name, for the picker's thumbnails. */
@@ -757,7 +762,7 @@ app.get('/icon-:size.png', (req, res) => {
  */
 const SW = `
 const SHELL = 'neo-shell-${ASSET_V}';
-const STATIC = ['/icon-180.png', '/icon-192.png', '/icon-512.png', '/bg.jpg?v=${ASSET_V}', '/manifest.webmanifest'];
+const STATIC = ['/icon-180.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(STATIC)).then(() => self.skipWaiting()));
@@ -775,6 +780,8 @@ self.addEventListener('fetch', (e) => {
 
   // Never serve the house from a cache — a stale reading is worse than none.
   if (url.pathname.startsWith('/api/')) return;
+  // Nor the backdrop, which is now something the user changes from the page.
+  if (url.pathname === '/bg.jpg' || url.pathname.startsWith('/backdrops/')) return;
 
   if (url.pathname === '/') {
     e.respondWith(fetch(e.request).catch(() => caches.match('/')));
@@ -2262,17 +2269,23 @@ const HTML = /* html */ `<!doctype html>
     /* The number in the display type, and only that. It used to borrow --warm,
        which is the colour a lamp is making — so the count of lit circuits was
        drawn in the same ink as the light itself, and the page said two
-       different things in one colour. This is type, not emission: a true
-       orange, off the lamp palette on purpose. */
+       different things in one colour. This is type, not emission: a coral, off
+       the lamp palette on purpose.
+
+       Lightness matters as much as hue here. Every backdrop is normalised to a
+       mean luminance of about 116, so an accent near that lightness has nothing
+       to separate from and goes muddy — which is what the first coral did over
+       a bright glacier. This one sits well above it and holds on any
+       photograph. */
     /* Coral, not amber. The backdrop is cold and the lamps are warm-yellow,
        so a yellow accent said the same thing twice; coral sits between them —
        unmistakably not lamp light, and the complement of a blue-grey
        photograph, which is why it carries at a glance. */
-    --accent: #ff6f61;
+    --accent: #ff8f76;
 
     /* The backdrop, as a property rather than a fixed url, so choosing another
        one repaints every open browser instead of waiting for a restart. */
-    --shot: url('/bg.jpg?v=${ASSET_V}');
+    --shot: url('/bg.jpg');
 
     /* glass: a pane, lit along its top edge, with nothing glowing through it */
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
@@ -2513,8 +2526,8 @@ const HTML = /* html */ `<!doctype html>
   .board { flex: 1; min-height: 0; display: grid; gap: clamp(20px, 2.6vw, 44px);
            grid-template-columns: clamp(168px, 15vw, 212px) 1fr; }
   .index { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 26px;
-           overflow-y: auto; scrollbar-width: none; }
-  .index::-webkit-scrollbar { display: none; }
+           overflow-y: auto; scrollbar-width: thin;
+           scrollbar-color: rgba(255,255,255,.16) transparent; }
   .legend { font-size: 12px; color: var(--faint); margin-bottom: 8px; }
   .index-sec { min-width: 0; }
 
@@ -2671,6 +2684,22 @@ const HTML = /* html */ `<!doctype html>
   .bgshot:hover .drop, .bgshot .drop:focus-visible { opacity: 1; }
   .bgshot .drop:hover { color: var(--clay); }
   .bgadd { cursor: pointer; }
+
+  /* A column that scrolls with no scrollbar and a hard edge looks like a
+     column that ends there. These fade only on the side that actually has more
+     to see, so the page never suggests movement that is not available. */
+  .index[data-more], .tiles[data-more] {
+    -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 34px), transparent 100%);
+    mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 34px), transparent 100%);
+  }
+  .index[data-less][data-more], .tiles[data-less][data-more] {
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 26px, #000 calc(100% - 34px), transparent 100%);
+    mask-image: linear-gradient(180deg, transparent 0, #000 26px, #000 calc(100% - 34px), transparent 100%);
+  }
+  .index[data-less]:not([data-more]), .tiles[data-less]:not([data-more]) {
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 26px);
+    mask-image: linear-gradient(180deg, transparent 0, #000 26px);
+  }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
@@ -3760,7 +3789,9 @@ function applySnapshot(snap) {
   if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
     // On first load the CSS already points at the right picture, but nothing
     // has measured it yet, so the dimming still has to be worked out.
-    if (state.bgv) setShot(snap.backdrop_v); else fitShot(snap.backdrop_v);
+    // Always, including the first snapshot: the stylesheet ships a plain
+    // /bg.jpg, and only the live version tells us which picture that is.
+    setShot(snap.backdrop_v);
     state.bgv = snap.backdrop_v;
   }
   const fresh = new Map(snap.devices.map(d => [d.record_id, d]));
@@ -4102,6 +4133,8 @@ function drawField() {
     : state.view === 'room' ? fillRoom(stack, state.room)
     : fillHouse(stack);
   fitTiles();
+  watchScroll();
+  wheelToBoard();
   return drawn;
 }
 
@@ -5768,6 +5801,7 @@ function fitTiles() {
   const avail = window.innerHeight - top - 104;      // the room pill sits under it
   let h = Math.max(104, Math.min(182, Math.round((avail - 18) / 2)));
   root.style.setProperty('--tile-h', h + 'px');
+  requestAnimationFrame(() => { markScroll(tiles); markScroll(document.querySelector('.index')); });
 
   /* The whole house has to be on the screen. Seven rooms with the lit one
      taking a double square needs three rows on a four-column grid, so the
@@ -5785,6 +5819,46 @@ function fitTiles() {
 }
 
 window.addEventListener('resize', fitTiles);
+
+/* Says, at the edge, whether a column has more to show. Without it the cue
+   list simply looked as though it ended halfway through — the scrollbar was
+   hidden, and a hard cut is indistinguishable from the end of the list. */
+function markScroll(node) {
+  if (!node) return;
+  const more = node.scrollHeight - node.clientHeight - node.scrollTop > 4;
+  const less = node.scrollTop > 4;
+  more ? node.setAttribute('data-more', '') : node.removeAttribute('data-more');
+  less ? node.setAttribute('data-less', '') : node.removeAttribute('data-less');
+}
+
+function watchScroll() {
+  for (const sel of ['.index', '#stack']) {
+    const node = document.querySelector(sel);
+    if (!node || node.dataset.watched) continue;
+    node.dataset.watched = '1';
+    node.addEventListener('scroll', () => markScroll(node), { passive: true });
+  }
+  markScroll(document.querySelector('.index'));
+  markScroll(el('#stack'));
+}
+
+/* The board is a column with its own scrollbar, so a wheel over the heading or
+   the gap between tiles did nothing at all — the page looked stuck. Anywhere
+   in the field now turns the board. */
+function wheelToBoard() {
+  const field = document.querySelector('.field');
+  if (!field || field.dataset.wheel) return;
+  field.dataset.wheel = '1';
+  field.addEventListener('wheel', (e) => {
+    const stack = el('#stack');
+    if (!stack || stack.contains(e.target)) return;      // it is already there
+    if (stack.scrollHeight <= stack.clientHeight) return;
+    stack.scrollTop += e.deltaY;
+    markScroll(stack);
+    e.preventDefault();
+  }, { passive: false });
+  field.addEventListener('wheel', () => markScroll(el('#stack')), { passive: true });
+}
 // Anything that can change height above the tiles is watched. The tiles
 // themselves are not, or setting their height would wake the observer again.
 if (window.ResizeObserver) {
