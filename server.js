@@ -442,6 +442,13 @@ function sendToHub(recordId, fields, param) {
  */
 const BATCH_GAP_MS = Number(process.env.BATCH_GAP_MS || 60);
 
+/* 60ms was measured against five lamps and holds there. Eleven is a different
+   animal: LIVING's ceiling dropped three of eleven on one run and none on the
+   next, at the same spacing — so the loss is intermittent rather than a
+   threshold, and no gap can be trusted to fix it. A wider one still helps, and
+   the verify pass below catches what it misses. */
+const gapFor = (n) => (n > 6 ? Math.max(BATCH_GAP_MS, 130) : BATCH_GAP_MS);
+
 function sendBatchToHub(commands) {
   if (!commands.length) return Promise.resolve(0);
 
@@ -479,7 +486,7 @@ function sendBatchToHub(commands) {
           } else if (fields.device_status !== undefined) {
             entry.record.device_status = fields.device_status;
           }
-          await sleep(BATCH_GAP_MS);
+          await sleep(gapFor(commands.length));
         }
         pushSoon();
         done();
@@ -932,9 +939,55 @@ async function setRecords(records, { on, level, tune }) {
     })));
   }
   // A group command overrides any single-circuit verdict still in flight.
-  for (const rec of records) intents.set(rec.record_id, ++intentSeq);
+  const tokens = new Map();
+  for (const rec of records) { const t = ++intentSeq; intents.set(rec.record_id, t); tokens.set(rec.record_id, t); }
   nudgeRefresh();
+
+  // The hub drops the odd payload out of a large batch, intermittently — an
+  // eleven-lamp ceiling lost three on one run and none on the next at the same
+  // spacing. So the send is checked rather than trusted, once, in the
+  // background: the caller has already had its answer and the slider is not
+  // waiting on this.
+  if (records.length > 1) {
+    const sentAt = Date.now();
+    setTimeout(() => verifyGroup(records, { wantLevel, colour, tokens, sentAt }).catch(() => {}), SETTLE_MS + 500);
+  }
   return sent;
+}
+
+/** Resends only what did not take, and only where nothing newer has been asked. */
+async function verifyGroup(records, { wantLevel, colour, tokens, sentAt }) {
+  await readHubStateFresh();
+  // A reading taken less than SETTLE_MS after the command still describes the
+  // house before it. Judging a send by that would resend what already landed —
+  // and, worse, could put a lamp back to a value the user has since moved off.
+  if (hubSync.taken - sentAt < SETTLE_MS) {
+    await sleep(800);
+    await readHubStateFresh();
+  }
+  const missed = [];
+  for (const rec0 of records) {
+    const entry = devices.get(rec0.record_id);
+    // Something newer owns this circuit now — a later drag, or a switch off.
+    if (!entry || intents.get(rec0.record_id) !== tokens.get(rec0.record_id)) continue;
+    const rec = entry.record;
+    if (wantLevel != null) {
+      const want = rec.is_dimmable === 'true' ? wantLevel : (wantLevel > 0 ? 100 : 0);
+      if (decodeLevel(rec.device_status) !== want) {
+        missed.push({ recordId: rec.record_id, fields: { device_status: encodeLevel(want) } });
+        continue;
+      }
+    }
+    if (colour != null && rec.is_tunable === 'true' && rec.channel_id_tunable != null
+        && decodeLevel(rec.device_status_tunable) !== colour) {
+      missed.push({ recordId: rec.record_id,
+        fields: { channel_id: String(rec.channel_id_tunable), device_status: encodeLevel(colour) } });
+    }
+  }
+  if (!missed.length) return;
+  console.log(`group: ${missed.length} of ${records.length} did not take — resending`);
+  await sendBatchToHub(missed);
+  nudgeRefresh();
 }
 
 app.post('/api/group', async (req, res) => {
@@ -2913,6 +2966,26 @@ const HTML = /* html */ `<!doctype html>
      house does not switch off a room someone may be sitting in — so they are
      written as observations rather than alarms. */
   .nudges { display: grid; gap: 8px; margin-bottom: 16px; }
+  /* The deck. Past two alerts the rest sit behind the newest, each a little
+     lower and a little smaller, so the pile reads as a pile without costing
+     the height of a pile. */
+  .deck { display: grid; gap: 8px; }
+  .nudges.stacked .deck { position: relative; padding-bottom: 15px; }
+  .nudges.stacked .nudge { transition: transform .32s cubic-bezier(.3,.8,.3,1), opacity .32s; }
+  .nudges.stacked .nudge:not(:first-child) {
+    position: absolute; left: 0; right: 0; top: 0; pointer-events: none;
+    z-index: calc(9 - var(--i));
+    transform: translateY(calc(var(--i) * 7px)) scale(calc(1 - var(--i) * .04));
+    opacity: calc(1 - var(--i) * .34);
+  }
+  .deck-more {
+    justify-self: start; padding: 7px 13px; cursor: pointer;
+    font: inherit; font-size: 12.5px; color: var(--soft);
+    background: var(--pane); border: 1px solid var(--edge); border-radius: 999px;
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    transition: color .18s, border-color .18s;
+  }
+  .deck-more:hover { color: var(--ink); border-color: var(--edge-up); }
   .nudge {
     display: flex; align-items: center; gap: 11px;
     padding-top: 10px; padding-right: 11px; padding-bottom: 10px; padding-left: 13px;
@@ -3845,9 +3918,11 @@ function drawField() {
     };
   }
 
-  if (state.q) return fillSearch(stack);
-  if (state.view === 'room') return fillRoom(stack, state.room);
-  return fillHouse(stack);
+  const drawn = state.q ? fillSearch(stack)
+    : state.view === 'room' ? fillRoom(stack, state.room)
+    : fillHouse(stack);
+  fitTiles();
+  return drawn;
 }
 
 // The house is a board of rooms.
@@ -4380,6 +4455,16 @@ async function setGang(tile) {
   }
 }
 
+/* A group send is not one command but one per member, so a drag across an
+   eleven-lamp ceiling puts eleven payloads on the wire every time the debounce
+   fires — and the next batch starts before the last has finished. They then
+   land interleaved, and a lamp can end on a value from the middle of the drag
+   rather than the one your finger stopped at. Which looks exactly like the
+   group failing to move all of them.
+   So only one batch is ever in flight per group, and the value the hand
+   finished on is always the last thing sent. */
+const gangSending = new Map();
+
 function queueGang(tile, key, now) {
   const id = 'gang:' + tile.dataset.gang + ':' + key;
   for (const d of cobsIn(tile.dataset.gang)) {
@@ -4387,12 +4472,19 @@ function queueGang(tile, key, now) {
     markCommanded(d.record_id);
   }
   clearTimeout(sliderTimers.get(id));
-  sliderTimers.set(id, setTimeout(() => sendGang(tile, key), now ? 0 : 200));
+  // A little slower than a single circuit's 200ms: each fire costs one command
+  // per lamp, so firing often is what floods the hub in the first place.
+  sliderTimers.set(id, setTimeout(() => sendGang(tile, key), now ? 0 : 320));
 }
 
 async function sendGang(tile, key) {
   const members = cobsIn(tile.dataset.gang);
   if (!members.length) return;
+
+  const id = 'gang:' + tile.dataset.gang + ':' + key;
+  if (gangSending.get(id)) { gangSending.set(id, 'again'); return; }
+  gangSending.set(id, true);
+
   const value = gangMean(members, key);
   const body = { record_ids: members.map(d => d.record_id) };
   if (key === 'level') { body.level = value; body.on = value > 0; } else { body.tune = value; }
@@ -4407,6 +4499,11 @@ async function sendGang(tile, key) {
   } catch (err) {
     note('All COBs — ' + err.message + '. The setting may not have changed.');
   } finally {
+    const queued = gangSending.get(id) === 'again';
+    gangSending.delete(id);
+    // Something moved while we were sending: send where it ended up, so the
+    // last write is the value the hand finished on.
+    if (queued) return sendGang(tile, key);
     setTimeout(() => { members.forEach(d => inFlight.delete(d.record_id)); }, 4000);
   }
 }
@@ -5302,9 +5399,24 @@ async function loadAuto() {
   } catch { /* the next pass picks it up */ }
 }
 
+/* Alerts arrive one per circuit left on too long, so a forgetful evening can
+   produce five at once — and five rows of chrome push the house itself off the
+   screen, which is the opposite of what an alert is for. Past two they become a
+   deck: the newest in front, the rest peeking below it, and a count you can
+   press to open them out. */
+const STACK_AT = 2;
+let nudgesOpen = false;
+
 function drawNudges() {
   const host = el('#nudges');
   host.innerHTML = '';
+  const stacked = auto.nudges.length > STACK_AT && !nudgesOpen;
+  host.classList.toggle('stacked', stacked);
+
+  const deck = document.createElement('div');
+  deck.className = 'deck';
+  host.appendChild(deck);
+
   for (const n of auto.nudges) {
     const row = document.createElement('div');
     row.className = 'nudge' + (n.kind === 'ac' ? ' ac' : '');
@@ -5332,9 +5444,42 @@ function drawNudges() {
       await fetch('/api/nudges/' + n.record_id + '/dismiss', { method: 'POST' }).catch(() => {});
     };
     row.append(off, seen);
-    host.appendChild(row);
+    row.style.setProperty('--i', deck.children.length);
+    deck.appendChild(row);
   }
+
+  if (auto.nudges.length > STACK_AT) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'deck-more';
+    more.textContent = stacked
+      ? auto.nudges.length + ' circuits left on — show them'
+      : 'Stack them again';
+    more.onclick = () => { nudgesOpen = !nudgesOpen; drawNudges(); fitTiles(); };
+    host.appendChild(more);
+  }
+  fitTiles();
 }
+
+/* The tiles take the room the alerts leave them.
+ *
+ * The board is a fixed column on a wide screen — it does not scroll with the
+ * page — so anything above the tiles is taken straight out of their height.
+ * Two alerts cost about 120px, which is most of a row. Rather than let the
+ * grid spill below the fold, the tiles measure what is left and size
+ * themselves to it, so two rows always fit and the room pill stays put. */
+function fitTiles() {
+  const root = document.documentElement;
+  if (window.innerWidth < 861) { root.style.removeProperty('--tile-h'); return; }
+  const tiles = el('#stack');
+  if (!tiles) return;
+  const top = tiles.getBoundingClientRect().top;
+  const avail = window.innerHeight - top - 104;      // the room pill sits under it
+  const h = Math.round((avail - 18) / 2);            // two rows, one gap
+  root.style.setProperty('--tile-h', Math.max(108, Math.min(182, h)) + 'px');
+}
+
+window.addEventListener('resize', fitTiles);
 
 function drawTimers() {
   const host = el('#timerrunning');
