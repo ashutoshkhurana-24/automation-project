@@ -2078,14 +2078,14 @@ const HTML = /* html */ `<!doctype html>
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
        rectangle — what makes a pane read as glass is the lens acting on the
        picture behind THIS pane, not paint laid over it. */
-    --pane:      rgba(16,22,30,.27);
-    --pane-up:   rgba(24,32,42,.40);
+    --pane:      rgba(16,22,30,.09);
+    --pane-up:   rgba(24,32,42,.20);
 
     /* Glass catches light even in a dark room, so the lens lifts slightly
        rather than darkening. The blur is the number that matters most: at the
        30px this used to run at, everything behind resolved to one flat colour
        and you could not tell there was a photograph there at all. */
-    --lens: blur(13px) saturate(165%) brightness(1.16) contrast(1.02);
+    --lens: blur(11px) saturate(170%) brightness(1.18) contrast(1.02);
 
     --edge:      rgba(255,255,255,.22);
     --edge-up:   rgba(255,255,255,.24);
