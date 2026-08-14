@@ -2989,7 +2989,13 @@ const HTML = /* html */ `<!doctype html>
       -webkit-backdrop-filter: var(--lens);
       box-shadow: var(--cast);
     }
-    .plate .stamp h1 { font-size: 14px; }
+    /* The plate is a floating pill over the page, so its height is not its own
+       business — let the line inside it wrap and the pill grows until its
+       bottom edge lies across the hero and the field heading, reading as a
+       faint straight line drawn through the text. The phone layout has clamped
+       this since it was built; the desktop one never did. */
+    .plate .stamp h1 { font-size: 14px; white-space: nowrap; }
+    .plate .tally { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .plate .seek { flex: 0 0 260px; margin-left: 0; }
 
     /* ── the board ────────────────────────────────────────────────────────
