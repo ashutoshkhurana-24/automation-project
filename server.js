@@ -2085,8 +2085,8 @@ const HTML = /* html */ `<!doctype html>
     /* Nearly nothing. A dark fill over a dark photograph is just a dark
        rectangle — what makes a pane read as glass is the lens acting on the
        picture behind THIS pane, not paint laid over it. */
-    --pane:      rgba(16,22,30,.06);
-    --pane-up:   rgba(24,32,42,.20);
+    --pane:      rgba(12,17,24,.24);
+    --pane-up:   rgba(20,28,38,.36);
 
     /* Glass catches light even in a dark room, so the lens lifts slightly
        rather than darkening. The blur is the number that matters most: at the
@@ -2096,13 +2096,20 @@ const HTML = /* html */ `<!doctype html>
        the colour of the photograph behind it, so its alpha moves the result by
        about two RGB levels and cannot be seen; the blur decides whether the
        ridge behind a card survives as a ridge or averages into a flat wash. */
-    --lens: blur(5px) saturate(185%) brightness(1.14) contrast(1.04);
+    --lens: blur(5px) saturate(150%) brightness(.62) contrast(1.06);
 
     --edge:      rgba(255,255,255,.22);
     --edge-up:   rgba(255,255,255,.24);
     --lip:       rgba(255,255,255,.40);
     --sheen: linear-gradient(152deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,.018) 34%, transparent 62%);
     --cast: 0 14px 34px -20px rgba(0,0,0,.7);
+
+    /* Type that sits on the photograph rather than on a pane has nothing
+       behind it to guarantee contrast, and putting a pane behind every label
+       would undo the point of the glass. A halo does it locally: invisible
+       over the dark forest, and the thing that keeps a heading readable where
+       the picture goes bright. */
+    --halo: 0 1px 12px rgba(6,10,16,.88), 0 0 3px rgba(6,10,16,.75);
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
@@ -2170,12 +2177,15 @@ const HTML = /* html */ `<!doctype html>
        On a phone the crop is horizontal instead, so this changes nothing there. */
     background-position: center 38%;
     background-repeat: no-repeat;
-    /* Held well back: white type must stay legible over any photograph, and the
-       lamps must remain the brightest thing on the screen. This picture is a
-       warm one — lit peaks, sunlit grass — so it is desaturated harder than a
-       cold backdrop needs to be, or the page would read as amber-on-amber and
-       a lamp would stop being the only warm thing on it. */
-    filter: saturate(.62) brightness(.50) contrast(1.16);
+    /* Brought forward deliberately. This sat at brightness .50 under a veil
+       that reached .70 black at the top, which left about 15% of the picture
+       showing there and under half of it through the middle — and a pane can
+       only ever show what is behind it, so refracting near-black gave back
+       near-black and every change to the glass looked like no change at all.
+       The old note about the backdrop washing the page out was written when
+       the panes were opaque paint; they are lenses now, and they need
+       something to bend. */
+    filter: saturate(.70) brightness(.78) contrast(1.10);
     transform: scale(1.04);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
@@ -2188,10 +2198,10 @@ const HTML = /* html */ `<!doctype html>
          of the frame, so the fade keeps a floor rather than releasing at the
          middle. Nine stops, because fewer shows as a band. */
       linear-gradient(180deg,
-        rgba(10,8,6,.70) 0%,  rgba(10,8,6,.44) 11%, rgba(10,8,6,.24) 20%,
-        rgba(10,8,6,.12) 29%, rgba(10,8,6,.05) 38%, rgba(10,8,6,.03) 48%,
-        rgba(10,8,6,.09) 60%, rgba(10,8,6,.26) 78%, rgba(10,8,6,.48) 100%),
-      radial-gradient(130% 86% at 50% 8%, transparent 40%, rgba(8,6,4,.44) 100%);
+        rgba(10,8,6,.36) 0%,  rgba(10,8,6,.24) 11%, rgba(10,8,6,.14) 20%,
+        rgba(10,8,6,.07) 29%, rgba(10,8,6,.03) 38%, rgba(10,8,6,.02) 48%,
+        rgba(10,8,6,.05) 60%, rgba(10,8,6,.15) 78%, rgba(10,8,6,.26) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 44%, rgba(8,6,4,.26) 100%);
   }
 
   .spill {
@@ -2364,10 +2374,10 @@ const HTML = /* html */ `<!doctype html>
   .back:hover { color: var(--ink); border-color: var(--edge-up); background: var(--pane-up); transform: translateX(-2px); }
   .back:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .field-head h2 {
-    margin: 0; font-size: clamp(24px, 3.6vh, 34px); font-weight: 400;
+    margin: 0; font-size: clamp(24px, 3.6vh, 34px); font-weight: 400; text-shadow: var(--halo);
     letter-spacing: -.018em; line-height: 1.1;
   }
-  .field-sub { margin: 5px 0 3px; font-size: 13px; color: var(--faint); }
+  .field-sub { margin: 5px 0 3px; font-size: 13px; color: var(--soft); text-shadow: var(--halo); }
   .field-sub b { color: var(--soft); font-weight: 500; }
   .cut {
     margin-left: auto; flex: 0 0 auto; padding: 9px 14px; cursor: pointer;
@@ -2391,7 +2401,8 @@ const HTML = /* html */ `<!doctype html>
   .tiles::-webkit-scrollbar { width: 8px; }
   .tiles::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
   .tiles::-webkit-scrollbar-track { background: transparent; }
-  .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--faint); margin: 16px 0 -4px; }
+  .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
+                 text-shadow: var(--halo); }
   .group-label:first-child { margin-top: 0; }
   .empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--faint); padding: 30px 2px; }
 
@@ -2972,10 +2983,11 @@ const HTML = /* html */ `<!doctype html>
 
     /* the house, stated */
     .hero { display: block; margin-bottom: 26px; }
-    .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+    .hero .greet { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--soft);
+                   text-shadow: var(--halo); }
     .hero .say {
       margin: 10px 0 0; font-weight: 300; letter-spacing: -.03em; line-height: .96;
-      font-size: clamp(40px, 4.4vw, 66px); color: var(--ink);
+      font-size: clamp(40px, 4.4vw, 66px); color: var(--ink); text-shadow: var(--halo);
     }
     .hero .say b { font-weight: 400; color: var(--accent); }
     .hero .say span { display: block; color: var(--soft); font-size: .42em; letter-spacing: -.01em;
