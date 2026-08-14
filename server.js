@@ -2201,7 +2201,12 @@ const HTML = /* html */ `<!doctype html>
        the panes were opaque paint; they are lenses now, and they need
        something to bend. */
     filter: saturate(.78) brightness(.76) contrast(1.06);
-    transform: scale(1.04);
+    /* Zoomed past the buildings. This photograph has an apartment block at
+       each edge, and the left one put a faint vertical line straight through
+       the hero text — read as a rendering artefact, but it was masonry. The
+       middle of the frame is only weather, which is also what the glass wants:
+       smooth, with nothing in it that looks like a mistake. */
+    transform: scale(1.30) translateX(-7%);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
   .photo::after {
