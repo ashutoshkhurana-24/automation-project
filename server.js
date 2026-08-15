@@ -2286,8 +2286,12 @@ const HTML = /* html */ `<!doctype html>
        photograph through them — which is the whole reason the backdrop is
        load-bearing. Alpha here, blur in --lens, and the two together are what
        make a card read as glass laid on a picture rather than paper over it. */
-    --paper:   rgba(253,250,245,.66);
-    --paper-2: rgba(246,239,227,.72);
+    /* Raised from .66/.72 when the cream veil came off the photograph. The
+       contrast a pane needs has to be made in the pane; with a colourful
+       picture behind it the fill genuinely does move the composite, which is
+       not true over a flat field of the same luminance. */
+    --paper:   rgba(253,250,245,.80);
+    --paper-2: rgba(246,239,227,.84);
     --ink:     #2b2622;
     /* The ground under everything, and the colour ink is reversed out to.
        This went missing in the move to paper: --base was still referenced in
@@ -2407,7 +2411,7 @@ const HTML = /* html */ `<!doctype html>
        then reads amber-on-amber. Half way down catches the meadow and the
        tree line, where a lamp is once again the warmest thing on screen.
        On a phone the crop is horizontal instead, so this changes nothing there. */
-    background-position: center 38%;
+    background-position: center 52%;
     background-repeat: no-repeat;
     /* Brought forward deliberately. This sat at brightness .50 under a veil
        that reached .70 black at the top, which left about 15% of the picture
@@ -2422,27 +2426,37 @@ const HTML = /* html */ `<!doctype html>
        ridge far less. The page sets --shot-dim from the picture itself, so
        any photograph — including one just taken on a phone — lands at a
        luminance the white type and the lamps can live with. */
-    filter: saturate(.86) brightness(var(--shot-dim, 1.02)) contrast(1.0);
-    /* Zoomed past the buildings. This photograph has an apartment block at
-       each edge, and the left one put a faint vertical line straight through
-       the hero text — read as a rendering artefact, but it was masonry. The
-       middle of the frame is only weather, which is also what the glass wants:
-       smooth, with nothing in it that looks like a mistake. */
-    transform: scale(1.30) translateX(-7%);
+    /* Saturation left alone. It was pulled down to .86 when the panes were
+       opaque paint and every colour in the picture competed with them; the
+       panes make their own contrast now, so desaturating the photograph only
+       makes the page beige. The whole claim of the design is that the only
+       colour is the light a lamp is making — but that is about the *chrome*
+       being neutral, not about the photograph being drained. */
+    filter: saturate(1.04) brightness(var(--shot-dim, 1)) contrast(1.02);
+    /* A slight push in, and no more. The 1.30 here was for an earlier
+       photograph with an apartment block at each edge — one of them drew a
+       faint vertical line straight through the hero text — and on this picture
+       all it did was crop away the greens and leave a wide screen looking at
+       haze. Enough to lose the frame edges, not enough to lose the subject. */
+    transform: scale(1.06);
   }
   /* A vignette and a floor-to-ceiling fade, so panes never sit on a hotspot. */
   .photo::after {
     content: ''; position: absolute; inset: 0;
     background:
-      /* Paper laid over the picture. The cards are warm white, so the
-         photograph has to sit back far enough for ink to read on it — held
-         hardest at the top where the header is, easing through the middle,
-         and closing again at the foot behind the bar. */
+      /* This was a sheet of cream laid over the whole picture, .42 at the top
+         and never below .14 — which is the exact thing the light-mode attempt
+         proved wrong and this file already records: **a white veil over the
+         backdrop is frosting, not glass**. It drained the photograph to make
+         ink readable, when the contrast ink needs has to be made *inside* the
+         pane. The panes carry it now, so all that is left here is a vignette
+         that keeps the corners from being the brightest thing on screen, and
+         a small hold at the two edges where chrome actually sits. */
       linear-gradient(180deg,
-        rgba(252,248,241,.42) 0%, rgba(252,248,241,.30) 14%, rgba(252,248,241,.18) 30%,
-        rgba(252,248,241,.14) 46%, rgba(252,248,241,.16) 62%, rgba(252,248,241,.24) 78%,
-        rgba(252,248,241,.34) 100%),
-      radial-gradient(130% 86% at 50% 8%, transparent 52%, rgba(250,244,235,.26) 100%);
+        rgba(252,248,241,.20) 0%, rgba(252,248,241,.06) 12%,
+        transparent 34%, transparent 72%,
+        rgba(252,248,241,.08) 88%, rgba(252,248,241,.18) 100%),
+      radial-gradient(140% 100% at 50% 42%, transparent 46%, rgba(30,26,22,.20) 100%);
   }
 
   .spill {
@@ -2672,6 +2686,28 @@ const HTML = /* html */ `<!doctype html>
   .cmd-bad { cursor: default; border-color: var(--edge); color: var(--faint); }
   .cmd-bad:hover { transform: none; border-color: var(--edge); }
 
+  /* The next word, offered. One row, wrapping, led by what the row *is* —
+     'room', 'circuit or action' — because a bare list of words does not say
+     which slot it is filling. */
+  .chips {
+    grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 0 0 10px;
+  }
+  .chips-lead {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint); margin-right: 3px;
+  }
+  .chip-word {
+    padding: 5px 10px; cursor: pointer; border-radius: 8px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .03em; color: var(--soft);
+    background: var(--paper-2); border: 1px solid var(--line);
+    transition: color .18s, background .18s, border-color .18s,
+                transform .24s cubic-bezier(.22,.94,.3,1);
+  }
+  .chip-word:hover { color: var(--ink); border-color: var(--line-up); background: var(--paper); }
+  .chip-word:active { transform: scale(.93); transition-duration: .06s; }
+  .chip-word:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   /* The picker shows the photographs at a size worth judging them at — a
      backdrop chosen from a postage stamp is chosen blind. */
   .bgsheet { max-width: 720px; }
@@ -2853,33 +2889,60 @@ const HTML = /* html */ `<!doctype html>
   /* The field is the widest thing in the bar, because it is the fastest way to
      reach any of 88 circuits — and it takes commands as well as searches, so it
      had to stop looking like an afterthought bolted to the title. */
-  /* No box: the field is simply the widest thing in the bar, with the commands
-     it accepts written under it. A frame around it only made the masthead look
-     like a form. */
+  /* ── the command bar ───────────────────────────────────────────────────
+     It was bare text with a line of examples under it, clipped to an ellipsis
+     mid-word — a control that looked like a caption and taught nothing. It is
+     a pill now, and it teaches the grammar as you type instead of listing it:
+     the rest of the word you are part-way through is drawn faintly under the
+     caret, and Tab takes it. */
   .seek {
-    flex: 1 1 auto; min-width: 0; margin-left: clamp(10px, 1.6vw, 18px);
-    display: flex; align-items: center; gap: 10px; padding: 0; height: auto;
-    background: none; border: 0; border-radius: 0;
+    position: relative;
+    flex: 1 1 auto; min-width: 0; max-width: 520px;
+    margin-left: clamp(10px, 1.6vw, 18px);
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 11px; height: auto;
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px;
+    transition: border-color .2s, background .2s, box-shadow .2s;
   }
-  .seek-in { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
-  .seek-hint {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  .seek:focus-within {
+    border-color: var(--line-up); background: var(--paper);
+    box-shadow: 0 0 0 3px rgba(43,38,34,.05);
   }
-  .seek svg { display: none; }
+  .seek-glyph { flex: 0 0 auto; width: 15px; height: 15px; color: var(--faint); }
+  .seek:focus-within .seek-glyph { color: var(--soft); }
+  .seek-in { position: relative; display: flex; min-width: 0; flex: 1 1 auto; }
   .seek input {
     flex: 1 1 auto; min-width: 0; font-family: var(--sans); font-size: 14px; color: var(--ink);
-    background: none; border: 0; outline: none;
+    background: none; border: 0; outline: none; padding: 0;
   }
   .seek input::placeholder { color: var(--faint); }
-  /* The shortcut, shown where the shortcut is used. It disappears once you are
-     typing, because by then it has done its job. */
+  .seek input::-webkit-search-cancel-button { display: none; }
+  /* The completion sits under the caret. The typed half is invisible but keeps
+     its width, so the suffix lands on the next glyph without any measuring. */
+  .seek-ghost {
+    position: absolute; inset: 0; pointer-events: none;
+    font-family: var(--sans); font-size: 14px; line-height: inherit;
+    white-space: pre; overflow: hidden;
+  }
+  .seek-ghost i { visibility: hidden; font-style: normal; }
+  .seek-ghost b { color: var(--faint); font-weight: 400; }
+  /* The shortcut, shown where the shortcut is used; it becomes the key that
+     takes the completion once there is one to take. */
   .seek-key {
     flex: 0 0 auto; font-family: var(--mono); font-size: 10px; color: var(--faint);
     padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px;
-    transition: opacity .15s;
+    transition: opacity .15s, color .15s, border-color .15s;
   }
   .seek:focus-within .seek-key { opacity: 0; }
+  .seek:focus-within .seek-key.offer { opacity: 1; color: var(--soft); border-color: var(--line-up); }
+  /* What the field is doing right now, under the pill rather than inside it —
+     one short line, never the clipped list of examples it replaced. */
+  .seek-hint {
+    position: absolute; left: 12px; top: calc(100% + 5px); z-index: 5;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--faint); white-space: nowrap;
+  }
+  .seek-hint[hidden] { display: none; }
 
   /* All-off lives at the far right, on its own, away from the field — it is
      the one destructive control on the page and should never be a neighbour
@@ -2947,21 +3010,50 @@ const HTML = /* html */ `<!doctype html>
                height: auto; min-height: var(--tile-h); overflow: visible; }
   .tile.gang .tile-fill { border-radius: inherit; }
 
-  /* The backdrop is half the design and changing it was two clicks into a
-     sheet. Three of them live in the bar instead. */
-  .shots { display: flex; gap: 5px; flex: 0 0 auto; }
+  /* ── the backdrop dock ──────────────────────────────────────────────
+     The backdrop is half the design, so it wanted to be one click away — but
+     three thumbnails in the masthead put a picture-picker beside the thing
+     that reports the house, which is a setting sitting where a status should
+     be. It lives in the bottom-right corner instead, as one small square of
+     the picture that is showing: still one click, and no longer competing.
+     The rest of the library slides out of it on hover, so the quick swap
+     survives without the row being permanently on screen.
+     Fixed, so where it sits in the markup does not matter. */
+  .shots {
+    position: fixed; right: 14px; bottom: 14px; z-index: 40;
+    display: flex; align-items: center; gap: 0;
+    padding: 5px; border-radius: 13px; opacity: .6;
+    background: transparent; border: 1px solid rgba(253,250,245,.28);
+    transition: opacity .25s, gap .28s cubic-bezier(.2,.9,.3,1),
+                background .25s, border-color .25s, box-shadow .25s;
+  }
+  .shots:hover, .shots:focus-within {
+    opacity: 1; gap: 5px;
+    background: var(--paper); border-color: var(--line); box-shadow: var(--cast);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+  }
   .shot-mini {
     width: 30px; height: 22px; padding: 0; cursor: pointer; border-radius: 6px;
     border: 1px solid var(--line); background-size: cover; background-position: center;
-    transition: border-color .18s, transform .16s;
+    transition: border-color .18s, transform .16s,
+                width .28s cubic-bezier(.2,.9,.3,1), opacity .2s;
   }
   .shot-mini:hover { transform: translateY(-1px); border-color: var(--line-up); }
-  .shot-mini.on { border-color: var(--ink); }
+  .shot-mini.on { border-color: var(--ink); order: -1; }
   .shot-more {
     width: 30px; height: 22px; padding: 0; cursor: pointer; border-radius: 6px;
     border: 1px dashed var(--line-up); background: none; color: var(--faint);
     font-family: var(--mono); font-size: 11px; line-height: 1;
+    transition: width .28s cubic-bezier(.2,.9,.3,1), opacity .2s;
   }
+  /* Collapsed: only the picture you are looking at. */
+  .shots .shot-mini:not(.on), .shots .shot-more {
+    width: 0; opacity: 0; border-width: 0; overflow: hidden;
+  }
+  .shots:hover .shot-mini:not(.on), .shots:focus-within .shot-mini:not(.on) {
+    width: 30px; opacity: 1; border-width: 1px;
+  }
+  .shots:hover .shot-more, .shots:focus-within .shot-more { width: 30px; opacity: 1; }
   @media (max-width: 860px) { .shots { display: none; } }
 
   /* the thumb bar, as the reference has it: the one held control, then the
@@ -3108,7 +3200,13 @@ const HTML = /* html */ `<!doctype html>
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
   .group-label:first-child { margin-top: 0; }
-  .empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--faint); padding: 30px 2px; }
+  /* Over a photograph, faint ink on nothing is not a message. */
+  .empty {
+    grid-column: 1 / -1; font-size: 13.5px; color: var(--soft);
+    padding: 16px 18px; border-radius: 14px;
+    background: var(--paper); border: 1px solid var(--line);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+  }
 
   /* ── the tile ────────────────────────────────────────────────────────── */
   /* Glass. The light a circuit is making rises softly from the foot of its own
@@ -4051,6 +4149,69 @@ const HTML = /* html */ `<!doctype html>
     }
     .newcue::before { content: '+'; font-size: 19px; line-height: 1; }
 
+    /* ── the field, on a phone ───────────────────────────────────────────
+       Find was a dead button here. The status line replaced the masthead and
+       took the masthead's display:none with it, but the search field
+       lives inside that masthead — so tapping Find switched the board to
+       Search and gave you nothing to type into. The masthead comes back when
+       and only when you are searching, carrying the field and nothing else. */
+    header.plate.searching {
+      /* the hint hangs under the pill, so the row below has to clear it */
+      display: flex; margin: 0 0 24px; padding: 0; gap: 8px;
+    }
+    .plate.searching .stamp { display: none; }
+    .plate.searching .seek {
+      display: flex; flex: 1 1 auto; max-width: none; margin-left: 0;
+    }
+    .plate.searching .seek-key { display: none; }
+
+    /* ── one COB, compact ────────────────────────────────────────────────
+       A tunable circuit spans the row so its two strips are wide enough to
+       aim at — right for a lamp you set by hand, wrong five times over for a
+       ceiling, where the individual lamps are the exception and the card
+       above them is the usual control. Five full-width cards pushed the rest
+       of the room off the screen.
+       So a COB member turns its strips on their side: two vertical rails down
+       the right of a small square. Same controls, a quarter of the space, and
+       a rail is arguably the more natural shape for brightness anyway — up is
+       more.
+       The rails are the same horizontal input rotated a quarter turn, not a
+       vertical range input: writing-mode on a range is recent and
+       appearance:slider-vertical is deprecated, while a rotation is
+       hit-tested in the element's own coordinates by every engine, so the
+       drag lands exactly where it should. Rotating leaves the unrotated box
+       in flow, which is why each rail is placed absolutely instead. */
+    .tiles .tile.cobmember {
+      grid-column: span 1; height: 132px; min-height: 0;
+    }
+    .tiles .tile.cobmember .tile-body {
+      position: absolute; inset: 0; padding: 13px 74px 13px 13px;
+    }
+    .tiles .tile.cobmember .controls {
+      position: absolute; top: 14px; bottom: 14px; right: 12px; left: auto;
+      width: 62px; display: block; padding: 0; margin: 0;
+      --vrail: 104px;                     /* the tile's height, less the insets */
+    }
+    .tiles .tile.cobmember .strip {
+      position: absolute; top: 0; left: 0; margin: 0;
+      width: var(--vrail); height: 27px; border-radius: 9px;
+      transform-origin: 0 0; transform: rotate(-90deg) translateX(-100%);
+    }
+    .tiles .tile.cobmember .strip:nth-of-type(2) { left: 35px; }
+    /* The key cannot stay in the top-right corner — the rails are there now.
+       It goes to the foot of the left column, under the reading. */
+    .tiles .tile.cobmember .ring {
+      top: auto; bottom: 13px; left: 14px; right: auto; width: 22px; height: 22px;
+    }
+    .tiles .tile.cobmember .tile-body { padding-bottom: 46px; }
+    /* No room for a word on a 27px rail, so the warmth one says which it is
+       by wearing the scale it sets. */
+    .tiles .tile.cobmember .strip-label { display: none; }
+    .tiles .tile.cobmember .warmstrip {
+      background: linear-gradient(90deg, var(--cool), #f3e3c4 46%, var(--warm));
+    }
+    .tiles .tile.cobmember .warmstrip .strip-fill { opacity: .82; }
+
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
     .tiles { display: grid; overflow: visible; padding: 0; }
@@ -4126,14 +4287,21 @@ const HTML = /* html */ `<!doctype html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     </button>
     <label class="seek">
+      <svg class="seek-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <span class="seek-in">
-        <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
-               aria-label="Search, or type a command">
-        <span class="seek-hint" id="seekhint">TRY ashu cobs 40 · living off · master warmth-70</span>
+        <!-- The completion, drawn under the caret: what you have typed is
+             transparent but still takes its width, so the rest lines up with
+             the real glyphs without measuring anything. -->
+        <span class="seek-ghost" id="seekghost" aria-hidden="true"><i></i><b></b></span>
+        <input type="search" id="seek" placeholder="Search, or say what to do" autocomplete="off"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               aria-label="Search, or type a command"
+               aria-describedby="seekhint" role="combobox" aria-expanded="false" aria-autocomplete="list">
       </span>
-      <kbd class="seek-key">/</kbd>
+      <kbd class="seek-key" id="seekkey">/</kbd>
+      <span class="seek-hint" id="seekhint" hidden></span>
     </label>
-    <div class="shots" id="shots" aria-label="Backdrop"></div>
     <button class="main" id="main" type="button" disabled aria-describedby="tally">
       <i id="mainfill"></i><span id="mainword">Hold · all off</span><em id="maincount"></em>
     </button>
@@ -4294,6 +4462,12 @@ const HTML = /* html */ `<!doctype html>
     </div>
   </div>
 </div>
+
+<!-- Outside the header on purpose: the masthead carries a backdrop-filter,
+     and a backdrop-filter makes an element the containing block for any fixed
+     descendant — so docked in there it pinned itself to the header's corner
+     rather than the window's. -->
+<div class="shots" id="shots" aria-label="Backdrop"></div>
 
 <div class="note" id="note" role="status" aria-live="polite"></div>
 
@@ -4689,7 +4863,7 @@ function go(view, room) {
   if (!same) tick_haptic(6);
   state.view = view;
   state.room = room || null;
-  if (state.q) { state.q = ''; el('#seek').value = ''; }
+  if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); }
   drawField();
   for (const t of document.querySelectorAll('#tabs .tab')) {
     if (t.dataset.room) tabState(t, t.dataset.room); else houseTabState(t);
@@ -4766,6 +4940,38 @@ function parseCommand(q) {
     path: '/do/' + [room.room, circuit, action].filter(Boolean).join('/'),
     says: what + ' in ' + where + ' — ' + does,
   };
+}
+
+/* What can legally come next, given what has been typed so far.
+ *
+ * The grammar is one word per segment — room, then circuit, then action — so
+ * knowing which segment the caret is in is enough to know the whole set of
+ * valid next words. That set does two jobs: the first match is drawn under the
+ * caret as a completion, and the whole list becomes the chips on the board.
+ * Both mean the field can teach the grammar as it is used instead of printing
+ * a line of examples nobody reads twice. */
+const PLAIN_ACTIONS = ['on', 'off', 'toggle', 'up', 'down',
+  'warm', 'cool', 'warmer', 'cooler', 'open', 'close', 'stop'];
+
+function nextWords(q) {
+  if (!grammar) return null;
+  const low = q.toLowerCase();
+  // A trailing space means the word before it is finished.
+  const ended = /\\s$/.test(low) || low === '';
+  const w = low.trim().split(/\\s+/).filter(Boolean);
+  const partial = ended ? '' : (w[w.length - 1] || '');
+  const done = ended ? w : w.slice(0, -1);
+
+  let pool = null, what = '';
+  if (done.length === 0) { pool = grammar.rooms.map(r => r.room); what = 'room'; }
+  else {
+    const room = grammar.rooms.find(r => r.room.startsWith(done[0]));
+    if (!room) return null;
+    if (done.length === 1) { pool = room.circuits.concat(PLAIN_ACTIONS); what = 'circuit or action'; }
+    else if (done.length === 2) { pool = PLAIN_ACTIONS; what = 'action'; }
+    else return null;
+  }
+  return { partial, what, options: pool.filter(o => o.startsWith(partial) && o !== partial) };
 }
 
 async function runCommand(cmd) {
@@ -4972,6 +5178,28 @@ function fillSearch(stack) {
       (cmd.bad ? '' : '<span class="cmd-key">↵</span>');
     row.querySelector('.cmd-says').textContent = cmd.bad || cmd.says;
     stack.appendChild(row);
+  }
+
+  /* The next word, offered rather than described. A command bar whose grammar
+     you have to remember is a command line, and this one is meant to be usable
+     by someone who has not read SHORTCUTS.md. */
+  const next = nextWords(state.q);
+  if (next && next.options.length) {
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    const lead = document.createElement('span');
+    lead.className = 'chips-lead';
+    lead.textContent = next.what;
+    chips.appendChild(lead);
+    for (const word of next.options.slice(0, 12)) {
+      const c = document.createElement('button');
+      c.type = 'button';
+      c.className = 'chip-word';
+      c.textContent = word;
+      c.onclick = () => takeWord(word);
+      chips.appendChild(c);
+    }
+    stack.appendChild(chips);
   }
 
   const found = matches();
@@ -6407,13 +6635,21 @@ const setShot = (v) => {
 
 /* What the backdrop should be dimmed to.
  *
- * Every photograph swapped in so far has needed its own number — the fog at
- * .76, the glacier at .56 for the same result — and getting it wrong is what
- * made the page look washed out or dead. So the picture is measured instead of
- * guessed: mean luminance off a canvas, and a multiplier that lands it at the
- * value the fog was approved at. Any photograph then behaves, including one
- * uploaded from a phone thirty seconds ago. */
-const SHOT_TARGET = 158;
+ * Every photograph needs its own number, and getting it wrong is what makes
+ * the page look washed out or dead — so the picture is measured rather than
+ * guessed.
+ *
+ * It used to measure the *mean*, which was right while a cream veil sat over
+ * the whole picture and the only question was overall level. With the veil
+ * gone the question changed: legibility now depends on how bright the
+ * brightest large areas get, because that is where ink on a pane runs out of
+ * contrast. A mean is the wrong instrument for that — this photograph is half
+ * dark pine, so its mean sits low and the mean-based rule brightened it to the
+ * clamp, pushing the limestone and the sky *up* exactly where the header and
+ * the cards sit. So it measures the bright end instead: the 88th percentile,
+ * held near a level ink survives. A dark picture with a small bright sky is
+ * then left alone rather than lifted. */
+const SHOT_BRIGHT = 196;          // where the top of the picture should land
 
 function fitShot(v) {
   const img = new Image();
@@ -6423,11 +6659,21 @@ function fitShot(v) {
     c.height = Math.max(1, Math.round(120 * img.height / img.width));
     const x = c.getContext('2d');
     x.drawImage(img, 0, 0, c.width, c.height);
-    let sum = 0;
     const d = x.getImageData(0, 0, c.width, c.height).data;
-    for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
-    const mean = sum / (d.length / 4);
-    const dim = Math.max(0.72, Math.min(1.32, SHOT_TARGET / Math.max(1, mean)));
+    // A 256-bucket histogram is enough, and cheaper than sorting the pixels.
+    const hist = new Uint32Array(256);
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      hist[Math.min(255, Math.round(l))]++;
+      n++;
+    }
+    let seen = 0, p88 = 255;
+    for (let l = 0; l < 256; l++) {
+      seen += hist[l];
+      if (seen >= n * 0.88) { p88 = l; break; }
+    }
+    const dim = Math.max(0.55, Math.min(1.12, SHOT_BRIGHT / Math.max(1, p88)));
     document.documentElement.style.setProperty('--shot-dim', dim.toFixed(3));
   };
   img.src = '/bg.jpg?v=' + v;
@@ -6516,7 +6762,9 @@ async function drawShots() {
   host.innerHTML = '';
   const all = (lib.has_original ? [{ file: null, label: 'the original' }] : [])
     .concat(lib.items.map(i => ({ file: i.file, label: i.file })));
-  for (const it of all.slice(0, 3)) {
+  // All of them, not the first three: the dock is collapsed to the current
+  // picture anyway, and a swap you cannot reach is not a swap.
+  for (const it of all.slice(0, 6)) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'shot-mini' + ((lib.current || null) === it.file ? ' on' : '');
@@ -6531,11 +6779,11 @@ async function drawShots() {
     };
     host.appendChild(b);
   }
-  if (all.length > 3) {
+  {
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'shot-more';
-    more.textContent = '+';
+    more.textContent = all.length > 6 ? '+' : '\u22ef';
     more.setAttribute('aria-label', 'All backdrops');
     more.onclick = () => { el('#bgscrim').hidden = false; drawBackdrops(); };
     host.appendChild(more);
@@ -6593,20 +6841,94 @@ function note(msg, hold, action) {
 
 /* ────────────────────────────────────────────────────────────── wiring */
 
-el('#seek').addEventListener('input', (e) => {
-  state.q = e.target.value;
+/* ── the field ────────────────────────────────────────────────────────────
+   Three things happen on every keystroke: the rest of the word you are typing
+   is drawn under the caret, the line under the pill says what pressing Enter
+   will do, and the board redraws. The completion is the part that matters —
+   typing 'ashu', Tab, 'co', Tab gets you to 'ashu cobs' without knowing
+   any of the names, which is the difference between a command bar and a
+   command line. */
+const seekEl = el('#seek');
+const ghostEl = el('#seekghost');
+let completion = null;              // the word the caret is part-way through
+
+function drawGhost() {
+  const q = seekEl.value;
+  const next = nextWords(q);
+  const at = seekEl.selectionStart === q.length;   // never complete mid-string
+  completion = at && next && next.partial && next.options.length ? next.options[0] : null;
+  ghostEl.querySelector('i').textContent = completion ? q : '';
+  ghostEl.querySelector('b').textContent = completion ? completion.slice(next.partial.length) : '';
+  const key = el('#seekkey');
+  key.classList.toggle('offer', !!completion);
+  key.textContent = completion ? 'tab' : '/';
+}
+
+function takeWord(word) {
+  const q = seekEl.value;
+  const cut = /\\s$/.test(q) ? q : q.replace(/[^\\s]*$/, '');
+  seekEl.value = cut + word + ' ';
+  seekEl.focus();
+  state.q = seekEl.value;
+  drawGhost();
+  drawSeekHint();
+  drawField();
+}
+
+// Both the completion and the line under the pill describe the text in the
+// field, so anything that empties the field has to clear them too.
+function resetSeek() { drawGhost(); drawSeekHint(); }
+
+function drawSeekHint() {
   const hint = el('#seekhint');
-  if (hint) hint.textContent = state.q.trim()
-    ? (parseCommand(state.q) ? 'PRESS ↵ TO RUN IT' : 'SEARCHING')
-    : 'TRY ashu cobs 40 · living off · master warmth-70';
+  if (!hint) return;
+  const q = state.q.trim();
+  const cmd = q ? parseCommand(state.q) : null;
+  const n = q ? matches().length : 0;
+  // A half-typed command is not a failed search, and telling someone their
+  // room name matches nothing when they are two words into a valid command is
+  // the field arguing with them. Say what it is waiting for instead.
+  const next = q ? nextWords(state.q) : null;
+  const words = cmd && !cmd.bad ? '↵ runs it'
+    : cmd && cmd.bad ? cmd.bad.toLowerCase()
+    : q && n ? n + (n === 1 ? ' match · ↵ switches it' : ' matches')
+    : next && next.options.length ? 'now a ' + next.what + ' · tab completes'
+    : q ? 'nothing by that name'
+    : '';
+  hint.textContent = words;
+  hint.hidden = !words;
+  seekEl.setAttribute('aria-expanded', String(!!q));
+}
+
+seekEl.addEventListener('input', () => {
+  state.q = seekEl.value;
+  drawGhost();
+  drawSeekHint();
   drawField();
 });
-el('#seek').addEventListener('keydown', (e) => {
+seekEl.addEventListener('keydown', (e) => {
+  // Tab, or the right arrow at the end of the line, takes the completion —
+  // the two keys every shell has trained people to try.
+  if (completion && (e.key === 'Tab' || (e.key === 'ArrowRight' && seekEl.selectionStart === seekEl.value.length))) {
+    e.preventDefault();
+    takeWord(completion);
+    return;
+  }
   if (e.key !== 'Enter') return;
   const cmd = parseCommand(state.q);
-  if (!cmd || cmd.bad) return;
-  e.preventDefault();
-  runCommand(cmd);        // the field keeps its text, so Enter again repeats it
+  if (cmd && !cmd.bad) {
+    e.preventDefault();
+    runCommand(cmd);      // the field keeps its text, so Enter again repeats it
+    return;
+  }
+  // No command, but exactly one circuit found: Enter is obviously meant to
+  // switch that one. Any other count and Enter has no single right answer, so
+  // it does nothing rather than guessing.
+  const found = matches();
+  if (state.q.trim() && found.length === 1) {
+    e.preventDefault();
+    setDevice(found[0], !found[0].status);
+  }
 });
 loadGrammar();
 
@@ -6624,7 +6946,7 @@ el('#seek').addEventListener('blur', () => { if (!state.q.trim()) openSeek(false
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!el('#scrim').hidden) { closeSheet(); return; }
-    if (state.q) { state.q = ''; el('#seek').value = ''; drawField(); openSeek(false); }
+    if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); drawField(); openSeek(false); }
     else if (state.view === 'room') go('house');
   }
   // A slash puts the cursor in the search box, the way a console does.
@@ -6636,7 +6958,7 @@ wireSheet();
 el('#newcue').onclick = newCue;
 
 el('#back').onclick = () => {
-  if (state.q) { state.q = ''; el('#seek').value = ''; openSeek(false); }
+  if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); openSeek(false); }
   go('house');
 };
 
@@ -7030,7 +7352,7 @@ loadAuto();
     if (at < 0) return;
     const next = list[at + (dx < 0 ? 1 : -1)];
     if (!next) return;
-    if (state.q) { state.q = ''; el('#seek').value = ''; }
+    if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); }
     tick_haptic(6);
     next === 'house' ? go('house') : go('room', next);
   }, { passive: true });
