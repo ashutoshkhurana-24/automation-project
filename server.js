@@ -829,7 +829,7 @@ app.get('/manifest.webmanifest', (req, res) => {
     start_url: '/',
     display: 'standalone',
     background_color: '#12151a',
-    theme_color: '#12151a',
+    theme_color: '#f3ede3',
     icons: [
       { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
@@ -2262,7 +2262,7 @@ const HTML = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#12151a">
+<meta name="theme-color" content="#f3ede3">
 <!-- Saved to a phone's home screen this opens without browser chrome, which is
      the only way the fixed, non-scrolling layout works properly on a phone. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2275,96 +2275,43 @@ const HTML = /* html */ `<!doctype html>
 <title>Pravita's Apartment</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500&family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* Warm charcoal, no blue anywhere in the greys. The interface is greyscale;
-       the only colour on the page is the light a lamp is actually making. */
-    --base:   #12151a;
-    --raise:  #1b2027;
-    --ink:    #ffffff;
-    --soft:   #dfe5ec;
-    --faint:  #b3bcc7;      /* lifted: on the deeper base, the old value fell under 4:1 */
+    /* Paper over a photograph. The interface is warm white and ink; the only
+       colour is a lamp's own, and the one coral the numbers are set in.
+       Everything that measures or labels is monospaced and upper case, so the
+       serif is reserved for the two places the house actually speaks. */
+    --paper:   #fdfaf5;
+    --paper-2: #f6efe3;
+    --ink:     #2b2622;
+    --soft:    #6b635a;
+    --faint:   #9a9187;
+    --line:    rgba(43,38,34,.10);
+    --line-up: rgba(43,38,34,.20);
 
-    /* Lamp colour, at full strength now: a tungsten bulb is genuinely amber.
-       Cool stays a muted blue-grey — it is the contrast that carries meaning. */
-    --warm:   #ffab42;
-    /* The cool end of a tunable lamp, kept inside the warm family: pale
-       champagne rather than blue-grey, which read as a hole in a bronze page.
-       Warm against cool is still obvious — deep amber against pale gold. */
-    --cool:   #cfe2f2;
-    --neutral:#c9d3dd;      /* bronze: a fan or a curtain, lit but not glowing */
-    --clay:   #e8705a;      /* the one alarming colour, used almost never */
+    /* A lit circuit is warm paper, not a glow: the light is in the fill. */
+    --warm:   #e0b463;
+    --cool:   #bcd0e2;
+    --neutral:#cfc6b8;
+    --clay:   #c8553d;
+    --accent: #e0574a;
 
-    /* The number in the display type, and only that. It used to borrow --warm,
-       which is the colour a lamp is making — so the count of lit circuits was
-       drawn in the same ink as the light itself, and the page said two
-       different things in one colour. This is type, not emission: a coral, off
-       the lamp palette on purpose.
-
-       Lightness matters as much as hue here. Every backdrop is normalised to a
-       mean luminance of about 116, so an accent near that lightness has nothing
-       to separate from and goes muddy — which is what the first coral did over
-       a bright glacier. This one sits well above it and holds on any
-       photograph. */
-    /* Coral, not amber. The backdrop is cold and the lamps are warm-yellow,
-       so a yellow accent said the same thing twice; coral sits between them —
-       unmistakably not lamp light, and the complement of a blue-grey
-       photograph, which is why it carries at a glance. */
-    --accent: #ff8f76;
-
-    /* The backdrop, as a property rather than a fixed url, so choosing another
-       one repaints every open browser instead of waiting for a restart. */
-    --shot: url('/bg.jpg');
-
-    /* glass: a pane, lit along its top edge, with nothing glowing through it */
-    /* Nearly nothing. A dark fill over a dark photograph is just a dark
-       rectangle — what makes a pane read as glass is the lens acting on the
-       picture behind THIS pane, not paint laid over it. */
-    --pane:      rgba(18,24,32,.26);
-    --pane-up:   rgba(24,32,42,.38);
-
-    /* Glass catches light even in a dark room, so the lens lifts slightly
-       rather than darkening. The blur is the number that matters most: at the
-       30px this used to run at, everything behind resolved to one flat colour
-       and you could not tell there was a photograph there at all. */
-    /* The blur is the transparency control, not the fill. The fill is nearly
-       the colour of the photograph behind it, so its alpha moves the result by
-       about two RGB levels and cannot be seen; the blur decides whether the
-       ridge behind a card survives as a ridge or averages into a flat wash. */
-    /* Read off an iOS notification. The heavy blur is right here and was
-       wrong before, because it depends entirely on the picture: over pine
-       needles it destroyed the only thing worth seeing, and over smooth fog
-       there is nothing to destroy — the material just takes the colour of the
-       weather behind it. The tint darkens, because white type has to sit on
-       it and the fog is pale. */
-    --lens: blur(30px) saturate(145%) brightness(.72) contrast(1.02);
-
-    --edge:      rgba(255,255,255,.22);
-    --edge-up:   rgba(255,255,255,.24);
-    --lip:       rgba(255,255,255,.40);
-    --sheen: linear-gradient(152deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,.018) 34%, transparent 62%);
-    --cast: 0 14px 34px -20px rgba(0,0,0,.7);
-
-    /* Type that sits on the photograph rather than on a pane has nothing
-       behind it to guarantee contrast, and putting a pane behind every label
-       would undo the point of the glass. A halo does it locally: invisible
-       over the dark forest, and the thing that keeps a heading readable where
-       the picture goes bright. */
-/* Tight on purpose. This was a 16px blur, and a wide blur cast by every
-       glyph merges across stacked lines into a rectangular block of shade —
-       whose left boundary is a straight vertical edge running the full height
-       of the text. It reads as a faint line ruled down the page, and no amount
-       of looking at the backdrop finds it, because it is cast by the type
-       itself. A 2px shadow hugs the letters and never pools. */
-    --halo: 0 1px 2px rgba(8,12,18,.62);
+    --pane:      rgba(253,250,245,.86);
+    --pane-up:   rgba(253,250,245,.96);
+    --edge:      rgba(43,38,34,.09);
+    --edge-up:   rgba(43,38,34,.18);
+    --lip:       rgba(255,255,255,.9);
+    --lens: blur(14px) saturate(118%) brightness(1.06);
+    --lens-up: blur(16px) saturate(120%) brightness(1.08);
+    --sheen: none;
+    --cast: 0 18px 40px -22px rgba(58,44,30,.42), 0 3px 10px -5px rgba(58,44,30,.18);
+    --halo: none;
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    /* One voice for the interface and another for the sentence it speaks. The
-       hero is the only place the dashboard talks rather than reports, so it
-       gets a high-contrast serif; everything that labels or measures stays in
-       the grotesque. Two faces, each with one job. */
     --display: "Instrument Serif", ui-serif, Georgia, serif;
+    /* The utility voice: ids, states, counts, anything the house reports. */
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
     --tile-h: clamp(146px, 20vh, 182px);
     --lamp: var(--warm);
@@ -2463,7 +2410,7 @@ const HTML = /* html */ `<!doctype html>
        ridge far less. The page sets --shot-dim from the picture itself, so
        any photograph — including one just taken on a phone — lands at a
        luminance the white type and the lamps can live with. */
-    filter: saturate(.78) brightness(var(--shot-dim, .76)) contrast(1.06);
+    filter: saturate(.72) brightness(var(--shot-dim, 1.04)) contrast(.94);
     /* Zoomed past the buildings. This photograph has an apartment block at
        each edge, and the left one put a faint vertical line straight through
        the hero text — read as a rendering artefact, but it was masonry. The
@@ -2475,16 +2422,15 @@ const HTML = /* html */ `<!doctype html>
   .photo::after {
     content: ''; position: absolute; inset: 0;
     background:
-      /* A pale sky sits exactly where the header does, so the top is held down
-         hardest — and unlike the cold picture before it, this one never goes
-         dark further down: the meadow is luminous most of the way to the foot
-         of the frame, so the fade keeps a floor rather than releasing at the
-         middle. Nine stops, because fewer shows as a band. */
+      /* Paper laid over the picture. The cards are warm white, so the
+         photograph has to sit back far enough for ink to read on it — held
+         hardest at the top where the header is, easing through the middle,
+         and closing again at the foot behind the bar. */
       linear-gradient(180deg,
-        rgba(10,8,6,.36) 0%,  rgba(10,8,6,.24) 11%, rgba(10,8,6,.14) 20%,
-        rgba(10,8,6,.07) 29%, rgba(10,8,6,.03) 38%, rgba(10,8,6,.02) 48%,
-        rgba(10,8,6,.05) 60%, rgba(10,8,6,.15) 78%, rgba(10,8,6,.26) 100%),
-      radial-gradient(130% 86% at 50% 8%, transparent 44%, rgba(8,6,4,.26) 100%);
+        rgba(252,248,241,.42) 0%, rgba(252,248,241,.30) 14%, rgba(252,248,241,.18) 30%,
+        rgba(252,248,241,.14) 46%, rgba(252,248,241,.16) 62%, rgba(252,248,241,.24) 78%,
+        rgba(252,248,241,.34) 100%),
+      radial-gradient(130% 86% at 50% 8%, transparent 52%, rgba(250,244,235,.26) 100%);
   }
 
   .spill {
@@ -2503,7 +2449,7 @@ const HTML = /* html */ `<!doctype html>
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 34%), transparent) 0%, transparent 66%),
       radial-gradient(58% 46% at 14% 104%,
         color-mix(in oklab, var(--lamp) calc(var(--glow) * 22%), transparent) 0%, transparent 64%),
-      linear-gradient(180deg, rgba(244,248,252,.03) 0%, transparent 38%, rgba(0,0,0,.36) 100%);
+      linear-gradient(180deg, rgba(255,252,246,.10) 0%, transparent 40%, rgba(120,96,64,.05) 100%);
     transition: background 1.2s ease;
   }
 
@@ -2769,6 +2715,117 @@ const HTML = /* html */ `<!doctype html>
     mask-image: linear-gradient(90deg, transparent 0, #000 22px);
   }
 
+  /* ── the paper redesign ────────────────────────────────────────────────
+     Cards are warm white with a hairline, not glass with a rim. A lit circuit
+     fills with its own colour from the left, so brightness is a quantity you
+     can see across the room rather than a glow. Everything that measures —
+     ids, states, counts, room labels — is monospaced and upper case; the
+     serif is kept for the two places the house speaks in sentences. */
+  .mono, .idline, .state, .chip, .barlabel, .strip-label {
+    font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: .07em; font-size: 10.5px; color: var(--faint);
+  }
+
+  /* the hero card: what the house is doing, said once */
+  .saycard {
+    grid-column: 1 / -1; padding: 22px 24px 18px; margin-bottom: 4px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 22px;
+    box-shadow: var(--cast);
+  }
+  .saycard .say {
+    margin: 0; font-family: var(--display); font-weight: 400;
+    font-size: clamp(26px, 3.4vw, 40px); line-height: 1.12; color: var(--ink);
+    letter-spacing: -.005em;
+  }
+  .saycard .say b { font-weight: 400; font-style: italic; color: var(--accent); }
+
+  /* one column per room: height for how much light, colour for how warm */
+  .bars { display: flex; gap: clamp(6px, 1vw, 14px); margin-top: 20px; align-items: flex-end; }
+  .barcol { flex: 1 1 0; min-width: 0; background: none; border: 0; padding: 0;
+            cursor: pointer; font: inherit; text-align: left; }
+  .barwell { height: 46px; display: flex; align-items: flex-end; }
+  .bar {
+    width: 100%; border-radius: 5px; background: var(--tint, var(--warm));
+    min-height: 3px; transition: height .5s cubic-bezier(.3,.8,.3,1), background .5s;
+  }
+  .barcol:not(.on) .bar { background: var(--line-up); }
+  .barlabel { display: block; margin-top: 7px; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; }
+  .barcol.on .barlabel { color: var(--soft); }
+
+  /* a room, as a card that states its own reading */
+  .tile[data-room] { display: flex; flex-direction: column; justify-content: space-between; }
+  .tile[data-room] .tile-body { align-items: stretch; }
+  .roomhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .roomname { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em;
+              font-size: 12px; color: var(--ink); }
+  .chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; }
+  .big { font-family: var(--display); font-size: clamp(24px, 3vw, 34px); line-height: 1;
+         color: var(--ink); margin-top: auto; }
+  .big.dark { color: var(--soft); }
+  .sub { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+         text-transform: uppercase; color: var(--faint); margin-top: 5px; }
+
+  /* a circuit: what it is, what it is doing, and the ring you press */
+  .idline { display: block; margin-top: 3px; }
+  .state { display: block; margin-top: auto; color: var(--soft); }
+  .ring {
+    position: absolute; top: 14px; right: 14px; width: 20px; height: 20px; z-index: 4;
+    border-radius: 50%; border: 1.5px solid var(--line-up); background: transparent;
+    cursor: pointer; padding: 0; transition: background .25s, border-color .25s, box-shadow .25s;
+  }
+  .tile.on .ring { background: var(--tint); border-color: var(--tint);
+                   box-shadow: 0 0 0 4px color-mix(in oklab, var(--tint) 22%, transparent); }
+
+  /* the strips: a control that says what it can and cannot know */
+  .strip {
+    position: relative; height: 46px; border-radius: 11px; overflow: hidden;
+    border: 1px solid var(--line); background: var(--paper-2); cursor: pointer;
+  }
+  .strip + .strip { margin-top: 9px; }
+  .strip-fill { position: absolute; inset: 0 auto 0 0; width: var(--at, 0%);
+                background: var(--tint, var(--warm)); transition: width .3s, background .4s; }
+  .strip-label { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+                 z-index: 2; color: var(--ink); pointer-events: none; }
+  .strip-hand { position: absolute; top: 8px; bottom: 8px; width: 2px; z-index: 2;
+                left: var(--at, 0%); background: var(--ink); opacity: .5; }
+  .strip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0;
+                 margin: 0; cursor: pointer; }
+
+  /* the header, on paper */
+  .plate {
+    background: var(--paper); border: 1px solid var(--line); box-shadow: var(--cast);
+  }
+  .plate .stamp h1 {
+    font-family: var(--display); font-weight: 400; font-size: 19px; letter-spacing: 0;
+    color: var(--ink);
+  }
+  .plate .tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+                  text-transform: uppercase; color: var(--faint); }
+  .seek-in { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .seek-hint {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .seek input { font-family: var(--sans); }
+  .main {
+    font-family: var(--mono); text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px;
+  }
+  /* the cue list, on paper */
+  .cue { background: var(--paper); border: 1px solid var(--line); box-shadow: none; }
+  .cue-name { font-family: var(--sans); }
+  .cue-note { font-family: var(--mono); text-transform: uppercase; letter-spacing: .05em;
+              font-size: 10px; color: var(--faint); }
+  .legend { font-family: var(--mono); text-transform: uppercase; letter-spacing: .1em;
+            font-size: 10px; color: var(--faint); }
+  .tab { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .field-head h2 { font-family: var(--display); font-weight: 400; }
+  .field-sub, .nudge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em;
+                       text-transform: uppercase; }
+  .nudge { background: var(--paper); border-color: var(--line); }
+  .nudge button { font-family: var(--mono); font-size: 10px; letter-spacing: .07em;
+                  text-transform: uppercase; }
+
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
   .group-label:first-child { margin-top: 0; }
@@ -2781,7 +2838,7 @@ const HTML = /* html */ `<!doctype html>
     --tint: var(--warm);
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
     position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
-    border-radius: 26px; border: 1px solid var(--edge); background: var(--pane);
+    border-radius: 20px; border: 1px solid var(--line); background: var(--paper);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
                 inset -1px -1.4px 0 -.4px rgba(255,255,255,.15),
@@ -2834,24 +2891,9 @@ const HTML = /* html */ `<!doctype html>
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
   .tile.on {
-    /* Was a .34 near-black wash, which quietly put the overlay back on every
-       card that is lit — the ones you look at. The glow below supplies all the
-       contrast a lit tile needs. */
-    background: transparent;
-    border-color: color-mix(in oklab, var(--tint) calc(28% + var(--lit) * 42%), var(--edge));
-    box-shadow:
-      /* the lit edge itself */
-      inset 0 1px 0 color-mix(in oklab, var(--tint) calc(var(--lit) * 42%), var(--glass-hi)),
-      /* the pool of light standing in the bottom of the pane */
-      inset 0 -44px 64px -32px color-mix(in oklab, var(--tint) calc(var(--lit) * 88%), transparent),
-      /* a tight halo hugging the glass, then a wide one thrown onto the page —
-         two falloffs rather than one, which is what a real lamp does and what
-         a single blur radius can never look like */
-      0 0 calc(10px + var(--lit) * 18px) calc(var(--lit) * -2px)
-        color-mix(in oklab, var(--tint) calc(var(--lit) * 46%), transparent),
-      0 0 calc(30px + var(--lit) * 78px) calc(var(--lit) * 2px)
-        color-mix(in oklab, var(--tint) calc(var(--lit) * 30%), transparent),
-      var(--cast);
+    background: var(--paper);
+    border-color: color-mix(in oklab, var(--tint) calc(30% + var(--lit) * 40%), var(--line));
+    box-shadow: var(--cast);
   }
   /* ── bento ───────────────────────────────────────────────────────────
      Cards are not all one size, and the size is not arbitrary: a circuit takes
@@ -2874,12 +2916,15 @@ const HTML = /* html */ `<!doctype html>
   .tile-fill {
     --fill: 0;
     position: absolute; inset: 0; z-index: 0; pointer-events: none;
-    background: linear-gradient(0deg,
-      color-mix(in oklab, var(--tint) 46%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 32%, transparent) calc(var(--fill) * 44%),
-      color-mix(in oklab, var(--tint) 15%, transparent) calc(var(--fill) * 78%),
-      color-mix(in oklab, var(--tint)  6%, transparent) calc(var(--fill) * 100% + 6%),
-      transparent calc(var(--fill) * 100% + 34%));
+    /* Warmth spreading across the paper from the left, to the level the
+       circuit is actually at. On a dark page light rose from the floor; on
+       paper it reads as ink soaking in, and the quantity is legible at a
+       glance across a room. */
+    background: linear-gradient(100deg,
+      color-mix(in oklab, var(--tint) 62%, transparent) 0%,
+      color-mix(in oklab, var(--tint) 44%, transparent) calc(var(--fill) * 62%),
+      color-mix(in oklab, var(--tint) 16%, transparent) calc(var(--fill) * 100%),
+      transparent calc(var(--fill) * 100% + 22%));
     transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }
@@ -3622,7 +3667,7 @@ const HTML = /* html */ `<!doctype html>
 <div class="shell">
   <header class="plate">
     <div class="stamp">
-      <h1>Pravita's Apartment</h1>
+      <h1>Neo Console</h1>
       <p class="tally" id="tally"></p>
     </div>
     <button class="seek-toggle" id="seektoggle" type="button" aria-expanded="false" aria-label="Find a circuit">
@@ -3630,7 +3675,11 @@ const HTML = /* html */ `<!doctype html>
     </button>
     <label class="seek">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input type="search" id="seek" placeholder="Find a circuit" autocomplete="off" aria-label="Find a circuit">
+      <span class="seek-in">
+        <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
+               aria-label="Search, or type a command">
+        <span class="seek-hint">TRY ashu cobs 40 · living off · master warmth-70</span>
+      </span>
     </label>
     <button class="main" id="main" type="button" disabled aria-describedby="tally">
       <i id="mainfill"></i><span id="mainword">All off</span><em id="maincount"></em>
@@ -3639,10 +3688,6 @@ const HTML = /* html */ `<!doctype html>
 
   <main class="board">
     <aside class="index">
-      <div class="hero" id="hero">
-        <p class="greet" id="herogreet"></p>
-        <p class="say" id="herosay"></p>
-      </div>
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
@@ -3933,30 +3978,9 @@ function tick() {
   if (sub) sub.innerHTML = fieldSub();
 }
 
-/* The house, said out loud: the time of day, then what is actually lit. This is
-   the one place the dashboard speaks rather than reports. */
-function drawHero() {
-  const greet = el('#herogreet');
-  if (!greet) return;
-  const h = new Date().getHours();
-  greet.textContent = h < 5 ? 'Late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon'
-    : h < 21 ? 'Good evening' : 'Good night';
-
-  const on = lit(state.devices);
-  const rooms = [...new Set(on.map(d => d.room))];
-  const say = el('#herosay');
-  if (!on.length) {
-    say.innerHTML = 'The house is<br>dark.<span></span>';
-    say.querySelector('span').textContent = state.devices.length + ' circuits, all off.';
-    return;
-  }
-  say.innerHTML = '<b></b> lit<span></span>';
-  say.querySelector('b').textContent = on.length;
-  say.querySelector('span').textContent = rooms.length === 1
-    ? 'in ' + title(rooms[0]) + '.'
-    : 'across ' + rooms.length + ' rooms — ' + rooms.slice(0, 3).map(title).join(', ')
-      + (rooms.length > 3 ? ' and more.' : '.');
-}
+/* The sentence moved onto the board, into sayCard(), so the side column can be
+   what it should have been all along: rooms, cues and settings. */
+function drawHero() { /* the board draws it now */ }
 
 /* The house in one card: what is lit, said plainly, over a row where each room
    is a column of its own light. Read at a glance, tapped to go there. */
@@ -4239,7 +4263,48 @@ function drawField() {
 }
 
 // The house is a board of rooms.
+/* The house, said once and then drawn.
+ *
+ * The sentence is the only place the interface speaks, so it gets the serif and
+ * the coral numerals. Under it, one column per room: height for how much light
+ * is in it, colour for how warm that light is, and the whole row doubles as
+ * navigation. It replaces a tally nobody reads with a shape you can take in
+ * before you have read a word. */
+function sayCard() {
+  const card = document.createElement('div');
+  card.className = 'saycard enter';
+  card.innerHTML = '<p class="say" id="saysentence"></p><div class="bars" id="bars"></div>';
+
+  const on = lit(state.devices).length;
+  const rooms_lit = rooms().filter(r => lit(inRoom(r)).length).length;
+  card.querySelector('.say').innerHTML = on
+    ? '<b>' + on + '</b> lit, across <b>' + rooms_lit + '</b> ' + (rooms_lit === 1 ? 'room' : 'rooms')
+    : 'The house is dark';
+
+  const bars = card.querySelector('.bars');
+  for (const room of rooms()) {
+    const items = inRoom(room);
+    const onHere = lit(items);
+    const load = output(items);
+    const col = document.createElement('button');
+    col.type = 'button';
+    col.className = 'barcol' + (onHere.length ? ' on' : '');
+    col.innerHTML = '<span class="barwell"><span class="bar"></span></span>' +
+                    '<span class="barlabel"></span>';
+    col.style.setProperty('--tint', onHere.length ? roomTint(onHere) : 'var(--line-up)');
+    col.querySelector('.bar').style.height =
+      (onHere.length ? Math.max(14, Math.round(load * 100)) : 4) + '%';
+    col.querySelector('.barlabel').textContent = title(room);
+    col.setAttribute('aria-label', title(room) + ', ' +
+      (onHere.length ? Math.round(load * 100) + ' per cent' : 'dark'));
+    col.onclick = () => go('room', room);
+    bars.appendChild(col);
+  }
+  return card;
+}
+
 function fillHouse(stack) {
+  stack.appendChild(sayCard());
   // Whichever room is carrying the most light takes the big square. If the
   // house is dark nothing is promoted — a hero card for an empty room would be
   // a lie about where to look.
@@ -4329,14 +4394,15 @@ function roomTile(room) {
   tile.innerHTML =
     '<span class="tile-fill"></span>' +
     '<button class="tile-body" type="button">' +
-      '<span class="tile-name"></span>' +
-      '<span class="tile-read"></span>' +
-    '</button>' +
-    '<button class="key" type="button"><i></i></button>';
-  tile.querySelector('.tile-name').textContent = title(room);
+      '<span class="roomhead"><span class="roomname"></span><span class="chip"></span></span>' +
+      '<span class="big"></span><span class="sub"></span>' +
+    '</button>';
+  tile.querySelector('.roomname').textContent = title(room);
   tile.querySelector('.tile-body').onclick = () => go('room', room);
-  tile.querySelector('.key').onclick = () => {
+  tile.querySelector('.chip').onclick = (e) => {
+    e.stopPropagation();
     const on = lit(inRoom(room));
+    if (!on.length) return;
     switchOffMany(on, 'Switching off ' + on.length + ' in ' + title(room) + '.');
   };
   roomTileState(tile, room);
@@ -4352,13 +4418,17 @@ function roomTileState(tile, room) {
   // A room with one lamp on glows faintly; a room lit throughout glows properly.
   tile.style.setProperty('--lit', Math.min(1, Math.sqrt(load * 1.7)).toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', load.toFixed(3));
-  tile.querySelector('.tile-read').textContent =
-    on.length ? on.length + ' of ' + items.length + ' on' : 'all ' + items.length + ' off';
-  const key = tile.querySelector('.key');
-  key.disabled = !on.length;
-  key.setAttribute('aria-label', 'Turn off everything in ' + title(room));
+  // The reading a room deserves is the light in it, not a tally of switches.
+  const pct = Math.round(output(items) * 100);
+  tile.querySelector('.big').textContent = on.length ? pct + '%' : 'dark';
+  tile.querySelector('.big').classList.toggle('dark', !on.length);
+  tile.querySelector('.sub').textContent = on.length + ' of ' + items.length + ' lit';
+  const chip = tile.querySelector('.chip');
+  chip.textContent = on.length ? 'ALL OFF' : 'DARK';
+  chip.setAttribute('role', on.length ? 'button' : 'presentation');
+  chip.setAttribute('aria-label', on.length ? 'Turn off everything in ' + title(room) : '');
   tile.querySelector('.tile-body').setAttribute('aria-label',
-    'Open ' + title(room) + ', ' + (on.length ? on.length + ' of ' + items.length + ' on' : 'all off'));
+    'Open ' + title(room) + ', ' + (on.length ? pct + ' per cent, ' + on.length + ' of ' + items.length + ' lit' : 'dark'));
 }
 
 /* ──────────────────────────────────────────────────── a circuit's tile */
@@ -4386,18 +4456,18 @@ function circuitTile(d) {
   const body = document.createElement(d.is_curtain ? 'div' : 'button');
   if (body.tagName === 'BUTTON') { body.type = 'button'; body.onclick = () => setDevice(d, !d.status); }
   body.className = 'tile-body';
-  body.innerHTML = '<span class="tile-name"></span><span class="tile-read"></span>';
-  body.querySelector('.tile-name').textContent = pretty(d.name);
+  body.innerHTML = '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
+  body.querySelector('.roomname').textContent = pretty(d.name).toUpperCase();
+  body.querySelector('.idline').textContent = idLine(d);
   tile.appendChild(body);
 
   // A curtain is two momentary relays with nothing to report, so it has no key.
   if (!d.is_curtain) {
-    const key = document.createElement('button');
-    key.type = 'button';
-    key.className = 'key';
-    key.innerHTML = '<i></i>';
-    key.onclick = () => setDevice(d, !d.status);
-    tile.appendChild(key);
+    const ring = document.createElement('button');
+    ring.type = 'button';
+    ring.className = 'ring';
+    ring.onclick = (e) => { e.stopPropagation(); setDevice(d, !d.status); };
+    tile.appendChild(ring);
   }
 
   if (d.is_dimmable || d.is_tunable) {
@@ -4415,28 +4485,46 @@ function circuitTile(d) {
   return tile;
 }
 
+/* A strip rather than a track, and it says which of the two it is — because
+   one of them is a reading and the other is a belief. The hub reports
+   brightness back; colour temperature it accepts and never mentions again. */
+function stripLabel(d, key) {
+  return key === 'level'
+    ? 'BRIGHTNESS · REPORTS BACK'
+    : 'WARM ' + Math.round(d.tune) + ' · NEVER READ BACK';
+}
+
 function slider(d, key) {
+  const wrap = document.createElement('label');
+  wrap.className = 'strip ' + (key === 'level' ? 'dimstrip' : 'warmstrip');
+  wrap.innerHTML = '<span class="strip-fill"></span><span class="strip-hand"></span>' +
+                   '<span class="strip-label"></span>';
+  wrap.querySelector('.strip-label').textContent = stripLabel(d, key);
+  wrap.style.setProperty('--at', d[key] + '%');
+
   const input = document.createElement('input');
   input.type = 'range';
   input.className = key === 'level' ? 'slider dim' : 'slider warm';
-  if (key === 'level') input.style.setProperty('--pct', d.level + '%');
   input.min = 0; input.max = 100; input.step = 1;
   input.value = d[key];
   input.dataset.key = key;
   input.setAttribute('aria-label', pretty(d.name) +
     (key === 'level' ? ' brightness' : ' warmth, 0 cool to 100 warm'));
+  wrap.appendChild(input);
 
   input.addEventListener('input', () => {
     const v = Number(input.value);
     d[key] = v;
-    if (key === 'level') { d.status = v > 0; input.style.setProperty('--pct', v + '%'); }
+    if (key === 'level') d.status = v > 0;
+    wrap.style.setProperty('--at', v + '%');
+    wrap.querySelector('.strip-label').textContent = stripLabel(d, key);
     paintTile(input.closest('.tile'), d);
     if (key === 'level') tick();
     queueSlider(d, key);
   });
   // A keyboard press or a released drag is the final word.
   input.addEventListener('change', () => queueSlider(d, key, true));
-  return input;
+  return wrap;
 }
 
 /* ─────────────────────────────────────── the COBs of a room, as one control */
@@ -4573,24 +4661,50 @@ function paintTile(tile, d) {
   // How much light this circuit is making drives the glow, not just the fill.
   tile.style.setProperty('--lit', (level / 100).toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
-  tile.querySelector('.tile-read').textContent = readWord(d);
+  const st = tile.querySelector('.state');
+  if (st) st.textContent = stateWord(d);
 
   for (const input of tile.querySelectorAll('.slider')) {
     if (input === document.activeElement) continue;   // never fight the hand on the slider
-    input.value = d[input.dataset.key];
-    if (input.dataset.key === 'level') input.style.setProperty('--pct', d.level + '%');
+    const k = input.dataset.key;
+    input.value = d[k];
+    const strip = input.closest('.strip');
+    if (strip) {
+      strip.style.setProperty('--at', d[k] + '%');
+      strip.querySelector('.strip-label').textContent = stripLabel(d, k);
+    }
   }
 
-  const key = tile.querySelector('.key');
-  if (key) {
-    key.setAttribute('aria-pressed', String(d.status));
-    key.setAttribute('aria-label', (d.status ? 'Turn off ' : 'Turn on ') + pretty(d.name));
+  const ring = tile.querySelector('.ring');
+  if (ring) {
+    ring.setAttribute('aria-pressed', String(d.status));
+    ring.setAttribute('aria-label', (d.status ? 'Turn off ' : 'Turn on ') + pretty(d.name));
   }
   const body = tile.querySelector('button.tile-body');
   if (body) {
     body.setAttribute('aria-pressed', String(d.status));
     body.setAttribute('aria-label', pretty(d.name) + ', ' + title(d.room) + ', ' + readWord(d));
   }
+}
+
+/* What a circuit is, in the hub's own terms — the id is the thing you would
+   quote to an electrician, so it is shown rather than hidden in a tooltip. */
+function idLine(d) {
+  const kind = d.is_curtain ? 'CURTAIN' : d.is_ac ? 'AIR CON'
+    : kindOf(d) === 'screen' ? 'SCREEN' : d.is_fan ? 'FAN'
+    : d.is_dimmable ? 'DIMMER' : 'SWITCH';
+  return kind + ' #' + d.record_id;
+}
+
+/* What it is doing, in one word where one word is honest. An air conditioner
+   gets a longer one because a shorter one would be a lie. */
+function stateWord(d) {
+  if (d.is_curtain) return 'NO READING';
+  if (d.is_ac) return 'HUB LAST SENT ' + (d.status ? 'ON' : 'OFF');
+  if (!d.status) return 'OFF';
+  if (d.is_fan) return 'TURNING';
+  if (d.is_dimmable) return d.level + '%' + (d.is_tunable ? ' · WARM ' + Math.round(d.tune) : '');
+  return 'ON';
 }
 
 function readWord(d) {
@@ -5636,7 +5750,7 @@ const setShot = (v) => {
  * guessed: mean luminance off a canvas, and a multiplier that lands it at the
  * value the fog was approved at. Any photograph then behaves, including one
  * uploaded from a phone thirty seconds ago. */
-const SHOT_TARGET = 116;
+const SHOT_TARGET = 172;
 
 function fitShot(v) {
   const img = new Image();
@@ -5650,7 +5764,7 @@ function fitShot(v) {
     const d = x.getImageData(0, 0, c.width, c.height).data;
     for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
     const mean = sum / (d.length / 4);
-    const dim = Math.max(0.28, Math.min(1, SHOT_TARGET / Math.max(1, mean)));
+    const dim = Math.max(0.7, Math.min(1.9, SHOT_TARGET / Math.max(1, mean)));
     document.documentElement.style.setProperty('--shot-dim', dim.toFixed(3));
   };
   img.src = '/bg.jpg?v=' + v;
