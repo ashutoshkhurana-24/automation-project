@@ -2735,7 +2735,7 @@ const HTML = /* html */ `<!doctype html>
 
   /* the hero card: what the house is doing, said once */
   .saycard {
-    grid-column: 1 / -1; padding: 22px 24px 18px; margin-bottom: 4px;
+    grid-column: 1 / -1; padding: 20px 22px 16px; margin-bottom: 2px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 22px;
     box-shadow: var(--cast);
   }
@@ -2747,10 +2747,10 @@ const HTML = /* html */ `<!doctype html>
   .saycard .say b { font-weight: 400; font-style: italic; color: var(--accent); }
 
   /* one column per room: height for how much light, colour for how warm */
-  .bars { display: flex; gap: clamp(6px, 1vw, 14px); margin-top: 20px; align-items: flex-end; }
+  .bars { display: flex; gap: clamp(6px, 1vw, 14px); margin-top: 14px; align-items: flex-end; }
   .barcol { flex: 1 1 0; min-width: 0; background: none; border: 0; padding: 0;
             cursor: pointer; font: inherit; text-align: left; }
-  .barwell { height: 46px; display: flex; align-items: flex-end; }
+  .barwell { height: 38px; display: flex; align-items: flex-end; }
   .bar {
     width: 100%; border-radius: 5px; background: var(--tint, var(--warm));
     min-height: 3px; transition: height .5s cubic-bezier(.3,.8,.3,1), background .5s;
@@ -2761,14 +2761,29 @@ const HTML = /* html */ `<!doctype html>
   .barcol.on .barlabel { color: var(--soft); }
 
   /* a room, as a card that states its own reading */
-  .tile[data-room] { display: flex; flex-direction: column; justify-content: space-between; }
-  .tile[data-room] .tile-body { align-items: stretch; }
+  .tile[data-room] { display: flex; flex-direction: column; }
+  .tile[data-room] .tile-body {
+    align-items: stretch; justify-content: flex-start; gap: 0;
+    padding: 15px 16px 14px;
+  }
+  /* Every card carries a wash, faint when dark and its own colour when lit, so
+     the grid reads as paper with light soaked into it rather than a set of
+     empty boxes. */
+  .tile[data-room]::before {
+    content: ''; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+    background: linear-gradient(104deg, var(--paper-2) 0%, rgba(255,255,255,0) 72%);
+    pointer-events: none;
+  }
+  .tile[data-room] .tile-body, .tile[data-room] .tile-fill { z-index: 1; }
   .roomhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .roomname { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em;
               font-size: 12px; color: var(--ink); }
   .chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; }
-  .big { font-family: var(--display); font-size: clamp(24px, 3vw, 34px); line-height: 1;
-         color: var(--ink); margin-top: auto; }
+  /* The reading sits under the name with air, not adrift at the foot of an
+     empty card — a room card is a label and a number, and the reference reads
+     as one block for that reason. */
+  .big { font-family: var(--display); font-size: clamp(26px, 3.1vw, 36px); line-height: 1;
+         color: var(--ink); margin-top: 18px; }
   .big.dark { color: var(--soft); }
   .sub { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
          text-transform: uppercase; color: var(--faint); margin-top: 5px; }
@@ -2802,6 +2817,12 @@ const HTML = /* html */ `<!doctype html>
   /* the header, on paper */
   .plate {
     background: var(--paper); border: 1px solid var(--line); box-shadow: var(--cast);
+    border-radius: 16px; padding: 10px 14px;
+  }
+  /* A rule after the name, the way a masthead sets a title off from what
+     follows it. */
+  .plate .stamp {
+    padding-right: clamp(12px, 2vw, 22px); border-right: 1px solid var(--line);
   }
   .plate .stamp h1 {
     font-family: var(--display); font-weight: 400; font-size: 19px; letter-spacing: 0;
@@ -2812,18 +2833,20 @@ const HTML = /* html */ `<!doctype html>
   /* The field is the widest thing in the bar, because it is the fastest way to
      reach any of 88 circuits — and it takes commands as well as searches, so it
      had to stop looking like an afterthought bolted to the title. */
+  /* No box: the field is simply the widest thing in the bar, with the commands
+     it accepts written under it. A frame around it only made the masthead look
+     like a form. */
   .seek {
-    flex: 1 1 auto; max-width: 520px; margin-left: clamp(12px, 3vw, 40px);
-    display: flex; align-items: center; gap: 10px;
-    padding: 0 12px 0 14px; height: 42px; border-radius: 12px;
-    background: var(--paper-2); border: 1px solid var(--line);
-    transition: border-color .2s, background .2s, box-shadow .2s;
+    flex: 1 1 auto; min-width: 0; margin-left: clamp(10px, 1.6vw, 18px);
+    display: flex; align-items: center; gap: 10px; padding: 0; height: auto;
+    background: none; border: 0; border-radius: 0;
   }
-  .seek:focus-within {
-    background: var(--paper); border-color: var(--line-up);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 14%, transparent);
+  .seek-in { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+  .seek-hint {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .seek svg { width: 15px; height: 15px; color: var(--faint); flex: 0 0 auto; }
+  .seek svg { display: none; }
   .seek input {
     flex: 1 1 auto; min-width: 0; font-family: var(--sans); font-size: 14px; color: var(--ink);
     background: none; border: 0; outline: none;
@@ -2889,6 +2912,44 @@ const HTML = /* html */ `<!doctype html>
   .tile.gang .big { font-size: clamp(30px, 4vw, 44px); margin-top: 6px; }
   .tile.gang .controls { position: static; margin-top: 14px; }
 
+  /* The backdrop is half the design and changing it was two clicks into a
+     sheet. Three of them live in the bar instead. */
+  .shots { display: flex; gap: 5px; flex: 0 0 auto; }
+  .shot-mini {
+    width: 30px; height: 22px; padding: 0; cursor: pointer; border-radius: 6px;
+    border: 1px solid var(--line); background-size: cover; background-position: center;
+    transition: border-color .18s, transform .16s;
+  }
+  .shot-mini:hover { transform: translateY(-1px); border-color: var(--line-up); }
+  .shot-mini.on { border-color: var(--ink); }
+  .shot-more {
+    width: 30px; height: 22px; padding: 0; cursor: pointer; border-radius: 6px;
+    border: 1px dashed var(--line-up); background: none; color: var(--faint);
+    font-family: var(--mono); font-size: 11px; line-height: 1;
+  }
+  @media (max-width: 860px) { .shots { display: none; } }
+
+  /* the thumb bar, as the reference has it: the one held control, then the
+     three sleep timers that are otherwise two taps into a sheet */
+  /* The say card carries the house on every screen now, so the phone's older
+     glance card was the same thing said twice, one above the other. */
+  button.glance { display: none; }
+
+  @media (max-width: 860px) {
+    nav.quick { grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 6px; }
+    nav.quick #qtimer, nav.quick #qfind { display: none; }
+    nav.quick .qmin {
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+      text-transform: uppercase; color: var(--soft);
+      background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+    }
+    nav.quick .qmin.on { color: var(--ink); border-color: var(--ink); }
+    nav.quick #qoff span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+                        text-transform: uppercase; }
+  }
+  @media (min-width: 861px) { nav.quick .qmin { display: none; } }
+
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
   .group-label:first-child { margin-top: 0; }
@@ -2900,7 +2961,7 @@ const HTML = /* html */ `<!doctype html>
   .tile {
     --tint: var(--warm);
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
-    position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
+    position: relative; height: var(--tile-h); min-height: 132px; overflow: hidden; isolation: isolate;
     border-radius: 20px; border: 1px solid var(--line); background: var(--paper);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
@@ -2983,11 +3044,11 @@ const HTML = /* html */ `<!doctype html>
        circuit is actually at. On a dark page light rose from the floor; on
        paper it reads as ink soaking in, and the quantity is legible at a
        glance across a room. */
-    background: linear-gradient(100deg,
-      color-mix(in oklab, var(--tint) 62%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 44%, transparent) calc(var(--fill) * 62%),
-      color-mix(in oklab, var(--tint) 16%, transparent) calc(var(--fill) * 100%),
-      transparent calc(var(--fill) * 100% + 22%));
+    background: linear-gradient(104deg,
+      color-mix(in oklab, var(--tint) 88%, transparent) 0%,
+      color-mix(in oklab, var(--tint) 66%, transparent) calc(22% + var(--fill) * 46%),
+      color-mix(in oklab, var(--tint) 30%, transparent) calc(46% + var(--fill) * 44%),
+      transparent calc(72% + var(--fill) * 28%));
     transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }
@@ -3293,7 +3354,7 @@ const HTML = /* html */ `<!doctype html>
      whole house: what is lit, said in words, over a row where every room is a
      column of its own light — height is how much, colour is how warm. Tapping
      a column goes there, so it is a summary and a way in at once. */
-  .glance { display: none; }
+  button.glance { display: none; }
 
   @media (max-width: 860px) {
     .glance {
@@ -3743,13 +3804,16 @@ const HTML = /* html */ `<!doctype html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     </button>
     <label class="seek">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
-             aria-label="Search, or type a command">
+      <span class="seek-in">
+        <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
+               aria-label="Search, or type a command">
+        <span class="seek-hint" id="seekhint">TRY ashu cobs 40 · living off · master warmth-70</span>
+      </span>
       <kbd class="seek-key">/</kbd>
     </label>
+    <div class="shots" id="shots" aria-label="Backdrop"></div>
     <button class="main" id="main" type="button" disabled aria-describedby="tally">
-      <i id="mainfill"></i><span id="mainword">All off</span><em id="maincount"></em>
+      <i id="mainfill"></i><span id="mainword">Hold · all off</span><em id="maincount"></em>
     </button>
   </header>
 
@@ -3831,6 +3895,11 @@ const HTML = /* html */ `<!doctype html>
     </svg>
     <span>Find</span>
   </button>
+  <!-- The three durations you actually pick, where your thumb already is. The
+       timer sheet is still there for choosing a room or a single circuit. -->
+  <button type="button" class="qmin" data-min="15">15 min</button>
+  <button type="button" class="qmin" data-min="30">30 min</button>
+  <button type="button" class="qmin" data-min="60">60 min</button>
 </nav>
 
 <div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
@@ -4123,7 +4192,7 @@ function readout() {
 
   const m = el('#main');
   m.disabled = !on.length;
-  el('#mainword').textContent = on.length ? 'All off' : 'All dark';
+  el('#mainword').textContent = on.length ? 'Hold · all off' : 'All dark';
   el('#maincount').textContent = on.length ? String(on.length) : '';
   m.setAttribute('aria-label', on.length
     ? 'Hold to switch off all ' + on.length + ' live circuits'
@@ -5916,6 +5985,42 @@ function shrinkPhoto(file, max) {
   });
 }
 
+/* Three backdrops in the bar, plus a way into the rest. */
+async function drawShots() {
+  const host = el('#shots');
+  if (!host) return;
+  let lib;
+  try { lib = await fetch('/api/backdrops').then(r => r.json()); } catch { return; }
+  host.innerHTML = '';
+  const all = (lib.has_original ? [{ file: null, label: 'the original' }] : [])
+    .concat(lib.items.map(i => ({ file: i.file, label: i.file })));
+  for (const it of all.slice(0, 3)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'shot-mini' + ((lib.current || null) === it.file ? ' on' : '');
+    b.style.backgroundImage = "url('" + (it.file ? '/backdrops/' + it.file : '/bg.jpg?v=' + lib.version) + "')";
+    b.setAttribute('aria-label', 'Use ' + it.label + ' as the backdrop');
+    b.onclick = async () => {
+      const r = await fetch('/api/backdrops/choose', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: it.file }),
+      }).then(x => x.json()).catch(() => null);
+      if (r && r.ok) { setShot(r.version); drawShots(); }
+    };
+    host.appendChild(b);
+  }
+  if (all.length > 3) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'shot-more';
+    more.textContent = '+';
+    more.setAttribute('aria-label', 'All backdrops');
+    more.onclick = () => { el('#bgscrim').hidden = false; drawBackdrops(); };
+    host.appendChild(more);
+  }
+}
+drawShots();
+
 el('#setbg').onclick = () => { el('#bgscrim').hidden = false; drawBackdrops(); };
 el('#bgdone').onclick = () => { el('#bgscrim').hidden = true; };
 el('#bgscrim').addEventListener('click', (e) => { if (e.target === el('#bgscrim')) el('#bgscrim').hidden = true; });
@@ -5966,7 +6071,14 @@ function note(msg, hold, action) {
 
 /* ────────────────────────────────────────────────────────────── wiring */
 
-el('#seek').addEventListener('input', (e) => { state.q = e.target.value; drawField(); });
+el('#seek').addEventListener('input', (e) => {
+  state.q = e.target.value;
+  const hint = el('#seekhint');
+  if (hint) hint.textContent = state.q.trim()
+    ? (parseCommand(state.q) ? 'PRESS ↵ TO RUN IT' : 'SEARCHING')
+    : 'TRY ashu cobs 40 · living off · master warmth-70';
+  drawField();
+});
 el('#seek').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   const cmd = parseCommand(state.q);
@@ -6289,6 +6401,20 @@ el('#timermins').addEventListener('click', async (e) => {
 
 /* the thumb bar */
 el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
+for (const b of document.querySelectorAll('.qmin')) {
+  b.onclick = async () => {
+    const minutes = Number(b.dataset.min);
+    b.classList.add('on');
+    setTimeout(() => b.classList.remove('on'), 1200);
+    const r = await fetch('/api/timers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes, scope: 'house' }),
+    }).then(x => x.json()).catch(() => null);
+    if (r && r.ok) { tick_haptic(9); note(r.spoken + '.'); loadAuto(); }
+    else note('That timer could not be set.');
+  };
+}
+
 el('#qtimer').onclick = () => openTimer(timerpop.hidden);
 document.addEventListener('click', (e) => {
   if (timerpop.hidden) return;
