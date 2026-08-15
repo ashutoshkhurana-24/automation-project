@@ -2854,6 +2854,10 @@ const HTML = /* html */ `<!doctype html>
   }
   .tile[data-room] .tile-body, .tile[data-room] .tile-fill { z-index: 1; }
   .roomhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  /* The button is the fixed thing here; the title is what gives. Without this
+     'ALL COBS · 5 ON ONE MODULE' simply ran underneath it on a phone. */
+  .roomhead .gangtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .roomhead .gangsame { flex: 0 0 auto; }
   .roomname { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em;
               font-size: 12px; color: var(--ink); }
   /* All-off is pinned to the top-right corner of a room card, so the name has
@@ -2982,6 +2986,9 @@ const HTML = /* html */ `<!doctype html>
   .seek-ghost b { color: var(--faint); font-weight: 400; }
   /* The shortcut, shown where the shortcut is used; it becomes the key that
      takes the completion once there is one to take. */
+  /* Phone only: a wide screen closes the field with Escape or by clicking
+     away, and the masthead has no room for a button that says so. */
+  .seek-cancel { display: none; }
   .seek-key {
     flex: 0 0 auto; font-family: var(--mono); font-size: 10px; color: var(--faint);
     padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px;
@@ -3330,11 +3337,27 @@ const HTML = /* html */ `<!doctype html>
   /* A lit circuit throws light: the pane lifts, its edge catches the colour, and
      the tile casts a soft halo onto the surface behind it. Every part of that is
      scaled by --lit, so a lamp at 20% barely glows and one at 100% really does. */
+  /* ── a circuit that is on ────────────────────────────────────────────
+     On paper, over a bright photograph, the difference between a lit tile and
+     a dark one had come down to a slightly warmer border and a wash across the
+     face — true to the palette and far too quiet to read across a room, which
+     is the one job this state has. It says it four ways now, all of them the
+     lamp's own colour rather than a decoration: the pane itself takes a tint,
+     the edge takes more of it, the card throws a halo the way a lamp throws
+     light, and the state line goes to ink while a dark one stays grey. */
   .tile.on {
-    background: var(--paper);
-    border-color: color-mix(in oklab, var(--tint) calc(30% + var(--lit) * 40%), var(--line));
-    box-shadow: var(--cast);
+    background: color-mix(in oklab, var(--tint) calc(9% + var(--lit) * 9%), var(--paper));
+    border-color: color-mix(in oklab, var(--tint) calc(52% + var(--lit) * 38%), var(--line));
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--tint) calc(14% + var(--lit) * 20%), transparent),
+      0 6px 22px -8px color-mix(in oklab, var(--tint) calc(22% + var(--lit) * 40%), transparent),
+      0 18px 44px -18px color-mix(in oklab, var(--tint) calc(12% + var(--lit) * 30%), transparent),
+      var(--cast);
   }
+  .tile.on .tile-read, .tile.on .state {
+    color: var(--ink); font-weight: 500;
+  }
+  .tile:not(.on) .state, .tile:not(.on) .tile-read { color: var(--faint); }
   /* ── bento ───────────────────────────────────────────────────────────
      Cards are not all one size, and the size is not arbitrary: a circuit takes
      the room its controls actually need. A tunable lamp carries two sliders and
@@ -3361,10 +3384,10 @@ const HTML = /* html */ `<!doctype html>
        paper it reads as ink soaking in, and the quantity is legible at a
        glance across a room. */
     background: linear-gradient(104deg,
-      color-mix(in oklab, var(--tint) 88%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 66%, transparent) calc(22% + var(--fill) * 46%),
-      color-mix(in oklab, var(--tint) 30%, transparent) calc(46% + var(--fill) * 44%),
-      transparent calc(72% + var(--fill) * 28%));
+      color-mix(in oklab, var(--tint) 96%, transparent) 0%,
+      color-mix(in oklab, var(--tint) 78%, transparent) calc(24% + var(--fill) * 46%),
+      color-mix(in oklab, var(--tint) 44%, transparent) calc(48% + var(--fill) * 44%),
+      color-mix(in oklab, var(--tint) 14%, transparent) calc(74% + var(--fill) * 26%));
     transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }
@@ -3411,9 +3434,15 @@ const HTML = /* html */ `<!doctype html>
   /* Plain sliders along the foot of the tile: brightness, then warmth if the
      lamp has it. Dragging the whole tile was clever and nobody could find it. */
   .controls { position: absolute; z-index: 4; left: 18px; right: 18px; bottom: 12px; display: grid; gap: 7px; }
-  .tile.dims .tile-body { padding-bottom: 42px; }
-  .tile.tunes .tile-body { padding-bottom: 42px; }
-  .tile.dims.tunes .tile-body { padding-bottom: 70px; }
+  /* The face has to end where the strips begin. These reservations were
+     guessed and were both short: one strip is 46px sitting 12px off the foot,
+     and two are 46 + 9 + 46 on top of that — so a tunable tile reserved 70px
+     for 101px of controls and its state line spent its life half-hidden behind
+     the brightness strip. Nobody noticed while the line read '45%'; it became
+     obvious the moment it read 'ON · 45% · CANDLE'. */
+  .tile.dims .tile-body { padding-bottom: 62px; }
+  .tile.tunes .tile-body { padding-bottom: 62px; }
+  .tile.dims.tunes .tile-body { padding-bottom: 117px; }
 
   .slider {
     -webkit-appearance: none; appearance: none;
@@ -4202,8 +4231,9 @@ const HTML = /* html */ `<!doctype html>
     .tally.stale .when::before { content: ' · '; }
 
     .seek-toggle { display: grid; margin-left: auto; }
-    .seek { display: none; order: 4; flex: 1 1 100%; margin-left: 0; }
-    .plate.searching .seek { display: block; }
+    /* Scoped to the masthead. Unscoped it also hid the field once it had been
+       moved into the search layer, which is the one place it must be. */
+    .plate .seek { display: none; order: 4; flex: 1 1 100%; margin-left: 0; }
     .plate.searching { flex-wrap: wrap; }
     .main { margin-left: 0; padding: 9px 13px; }
 
@@ -4245,58 +4275,63 @@ const HTML = /* html */ `<!doctype html>
        lives inside that masthead — so tapping Find switched the board to
        Search and gave you nothing to type into. The masthead comes back when
        and only when you are searching, carrying the field and nothing else. */
-    /* It docks at the bottom, where the thumb and the keyboard already are.
-       Typing at the top of a phone means reaching across the screen to a field
-       that the keyboard is about to cover; every search on the device that
-       people actually use puts the field at the bottom. It takes the thumb
-       bar's place rather than sitting above it — while you are typing, the
-       three buttons are not what you want.
-       The --kb custom property is set from visualViewport: a fixed element
-       stays pinned to the *layout* viewport, so without it iOS would put the
-       field under the keyboard it just raised. */
-    header.plate.searching {
-      display: flex; gap: 8px; margin: 0; padding: 0;
-      /* top: auto matters — the masthead is sticky with top: 0 on a wide
-         screen, and a fixed box with both top and bottom set stretches to
-         fill the window instead of sizing to its content. */
-      position: fixed; z-index: 46; top: auto; left: 12px; right: 12px;
-      bottom: calc(10px + env(safe-area-inset-bottom) + var(--kb, 0px));
-      background: none; border: 0; box-shadow: none; backdrop-filter: none;
-      transition: bottom .18s ease;
+    /* ── search, as a mode ───────────────────────────────────────────────
+       It docks at the bottom, where the thumb and the keyboard already are —
+       typing at the top of a phone means reaching across the screen to a
+       field the keyboard is about to cover. But a docked field alone was the
+       wrong half of the idea: the board behind it still scrolled and still
+       took taps, the results sat under the keyboard, and there was no way out
+       but emptying the field. So the whole screen becomes the search while it
+       is open, in one flex column — results, then the next word, then the
+       field — which means no offset anywhere is computed by hand. */
+    .seeklayer {
+      position: fixed; inset: 0; z-index: 46;
+      display: flex; flex-direction: column;
+      padding: calc(10px + env(safe-area-inset-top)) 12px
+               calc(10px + env(safe-area-inset-bottom) + var(--kb, 0px));
+      gap: 8px;
+      background: color-mix(in oklab, var(--base) 82%, transparent);
+      backdrop-filter: blur(22px) saturate(130%); -webkit-backdrop-filter: blur(22px) saturate(130%);
+      animation: fade .18s ease both;
+      transition: padding-bottom .18s ease;
     }
-    .plate.searching .stamp { display: none; }
-    .plate.searching .seek {
-      display: flex; flex: 1 1 auto; max-width: none; margin-left: 0;
+    .seeklayer[hidden] { display: none; }
+    /* The results own everything left over, and scroll inside it. */
+    .seek-results {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px;
+      align-content: start; padding: 2px 2px 4px;
+    }
+    .seek-foot { flex: 0 0 auto; }
+    .seek-foot .chips { margin: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .seek-foot .chips::-webkit-scrollbar { display: none; }
+    .seek-foot .chips .chip-word { flex: 0 0 auto; }
+    /* The field is a child of the layer while the layer is open — moved there
+       rather than positioned over it, so the column does the arithmetic. */
+    .seeklayer .seek {
+      display: flex; flex: 0 0 auto; max-width: none; margin: 0;
       padding: 11px 14px; border-radius: 18px;
-      background: #fbf7f0; border-color: var(--line); box-shadow: var(--cast);
-    }
-    .plate.searching .seek input { font-size: 16px; }   /* under 16 and iOS zooms the field */
-    .plate.searching .seek-ghost { font-size: 16px; }
-    .plate.searching .seek-key { display: none; }
-    /* Above the pill, not below it — there is nothing below it. */
-    .plate.searching .seek-hint {
-      top: auto; bottom: calc(100% + 7px); left: 14px;
-      padding: 3px 8px; border-radius: 6px;
-      background: #fbf7f0; border: 1px solid var(--line);
-    }
-    /* The thumb bar steps aside while the field has its place. */
-    body.seeking .quick { display: none; }
-    /* The next word has to be next to the field. On a wide screen the chips
-       live on the board because the field is at the top of it; with the field
-       docked at the foot of a phone, chips at the top of the page are a
-       suggestion you would have to scroll to take. They stack above the pill,
-       in one scrolling line so a room with eleven circuits does not build a
-       wall of them over the keyboard. */
-    body.seeking .chips {
-      position: fixed; z-index: 46; left: 12px; right: 12px;
-      bottom: calc(88px + env(safe-area-inset-bottom) + var(--kb, 0px));
-      margin: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
-      padding: 8px 10px; border-radius: 14px;
       background: #fbf7f0; border: 1px solid var(--line); box-shadow: var(--cast);
-      transition: bottom .18s ease;
     }
-    body.seeking .chips::-webkit-scrollbar { display: none; }
-    body.seeking .chips .chip-word { flex: 0 0 auto; }
+    .seeklayer .seek input { font-size: 16px; }   /* under 16 and iOS zooms the field */
+    .seeklayer .seek-ghost { font-size: 16px; }
+    .seeklayer .seek-key { display: none; }
+    .seek-cancel {
+      flex: 0 0 auto; display: block; padding: 5px 10px; cursor: pointer;
+      font-family: var(--mono); font-size: 10px; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--soft);
+      background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px;
+    }
+    .seek-cancel:active { transform: scale(.93); }
+    /* Above the pill, not inside it: static, it joined the pill's flex row and
+       squeezed the input to nothing — a search field with no room for text. */
+    .seeklayer .seek-hint {
+      top: auto; bottom: calc(100% + 7px); left: 6px; right: auto;
+    }
+    /* Nothing of the old masthead treatment is wanted now. */
+    header.plate.searching { display: none; }
+    .quick { transition: opacity .16s ease; }
+    body.seeking .quick { display: none; }
 
     /* ── one COB, compact ────────────────────────────────────────────────
        A tunable circuit spans the row so its two strips are wide enough to
@@ -4422,7 +4457,7 @@ const HTML = /* html */ `<!doctype html>
     <button class="seek-toggle" id="seektoggle" type="button" aria-expanded="false" aria-label="Find a circuit">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     </button>
-    <label class="seek">
+    <label class="seek" id="seekpill">
       <svg class="seek-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
            aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <span class="seek-in">
@@ -4436,6 +4471,7 @@ const HTML = /* html */ `<!doctype html>
                aria-describedby="seekhint" role="combobox" aria-expanded="false" aria-autocomplete="list">
       </span>
       <kbd class="seek-key" id="seekkey">/</kbd>
+      <button class="seek-cancel" id="seekcancel" type="button" aria-label="Close search">Done</button>
       <span class="seek-hint" id="seekhint" hidden></span>
     </label>
   </header>
@@ -4594,6 +4630,19 @@ const HTML = /* html */ `<!doctype html>
       <button class="sheet-btn danger" id="sheetdelete" type="button">Delete</button>
     </div>
   </div>
+</div>
+
+<!-- ── the search surface, on a phone ────────────────────────────────────
+     Search is a mode, not a bar. A field floating over a live board leaves
+     everything ambiguous: what is behind it still scrolls and still takes
+     taps, the results sit under the keyboard, and there is no way out except
+     emptying the field. This owns the screen while it is open — results
+     scrolling in their own region, the next word above the field, the field
+     above the keyboard, and Done to leave. The board underneath is not
+     redrawn at all, so leaving puts you back exactly where you were. -->
+<div class="seeklayer" id="seeklayer" hidden>
+  <div class="seek-results tiles" id="seekresults"></div>
+  <div class="seek-foot" id="seekfoot"></div>
 </div>
 
 <!-- Outside the header on purpose: the masthead carries a backdrop-filter,
@@ -5002,6 +5051,10 @@ function roomTint(on) {
 let navFrom = null;
 
 function go(view, room) {
+  // Going anywhere ends the search. Without this the layer stayed up over the
+  // room you had just opened, and the thumb bar — hidden while seeking — never
+  // came back, so all-off and the timer were simply gone.
+  if (document.body.classList.contains('seeking')) openSeek(false);
   const same = state.view === view && state.room === (room || null);
   navFrom = same ? null : view === 'room' ? 'push' : 'pop';
   if (!same) tick_haptic(6);
@@ -5162,6 +5215,30 @@ const matches = () => {
 };
 
 function drawField() {
+  /* While the phone's search layer is up it is the only thing on screen, so
+     the results go there and the board underneath is left exactly as it was —
+     which is what makes Done put you back where you started rather than on a
+     freshly drawn house. */
+  if (onPhone() && document.body.classList.contains('seeking')) {
+    const host = el('#seekresults');
+    const foot = el('#seekfoot');
+    host.innerHTML = '';
+    foot.innerHTML = '';
+    if (state.q.trim()) fillSearch(host);
+    else {
+      const p = document.createElement('p');
+      p.className = 'empty';
+      p.textContent = 'A room, a circuit, or a whole command — try ashu cobs 40 warm.';
+      host.appendChild(p);
+      const next = nextWords('');
+      if (next) foot.appendChild(chipRow(next));
+    }
+    // The chips belong beside the field, not at the top of the results.
+    const chips = host.querySelector('.chips');
+    if (chips) foot.appendChild(chips);
+    return;
+  }
+
   const stack = el('#stack');
   stack.innerHTML = '';
   stack.scrollTop = 0;
@@ -5316,15 +5393,36 @@ function fillRoom(stack, room) {
     // switches. Their own tiles stay below it for the times one lamp is the point.
     const cobs = kind === 'light' ? group.filter(isCob) : [];
     if (cobs.length > 1) stack.appendChild(cobTile(room, cobs));
-    group.forEach(d => {
-      const t = circuitTile(d);
-      // A phone shows the ceiling as one control, as the reference does: five
-      // identical cards under a card that already drives all five is noise on a
-      // screen that has none to spare. They are still there on a wide screen.
-      if (cobs.length > 1 && isCob(d)) t.classList.add('cobmember');
-      stack.appendChild(t);
+    /* Whatever is on comes first. Walking into a room, the question is never
+       "where is the bed spot" — it is "what is burning", and the answer was
+       scattered through fourteen cards in installer order. A stable sort, so
+       within the lit half and within the dark half everything keeps the order
+       it had. */
+    const byLit = [...group].sort((a, b) => (b.status ? 1 : 0) - (a.status ? 1 : 0));
+    byLit.forEach(d => {
+      stack.appendChild(circuitTile(d, cobs.length > 1 && isCob(d)));
     });
   }
+}
+
+/* The next word, offered rather than described — one row, led by which slot
+   it fills, because a bare list of words does not say what it is a list of. */
+function chipRow(next) {
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  const lead = document.createElement('span');
+  lead.className = 'chips-lead';
+  lead.textContent = next.what;
+  chips.appendChild(lead);
+  for (const word of next.options.slice(0, 14)) {
+    const c = document.createElement('button');
+    c.type = 'button';
+    c.className = 'chip-word';
+    c.textContent = word;
+    c.onclick = () => takeWord(word);
+    chips.appendChild(c);
+  }
+  return chips;
 }
 
 function fillSearch(stack) {
@@ -5344,23 +5442,7 @@ function fillSearch(stack) {
      you have to remember is a command line, and this one is meant to be usable
      by someone who has not read SHORTCUTS.md. */
   const next = nextWords(state.q);
-  if (next && next.options.length) {
-    const chips = document.createElement('div');
-    chips.className = 'chips';
-    const lead = document.createElement('span');
-    lead.className = 'chips-lead';
-    lead.textContent = next.what;
-    chips.appendChild(lead);
-    for (const word of next.options.slice(0, 12)) {
-      const c = document.createElement('button');
-      c.type = 'button';
-      c.className = 'chip-word';
-      c.textContent = word;
-      c.onclick = () => takeWord(word);
-      chips.appendChild(c);
-    }
-    stack.appendChild(chips);
-  }
+  if (next && next.options.length) stack.appendChild(chipRow(next));
 
   const found = matches();
   if (!found.length) {
@@ -5444,14 +5526,18 @@ function roomTileState(tile, room) {
 
 /* ──────────────────────────────────────────────────── a circuit's tile */
 
-function circuitTile(d) {
+function circuitTile(d, compact) {
   const kind = kindOf(d);
   const tile = document.createElement('div');
   // Width follows what the circuit can actually do: two sliders need room, a
   // plain switch does not.
   const roomy = d.is_tunable || d.is_ac || d.is_curtain;
+  // The compact flag has to be on before the first paint: the reading depends
+  // on it, and adding the class afterwards left the card showing the long form
+  // until something happened to redraw it.
   tile.className = 'tile enter ' + kind + (d.is_dimmable ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
-    + (roomy ? ' wide' : '') + (d.is_dimmable && !d.is_tunable ? ' tall' : '');
+    + (roomy ? ' wide' : '') + (d.is_dimmable && !d.is_tunable ? ' tall' : '')
+    + (compact ? ' cobmember' : '');
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
   // turning on a lamp, so it lives in the tooltip.
@@ -5638,7 +5724,9 @@ function paintGang(tile) {
   if (same) {
     // The button says what pressing it will do, which changes with the state:
     // a ceiling half on wants levelling, a ceiling fully on wants putting out.
-    same.textContent = allOn ? 'ALL OFF' : on.length ? 'MAKE THEM ALL THE SAME' : 'ALL ON';
+    same.textContent = allOn ? 'ALL OFF'
+      : on.length ? (onPhone() ? 'ALL THE SAME' : 'MAKE THEM ALL THE SAME')
+      : 'ALL ON';
     same.setAttribute('aria-label', same.textContent.toLowerCase() + ', ' + members.length + ' COBs');
   }
 }
@@ -5682,6 +5770,12 @@ function gangSlider(tile, key) {
 
 /* ────────────────────────────────────────────────── drawing one circuit */
 
+/* On the compact COB tile the rails already show brightness and colour, and
+   the face is 74px narrower to make room for them — so the full reading wraps
+   to four lines and buries the name. The card says the short version and lets
+   the rails say the rest. */
+const shortState = (d) => !d.status ? 'OFF' : d.is_dimmable ? 'ON · ' + d.level + '%' : 'ON';
+
 function paintTile(tile, d) {
   if (!tile) return;
   tile.style.setProperty('--tint', tintOf(d));
@@ -5691,7 +5785,7 @@ function paintTile(tile, d) {
   tile.style.setProperty('--lit', (level / 100).toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
   const st = tile.querySelector('.state');
-  if (st) st.textContent = stateWord(d);
+  if (st) st.textContent = tile.classList.contains('cobmember') ? shortState(d) : stateWord(d);
 
   for (const input of tile.querySelectorAll('.slider')) {
     if (input === document.activeElement) continue;   // never fight the hand on the slider
@@ -5729,10 +5823,17 @@ function idLine(d) {
    gets a longer one because a shorter one would be a lie. */
 function stateWord(d) {
   if (d.is_curtain) return 'NO READING';
-  if (d.is_ac) return 'HUB LAST SENT ' + (d.status ? 'ON' : 'OFF');
+  // An air conditioner is infrared and cannot be read back, so this one stays
+  // hedged however much plainer 'ON' would be. Saying 'ON' about a unit the
+  // hub cannot hear would be the dashboard inventing a fact.
+  if (d.is_ac) return (d.status ? 'HUB SENT ON' : 'HUB SENT OFF');
   if (!d.status) return 'OFF';
-  if (d.is_fan) return 'TURNING';
-  if (d.is_dimmable) return d.level + '%' + (d.is_tunable ? ' · ' + warmthWord(d.tune).toUpperCase() : '');
+  // Everything that is genuinely on says so first, in the same word, whatever
+  // it is. A fan used to say TURNING and a lamp used to say 40% — both true,
+  // neither of them the thing you are scanning the board for, which is simply
+  // which circuits are awake.
+  if (d.is_fan) return 'ON';
+  if (d.is_dimmable) return 'ON · ' + d.level + '%' + (d.is_tunable ? ' · ' + warmthWord(d.tune).toUpperCase() : '');
   return 'ON';
 }
 
@@ -7110,12 +7211,46 @@ loadGrammar();
 // it the row it needs, and leaving it empty folds it back.
 const seekToggle = el('#seektoggle');
 const plate = el('.plate');
+/* Opening and closing the search mode.
+ *
+ * On a phone the field is *moved* into the search layer rather than positioned
+ * over it — one node with two homes — so the layer's flex column works out
+ * every offset itself instead of the field, the chips and the hint each
+ * carrying a hand-computed distance from the bottom edge. */
+const seekLayer = el('#seeklayer');
+const seekPill = el('#seekpill');
+const seekPillHome = seekPill.parentNode;
+
 function openSeek(open) {
+  const phone = onPhone();
   plate.classList.toggle('searching', open);
   // The thumb bar stands down while the field takes its place at the bottom.
   document.body.classList.toggle('seeking', open);
   seekToggle.setAttribute('aria-expanded', String(open));
-  if (open) el('#seek').focus();
+
+  if (phone) {
+    seekLayer.hidden = !open;
+    if (open && seekPill.parentNode !== seekLayer) seekLayer.appendChild(seekPill);
+    if (!open && seekPill.parentNode !== seekPillHome) seekPillHome.appendChild(seekPill);
+  } else if (seekPill.parentNode !== seekPillHome) {
+    // A rotation or a resize can leave the field in the layer on a screen that
+    // no longer has one.
+    seekPillHome.appendChild(seekPill);
+    seekLayer.hidden = true;
+  }
+
+  if (open) {
+    el('#seek').focus();
+    // The layer starts empty; it is drawField that fills it, and opening the
+    // mode is a change of what should be on screen just as typing is.
+    drawField();
+  } else {
+    el('#seek').blur();
+    state.q = '';
+    el('#seek').value = '';
+    resetSeek();
+    drawField();
+  }
 }
 
 /* Where the keyboard is.
@@ -7144,7 +7279,15 @@ for (const g of ['gesturestart', 'gesturechange', 'gestureend']) {
   document.addEventListener(g, (e) => e.preventDefault(), { passive: false });
 }
 seekToggle.addEventListener('click', () => openSeek(!plate.classList.contains('searching')));
-el('#seek').addEventListener('blur', () => { if (!state.q.trim()) openSeek(false); });
+/* On a wide screen an empty field that has lost focus has nothing to say, so
+   it folds away. On a phone it must not: tapping a chip, scrolling the results
+   or dismissing the keyboard all blur the field, and having the whole mode
+   vanish underneath any of those is exactly what made it feel broken. Done is
+   the way out there. */
+el('#seek').addEventListener('blur', () => {
+  if (!onPhone() && !state.q.trim()) openSeek(false);
+});
+el('#seekcancel').onclick = () => openSeek(false);
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!el('#scrim').hidden) { closeSheet(); return; }
