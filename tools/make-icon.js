@@ -1,7 +1,20 @@
-// Draw the home-screen icon: a warm lamp pooling on paper, which is the whole
-// app in one square now that the interface is warm white rather than night. Written by hand because the box has no image
-// libraries — a PNG is a few chunks and a zlib stream, and this keeps the icon
-// reproducible instead of a binary nobody can regenerate.
+// Draw the home-screen icon: the board, with one room lit.
+//
+// The old icon was a soft amber blob on paper. It said "warm light", which is
+// true but is also what half the lamp apps on a phone say, and a gaussian
+// smudge loses everything it has at 60px — a home screen icon is read at the
+// size of a fingernail, so it has to be built out of edges rather than out of
+// falloff.
+//
+// This is the app's own picture of itself: a bento of panes with exactly one
+// of them burning. That is literally what the page is, it survives being
+// shrunk because the shapes are hard, and it carries the one rule the whole
+// design rests on — the chrome is neutral and the only colour is the light a
+// lamp is making.
+//
+// Written by hand because the box has no image libraries. A PNG is a few
+// chunks and a zlib stream, and a generated asset nobody can regenerate is
+// worse than sixty lines of encoder.
 //
 //   node tools/make-icon.js        -> data/icon-180.png, icon-192.png, icon-512.png
 const fs = require('fs');
@@ -37,7 +50,7 @@ function png(size, pixel) {
   for (let y = 0; y < size; y++) {
     raw[o++] = 0;                                  // filter: none
     for (let x = 0; x < size; x++) {
-      const [r, g, b] = pixel(x / (size - 1), y / (size - 1));
+      const [r, g, b] = pixel(x / (size - 1), y / (size - 1), 1 / size);
       raw[o++] = r; raw[o++] = g; raw[o++] = b;
     }
   }
@@ -53,46 +66,83 @@ function png(size, pixel) {
 }
 
 const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+const mix = (a, b, t) => a + (b - a) * Math.max(0, Math.min(1, t));
 const smooth = (e0, e1, x) => {
   const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 };
 
-// Warm white paper, a lamp a little above centre, and the pool it throws below
-// it — the same three ideas the cards are built on, in the same palette.
-function lamp(u, v) {
-  const cx = 0.5, cy = 0.42;
-  const dx = u - cx, dy = v - cy;
-  const d = Math.sqrt(dx * dx + dy * dy);
+// Signed distance to a rounded rectangle: negative inside, positive outside,
+// and in units of the icon's width, so one pixel is 1/size everywhere. This is
+// what lets the edges be antialiased without supersampling the whole square.
+function rrect(u, v, x0, y0, x1, y1, rad) {
+  const hw = (x1 - x0) / 2, hh = (y1 - y0) / 2;
+  const px = Math.abs(u - (x0 + hw)) - (hw - rad);
+  const py = Math.abs(v - (y0 + hh)) - (hh - rad);
+  const outside = Math.hypot(Math.max(px, 0), Math.max(py, 0));
+  return outside + Math.min(Math.max(px, py), 0) - rad;
+}
 
-  // ground: warm white, easing very slightly at the corners
-  const vig = 1 - 0.08 * Math.sqrt((u - .5) ** 2 + (v - .5) ** 2) * 1.4;
-  let r = 253 * vig, g = 250 * vig, b = 245 * vig;
+// ── the board ──────────────────────────────────────────────────────────────
+// Four panes. The one that is lit is top-left, the same corner the page puts
+// its brightest room in.
+const M = 0.135;                 // margin: keeps everything inside the squircle
+const GAP = 0.052;
+const CELL = (1 - 2 * M - GAP) / 2;
+const RAD = 0.072;
+const LIT = 0;                   // index of the burning pane
 
-  // the pool the lamp throws downward
-  // The pool: amber soaking into the paper rather than light thrown into dark,
-  // so it subtracts blue instead of adding red.
-  const pool = smooth(0.70, 0.0, Math.abs(u - cx) * 1.15) * smooth(1.06, 0.44, v) * 0.85;
-  r -= 2 * pool; g -= 34 * pool; b -= 108 * pool;
+const PANES = [0, 1, 2, 3].map((i) => {
+  const col = i % 2, row = (i - (i % 2)) / 2;
+  const x0 = M + col * (CELL + GAP);
+  const y0 = M + row * (CELL + GAP);
+  return { x0, y0, x1: x0 + CELL, y1: y0 + CELL, lit: i === LIT };
+});
 
-  // the halo, two falloffs so it reads like light rather than a blurred disc
-  const wide = Math.exp(-(d * d) / 0.040) * 0.85;
-  const tight = Math.exp(-(d * d) / 0.0075);
-  r -= 4 * wide * 0.5 + 2 * tight;
-  g -= 40 * wide * 0.5 + 26 * tight;
-  b -= 120 * wide * 0.5 + 96 * tight;
+function board(u, v, px) {
+  // Ground: warm paper, a touch darker than the panes so they sit on it, with
+  // the corners easing off.
+  const vig = 1 - 0.10 * Math.hypot(u - 0.5, v - 0.5) * 1.5;
+  let r = 235 * vig, g = 228 * vig, b = 215 * vig;
 
-  // the source itself: the one saturated thing, the colour a lamp makes
-  const core = smooth(0.10, 0.06, d);
-  r = r * (1 - core) + 224 * core;
-  g = g * (1 - core) + 180 * core;
-  b = b * (1 - core) + 99 * core;
+  // The lit pane throws light onto the board before anything is drawn over it,
+  // which is what stops the icon reading as four flat stickers.
+  const L = PANES[LIT];
+  const lx = (L.x0 + L.x1) / 2, ly = (L.y0 + L.y1) / 2;
+  const halo = Math.exp(-(((u - lx) ** 2 + (v - ly) ** 2)) / 0.075);
+  r += 8 * halo; g -= 10 * halo; b -= 58 * halo;
+
+  const aa = px * 1.1;           // roughly one pixel of feathering
+
+  for (const p of PANES) {
+    const d = rrect(u, v, p.x0, p.y0, p.x1, p.y1, RAD);
+    const inside = 1 - smooth(-aa, aa, d);
+    if (inside <= 0.001) continue;
+
+    let pr, pg, pb;
+    if (p.lit) {
+      // The lamp, as the tiles draw it: light rising to its level rather than
+      // a filled box. Warm at the foot, paper at the head.
+      const up = smooth(p.y1 + CELL * 0.06, p.y0 + CELL * 0.30, v);
+      pr = mix(250, 232, up); pg = mix(240, 173, up); pb = mix(224, 74, up);
+    } else {
+      pr = 252; pg = 249; pb = 244;
+    }
+
+    // A hairline rim, bright on the lit pane and barely there on the others —
+    // the same signal the page uses to say a circuit is on.
+    const rim = smooth(-aa, -aa - (p.lit ? 0.016 : 0.010), d);
+    if (p.lit) { pr = mix(pr, 255, rim * 0.75); pg = mix(pg, 240, rim * 0.75); pb = mix(pb, 205, rim * 0.75); }
+    else { pr = mix(pr, 232, rim * 0.5); pg = mix(pg, 227, rim * 0.5); pb = mix(pb, 218, rim * 0.5); }
+
+    r = mix(r, pr, inside); g = mix(g, pg, inside); b = mix(b, pb, inside);
+  }
 
   return [clamp(r), clamp(g), clamp(b)];
 }
 
 for (const size of [180, 192, 512]) {
   const file = path.join(OUT, `icon-${size}.png`);
-  fs.writeFileSync(file, png(size, lamp));
+  fs.writeFileSync(file, png(size, board));
   console.log(`wrote ${path.relative(path.join(__dirname, '..'), file)} (${fs.statSync(file).size} bytes)`);
 }

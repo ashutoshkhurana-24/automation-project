@@ -4198,6 +4198,10 @@ const HTML = /* html */ `<!doctype html>
       transform-origin: 0 0; transform: rotate(-90deg) translateX(-100%);
     }
     .tiles .tile.cobmember .strip:nth-of-type(2) { left: 35px; }
+    /* Living's COBs dim but do not tune, so they get one rail — which then has
+       to sit where the second one would, against the right edge, or the card
+       reads as a control with a piece missing. */
+    .tiles .tile.cobmember .strip:only-of-type { left: 35px; }
     /* The key cannot stay in the top-right corner — the rails are there now.
        It goes to the foot of the left column, under the reading. */
     .tiles .tile.cobmember .ring {
@@ -6735,7 +6739,12 @@ async function drawBackdrops() {
 /* The photograph is resized and re-encoded here, in the browser, before it is
    sent. The hub has no image libraries — that is why the icon and the lens map
    are hand-rolled PNG encoders — and a 4MB phone picture would otherwise be
-   pushed to every device that opens the page. A canvas does it for nothing. */
+   pushed to every device that opens the page. A canvas does it for nothing.
+   3200px at .93 to match the built-in library, which is re-encoded with
+   sips at 3200px and formatOptions 99. It was 2600 at .82, which was visibly
+   worse than everything it sat beside in the picker — the whole page is
+   glass over this picture, so its artefacts are magnified rather than hidden.
+   The endpoint takes 8MB and a phone photograph lands near 2. */
 function shrinkPhoto(file, max) {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -6745,7 +6754,7 @@ function shrinkPhoto(file, max) {
       c.width = Math.round(img.width * scale);
       c.height = Math.round(img.height * scale);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      c.toBlob((b) => (b ? res(b) : rej(new Error('The image could not be read'))), 'image/jpeg', 0.82);
+      c.toBlob((b) => (b ? res(b) : rej(new Error('The image could not be read'))), 'image/jpeg', 0.93);
       URL.revokeObjectURL(img.src);
     };
     img.onerror = () => rej(new Error('That file is not an image this browser can open'));
@@ -6801,7 +6810,7 @@ el('#bgfile').addEventListener('change', async (e) => {
   if (!file) return;
   note('Preparing ' + file.name + '…');
   try {
-    const blob = await shrinkPhoto(file, 2600);
+    const blob = await shrinkPhoto(file, 3200);
     const name = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 40) + '.jpg';
     const r = await fetch('/api/backdrops/upload?name=' + encodeURIComponent(name), {
       method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob,
