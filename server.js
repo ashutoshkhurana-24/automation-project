@@ -2956,10 +2956,17 @@ const HTML = /* html */ `<!doctype html>
   button.glance { display: none; }
 
   @media (max-width: 860px) {
-    nav.quick { grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 6px; }
-    nav.quick #qtimer, nav.quick #qfind { display: none; }
+    /* On the house: the held control, a way in to search, and the timer sheet
+       for a scoped one. In a room: that room's switch and the three durations
+       you would actually pick, because a sleep timer is a bedroom thing and
+       has no business on the house board. */
+    nav.quick { grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; }
+    nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
+    nav.quick .qmin { display: none; }
+    nav.quick.in-room .qmin { display: flex; }
+    nav.quick.in-room #qtimer, nav.quick.in-room #qfind { display: none; }
     nav.quick .qmin {
-      display: flex; align-items: center; justify-content: center;
+      align-items: center; justify-content: center;
       font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
       text-transform: uppercase; color: var(--soft);
       background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
@@ -2968,7 +2975,7 @@ const HTML = /* html */ `<!doctype html>
     nav.quick #qoff span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
                         text-transform: uppercase; }
   }
-  @media (min-width: 861px) { nav.quick .qmin { display: none; } }
+  @media (min-width: 861px) { nav.quick .qmin { display: none !important; } }
 
   /* the column's smaller voices */
   .headpct { margin-left: auto; margin-right: 14px; align-self: center; font-family: var(--display);
@@ -3003,6 +3010,19 @@ const HTML = /* html */ `<!doctype html>
     .field.in-room { order: 0; }
     .field.in-room .field-head { display: none; }
 
+    /* These were ink laid straight on a photograph, which is unreadable however
+       small the type is. They are panels now, like everything else. And what a
+       room is doing goes above its board rather than under it — it is the
+       first thing worth knowing when you walk in, not a footnote. */
+    #secroom, #sectimer, #secsync, #sechouse {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 16px;
+      padding: 13px 15px; box-shadow: var(--cast);
+      backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    }
+    #secroom .legend, #sectimer .legend, #sechouse .legend { margin-bottom: 6px; }
+    #secsync .roomnote, #sectimer .roomnote { color: var(--soft); }
+    #sechouse .settings-row { margin-top: 2px; }
+
     .tiles .tile.cobmember { display: none; }
 
     /* A circuit that dims needs room for its strips under its name, or they
@@ -3022,10 +3042,19 @@ const HTML = /* html */ `<!doctype html>
 
   .thinbar { display: none; }
   @media (max-width: 860px) {
+    /* It carries the notch inset itself and sticks to the top edge — the bar it
+       replaced did both, and without them an iPhone hides this line under the
+       status bar where it cannot be reached. */
     .thinbar {
+      position: sticky; top: 0; z-index: 30;
       display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
-      padding: 2px 4px 10px; font-family: var(--mono); font-size: 10.5px;
+      margin: 0 -16px 12px;
+      padding: calc(9px + env(safe-area-inset-top)) 16px 9px;
+      font-family: var(--mono); font-size: 10.5px;
       letter-spacing: .07em; text-transform: uppercase; color: var(--soft);
+      background: color-mix(in oklab, var(--paper) 88%, transparent);
+      backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+      border-bottom: 1px solid var(--line);
     }
     .thinbar #thinmid { flex: 1; text-align: center; font-family: var(--display);
                         font-size: 15px; letter-spacing: .02em; text-transform: none;
@@ -3701,21 +3730,31 @@ const HTML = /* html */ `<!doctype html>
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
     body { display: block; min-height: 100%; padding-top: 0; }
     /* Clear the thumb bar so the last tile is never trapped under it. */
-    .shell { display: block; max-width: none; padding: 0 16px 104px; }
+    /* Clearance for the floating pill: its own height, the gap it hangs on,
+       and the home indicator under it. Sized flush to the edge before, it left
+       the last room trapped behind the bar. */
+    .shell { display: block; max-width: none;
+             padding: 0 16px calc(112px + env(safe-area-inset-bottom)); }
     .hero { display: none; }
 
     /* ── the thumb bar ───────────────────────────────────────────────────
        The three things done most often, sitting where a thumb already is
        rather than at the top of a page you have to reach across. */
+    /* A pill that floats, not a strip bolted to the bottom edge. It is the
+       same glass as everything else, so it should sit on the picture the same
+       way the cards do — and the home indicator gets its own clearance under
+       it rather than a bar drawn through it. */
     .quick {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-      position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
-      padding-top: 9px; padding-right: 14px; padding-left: 14px;
-      padding-bottom: calc(9px + env(safe-area-inset-bottom));
-      background: rgba(12,15,20,.44); border-top: 1px solid var(--edge);
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+      position: fixed; left: 12px; right: 12px; z-index: 45;
+      bottom: calc(10px + env(safe-area-inset-bottom));
+      padding: 6px; border-radius: 22px;
+      background: var(--paper); border: 1px solid var(--line);
+      box-shadow: var(--cast);
       backdrop-filter: var(--lens);
       -webkit-backdrop-filter: var(--lens);
     }
+    .quick button { border-radius: 17px; }
     .quick button {
       display: grid; justify-items: center; gap: 4px;
       font: inherit; font-size: 12px; color: var(--soft); cursor: pointer;
@@ -3764,7 +3803,9 @@ const HTML = /* html */ `<!doctype html>
     #seccues  { order: 2; }
     #secleft  { order: 3; }
     .field    { order: 4; }
-    #secroom  { order: 5; }
+    /* What a room is doing belongs above its board: it is the first thing
+       worth knowing when you walk in, not a footnote under fourteen cards. */
+    #secroom  { order: -1; }
     #sectimer { order: 6; }
     #secsync  { order: 7; }
     #sechouse { order: 8; margin-top: 4px; }
@@ -4291,8 +4332,9 @@ function drawRoomSay() {
 
   const notes = [];
   if (tunable.length) notes.push('COLOUR IS ASKED FOR AND NEVER READ BACK');
-  if (blind.length) notes.push(blind.length + ' CIRCUIT' + (blind.length === 1 ? '' : 'S') +
-    ' REPORT NOTHING — THE AC IS INFRARED AND A CURTAIN HAS NO POSITION');
+  if (blind.length) notes.push(blind.length === 1
+    ? '1 CIRCUIT REPORTS NOTHING BACK — AN AC IS INFRARED AND A CURTAIN HAS NO POSITION'
+    : blind.length + ' CIRCUITS REPORT NOTHING BACK — AN AC IS INFRARED AND A CURTAIN HAS NO POSITION');
   el('#roomnote').textContent = notes.join(' · ');
 }
 
@@ -4588,8 +4630,13 @@ function drawField() {
   }
 
   drawThin();
+  const inRoomView = state.view === 'room' && !state.q;
   const fieldEl = document.querySelector('.field');
-  if (fieldEl) fieldEl.classList.toggle('in-room', state.view === 'room' && !state.q);
+  if (fieldEl) fieldEl.classList.toggle('in-room', inRoomView);
+  const quick = el('#quick');
+  if (quick) quick.classList.toggle('in-room', inRoomView);
+  // A timer fired from a room means that room, not the whole house.
+  for (const b of document.querySelectorAll('.qmin')) b.dataset.scope = inRoomView ? 'room' : 'house';
   drawRoomSay();
   stack.classList.toggle('as-house', state.view === 'house' && !state.q);
   const drawn = state.q ? fillSearch(stack)
@@ -6646,9 +6693,10 @@ for (const b of document.querySelectorAll('.qmin')) {
     const minutes = Number(b.dataset.min);
     b.classList.add('on');
     setTimeout(() => b.classList.remove('on'), 1200);
+    const scope = b.dataset.scope === 'room' && state.room ? 'room:' + state.room : 'house';
     const r = await fetch('/api/timers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ minutes, scope: 'house' }),
+      body: JSON.stringify({ minutes, scope }),
     }).then(x => x.json()).catch(() => null);
     if (r && r.ok) { tick_haptic(9); note(r.spoken + '.'); loadAuto(); }
     else note('That timer could not be set.');
