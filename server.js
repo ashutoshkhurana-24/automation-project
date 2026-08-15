@@ -2856,6 +2856,23 @@ const HTML = /* html */ `<!doctype html>
   .roomhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .roomname { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em;
               font-size: 12px; color: var(--ink); }
+  /* All-off is pinned to the top-right corner of a room card, so the name has
+     to end before it starts. Without this the two simply overlapped once the
+     columns narrowed — a tablet showed PAREN[ALL OFF] — and a name that runs
+     under a button is worse than one that admits it was cut. */
+  .tile[data-room] .roomname {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    /* Never the thing that gives. The card is a flex column, so when the tile
+       was squeezed the name — having no intrinsic height to defend — was the
+       item flexbox chose to crush to nothing, and a room card was left showing
+       a percentage with no room attached to it. */
+    flex: 0 0 auto;
+  }
+  /* Only when the chip is actually there. A dark room has no all-off to offer,
+     so reserving the space anyway truncated names that had room to spare —
+     LIV…, DIN…, MAS… with half the card empty beside them. */
+  .tile[data-room]:has(.chip:not([hidden])) .roomname { padding-right: 46px; }
+  .tile.hero-room:has(.chip:not([hidden])) .roomname { padding-right: 78px; }
   .chip {
     position: absolute; top: 13px; right: 13px; z-index: 3; cursor: pointer;
     padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px;
@@ -3255,7 +3272,12 @@ const HTML = /* html */ `<!doctype html>
   .tile {
     --tint: var(--warm);
     --lit: 0;                 /* how bright this circuit really is, 0 → 1 */
-    position: relative; height: var(--tile-h); min-height: 132px; overflow: hidden; isolation: isolate;
+    position: relative; height: var(--tile-h); overflow: hidden; isolation: isolate;
+    /* The floor has to follow the height, not fight it. A flat 132px here made
+       fitTiles' shrinking a no-op below that — which is why a short screen (a
+       tablet in landscape, a laptop at 768) still had to scroll for the last
+       two rooms however far --tile-h was wound down. */
+    min-height: min(132px, var(--tile-h, 132px));
     border-radius: 20px; border: 1px solid var(--line); background: var(--paper);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.34),
@@ -3998,6 +4020,33 @@ const HTML = /* html */ `<!doctype html>
                       min-height: calc(var(--tile-h) * 2 + clamp(12px, 1.4vw, 18px)); }
     .tile.hero-room .tile-name { font-size: 22px; }
     .tile.hero-room .tile-read { font-size: 13.5px; }
+  }
+
+  /* Driven by fitTiles when it has had to wind the tiles below the height a
+     three-line card needs. Measured rather than assumed from the viewport: the
+     same 92px tile can come from a short screen or from a houseful of alerts,
+     and both want the same card. */
+  .tiles.squeezed .tile[data-room]:not(.hero-room) .sub { display: none; }
+  .tiles.squeezed .tile[data-room]:not(.hero-room) .big {
+    margin-top: 4px; font-size: clamp(19px, 2.1vw, 26px);
+  }
+
+  /* ── a short screen ──────────────────────────────────────────────────────
+     A tablet in landscape is a wide screen with half the height, and the board
+     is laid out for height. Shrinking the tiles alone runs out at the 78px
+     floor — below that a room card stops being readable — so what gives first
+     is the chrome around them: the sentence, the room bars and the gaps.
+     Measured at 1024x600, where the board overflowed by 44px with the tiles
+     already on the floor. */
+  @media (min-width: 861px) and (max-height: 720px) {
+    .saycard { padding: 13px 18px 11px; border-radius: 18px; }
+    .saycard .say { font-size: clamp(21px, 2.5vw, 28px); }
+    .bars { margin-top: 9px; gap: clamp(5px, .8vw, 10px); }
+    .barwell { height: 24px; }
+    .barlabel { margin-top: 4px; font-size: 9px; }
+    .field .tiles { gap: 12px; }
+    .shell { padding-top: 12px; padding-bottom: 88px; gap: 14px; }
+    .tile.hero-room .big { font-size: clamp(24px, 2.6vw, 32px); }
   }
 
   @media (max-width: 860px) {
@@ -5247,8 +5296,7 @@ function fillHouse(stack) {
     ? [hero, ...all.filter(r => r !== hero).sort(byLight)]
     : all;
   order.forEach((room, i) => {
-    const tile = roomTile(room);
-    if (room === hero) tile.classList.add('hero-room');
+    const tile = roomTile(room, room === hero);
     tile.style.animationDelay = (i * 42) + 'ms';
     stack.appendChild(tile);
   });
@@ -5340,9 +5388,12 @@ function fillSearch(stack) {
 
 /* ────────────────────────────────── a room, drawn as one of its own tiles */
 
-function roomTile(room) {
+function roomTile(room, hero) {
   const tile = document.createElement('div');
-  tile.className = 'tile enter';
+  // The hero class has to be on before the first paint, not after: the chip's
+  // label depends on it, and adding it afterwards left the big card saying the
+  // short form until the next refresh happened to redraw it.
+  tile.className = 'tile enter' + (hero ? ' hero-room' : '');
   tile.dataset.room = room;
   tile.innerHTML =
     '<span class="tile-fill"></span>' +
@@ -5380,7 +5431,11 @@ function roomTileState(tile, room) {
   tile.querySelector('.sub').textContent = on.length + ' of ' + items.length + ' lit';
   const chip = tile.querySelector('.chip');
   chip.hidden = !on.length;
-  chip.textContent = 'ALL OFF';
+  // The hero has the width for two words; a card in a four-column board on a
+  // tablet does not, and 'ALL OFF' there left three letters of the room name.
+  // On a room card 'off' can only mean this room, so the short form loses
+  // nothing. The label read aloud stays the long one.
+  chip.textContent = tile.classList.contains('hero-room') ? 'ALL OFF' : 'OFF';
   chip.setAttribute('role', 'button');
   chip.setAttribute('aria-label', 'Turn off everything in ' + title(room));
   tile.querySelector('.tile-body').setAttribute('aria-label',
@@ -7208,10 +7263,16 @@ function fitTiles() {
      A room's own board is left alone: fourteen circuits will never fit, and
      squeezing them to nothing to pretend otherwise would be worse. */
   if (state.view !== 'house' || state.q) return;
-  for (let i = 0; i < 10 && tiles.scrollHeight > tiles.clientHeight + 2 && h > 78; i++) {
+  // Bounded by the floor, not by a step count: at 8px a go, ten passes only
+  // ever moved 80px, so a board starting at the 182px ceiling stopped at 102
+  // and never reached the floor it was allowed.
+  for (let i = 0; i < 60 && tiles.scrollHeight > tiles.clientHeight + 2 && h > 78; i++) {
     h = Math.max(78, h - 8);
     root.style.setProperty('--tile-h', h + 'px');
   }
+  // Below this a room card cannot hold a name, a number and a tally, so it
+  // drops the tally and keeps the two that matter.
+  tiles.classList.toggle('squeezed', h < 96);
 }
 
 window.addEventListener('resize', () => {
