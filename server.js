@@ -2282,8 +2282,12 @@ const HTML = /* html */ `<!doctype html>
        colour is a lamp's own, and the one coral the numbers are set in.
        Everything that measures or labels is monospaced and upper case, so the
        serif is reserved for the two places the house actually speaks. */
-    --paper:   #fdfaf5;
-    --paper-2: #f6efe3;
+    /* Frosted, not opaque. The cards are warm white but you can see the
+       photograph through them — which is the whole reason the backdrop is
+       load-bearing. Alpha here, blur in --lens, and the two together are what
+       make a card read as glass laid on a picture rather than paper over it. */
+    --paper:   rgba(253,250,245,.66);
+    --paper-2: rgba(246,239,227,.72);
     --ink:     #2b2622;
     --soft:    #6b635a;
     --faint:   #9a9187;
@@ -2302,8 +2306,8 @@ const HTML = /* html */ `<!doctype html>
     --edge:      rgba(43,38,34,.09);
     --edge-up:   rgba(43,38,34,.18);
     --lip:       rgba(255,255,255,.9);
-    --lens: blur(14px) saturate(118%) brightness(1.06);
-    --lens-up: blur(16px) saturate(120%) brightness(1.08);
+    --lens: blur(22px) saturate(148%) brightness(1.08);
+    --lens-up: blur(24px) saturate(152%) brightness(1.10);
     --sheen: none;
     --cast: 0 18px 40px -22px rgba(58,44,30,.42), 0 3px 10px -5px rgba(58,44,30,.18);
     --halo: none;
@@ -2738,6 +2742,7 @@ const HTML = /* html */ `<!doctype html>
     grid-column: 1 / -1; padding: 20px 22px 16px; margin-bottom: 2px;
     background: var(--paper); border: 1px solid var(--line); border-radius: 22px;
     box-shadow: var(--cast);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
   }
   .saycard .say {
     margin: 0; font-family: var(--display); font-weight: 400;
@@ -2771,7 +2776,7 @@ const HTML = /* html */ `<!doctype html>
      empty boxes. */
   .tile[data-room]::before {
     content: ''; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
-    background: linear-gradient(104deg, var(--paper-2) 0%, rgba(255,255,255,0) 72%);
+    background: linear-gradient(104deg, rgba(246,239,227,.5) 0%, rgba(255,255,255,0) 72%);
     pointer-events: none;
   }
   .tile[data-room] .tile-body, .tile[data-room] .tile-fill { z-index: 1; }
@@ -2878,7 +2883,8 @@ const HTML = /* html */ `<!doctype html>
   }
   .main:disabled { color: var(--faint); border-color: var(--line); }
   /* the cue list, on paper */
-  .cue { background: var(--paper); border: 1px solid var(--line); box-shadow: none; }
+  .cue { background: var(--paper); border: 1px solid var(--line); box-shadow: none;
+         backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens); }
   .cue-name { font-family: var(--sans); }
   .cue-note { font-family: var(--mono); text-transform: uppercase; letter-spacing: .05em;
               font-size: 10px; color: var(--faint); }
@@ -3581,11 +3587,14 @@ const HTML = /* html */ `<!doctype html>
        The bar used to be a solid strip across the top while everything below
        it floated, which made it read as furniture rather than as part of the
        same material. It is now a pane like any other, hanging in the middle. */
+    /* A masthead, not a floating pill. The reference runs it the full width of
+       the page with the name at one end and all-off at the other; a centred
+       pill left the two ends of the bar hanging in the middle of the screen. */
     .plate {
-      position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
-      z-index: 40; width: auto; max-width: calc(100vw - 48px);
+      position: static; transform: none; z-index: 40; width: 100%; max-width: none;
+      margin-bottom: 16px;
       padding-top: 10px; padding-right: 14px; padding-bottom: 10px; padding-left: 20px;
-      border-radius: 22px; gap: 18px;
+      border-radius: 16px; gap: 18px;
       background: var(--pane); background-image: var(--sheen);
       border: 1px solid var(--edge);
       backdrop-filter: var(--lens);
@@ -3860,8 +3869,8 @@ const HTML = /* html */ `<!doctype html>
      so this has to come after all of them to win. Chrome resolves url() inside
      a backdrop-filter and bends the picture through the edge of each pane;
      Safari cannot, throws this declaration away, and keeps the plain lens. */
-  .tile, .cue, .tab, .plate, .sheet, .timerpop,
-  .quick button, .glance, .nudge, .back, .cut, .seek, .rail {
+  .tile, .cue, .tab, .plate, .sheet, .timerpop, .saycard,
+  .quick button, .nudge, .back, .cut, .rail {
     backdrop-filter: url("#lens") var(--lens);
   }
 </style>
