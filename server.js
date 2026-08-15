@@ -3345,19 +3345,23 @@ const HTML = /* html */ `<!doctype html>
      lamp's own colour rather than a decoration: the pane itself takes a tint,
      the edge takes more of it, the card throws a halo the way a lamp throws
      light, and the state line goes to ink while a dark one stays grey. */
+  /* ── on is categorical; how much is a second question ────────────────
+     Every part of this used to be scaled by --lit from zero, so a room with
+     one lamp at 7% — which is what this house is most evenings — got 0.6% of
+     a tint and read as dark. Brightness is a *modifier* now, not the whole
+     signal: everything below starts at a floor you can see across a room and
+     climbs from there. The paper token is deliberately not used for the pane:
+     it is 80% opaque, so mixing a tint into it lost most of the tint to the
+     photograph behind. The lit pane is solid. */
   .tile.on {
-    background: color-mix(in oklab, var(--tint) calc(9% + var(--lit) * 9%), var(--paper));
-    border-color: color-mix(in oklab, var(--tint) calc(52% + var(--lit) * 38%), var(--line));
+    background: color-mix(in oklab, var(--tint) calc(26% + var(--lit) * 22%), #fdfaf5);
+    border-color: color-mix(in oklab, var(--tint) calc(72% + var(--lit) * 28%), var(--line));
     box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--tint) calc(14% + var(--lit) * 20%), transparent),
-      0 6px 22px -8px color-mix(in oklab, var(--tint) calc(22% + var(--lit) * 40%), transparent),
-      0 18px 44px -18px color-mix(in oklab, var(--tint) calc(12% + var(--lit) * 30%), transparent),
+      0 0 0 1px color-mix(in oklab, var(--tint) calc(34% + var(--lit) * 26%), transparent),
+      0 8px 26px -8px color-mix(in oklab, var(--tint) calc(40% + var(--lit) * 34%), transparent),
+      0 22px 52px -18px color-mix(in oklab, var(--tint) calc(24% + var(--lit) * 26%), transparent),
       var(--cast);
   }
-  .tile.on .tile-read, .tile.on .state {
-    color: var(--ink); font-weight: 500;
-  }
-  .tile:not(.on) .state, .tile:not(.on) .tile-read { color: var(--faint); }
   /* ── bento ───────────────────────────────────────────────────────────
      Cards are not all one size, and the size is not arbitrary: a circuit takes
      the room its controls actually need. A tunable lamp carries two sliders and
@@ -3383,11 +3387,14 @@ const HTML = /* html */ `<!doctype html>
        circuit is actually at. On a dark page light rose from the floor; on
        paper it reads as ink soaking in, and the quantity is legible at a
        glance across a room. */
+    /* The stops move with the level, but the *first* one does not: a circuit
+       that is on is unmistakably warm at its leading edge whatever it is set
+       to, and the level decides how far that warmth carries across the face. */
     background: linear-gradient(104deg,
-      color-mix(in oklab, var(--tint) 96%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 78%, transparent) calc(24% + var(--fill) * 46%),
-      color-mix(in oklab, var(--tint) 44%, transparent) calc(48% + var(--fill) * 44%),
-      color-mix(in oklab, var(--tint) 14%, transparent) calc(74% + var(--fill) * 26%));
+      color-mix(in oklab, var(--tint) 100%, transparent) 0%,
+      color-mix(in oklab, var(--tint) 86%, transparent) calc(18% + var(--fill) * 40%),
+      color-mix(in oklab, var(--tint) 52%, transparent) calc(40% + var(--fill) * 42%),
+      color-mix(in oklab, var(--tint) 18%, transparent) calc(68% + var(--fill) * 32%));
     transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }
@@ -3407,7 +3414,11 @@ const HTML = /* html */ `<!doctype html>
   }
   .tile.on .tile-name { color: var(--ink); }
   .tile-read { font-size: 13px; color: var(--faint); transition: color .25s; }
-  .tile.on .tile-read { color: var(--soft); }
+  /* A lit circuit's reading is ink, not grey. This rule used to say --soft and
+     sat *after* the one that said ink, so the state line quietly lost — the
+     same half-live-CSS trap as the search field and --base before it. */
+  .tile.on .tile-read, .tile.on .state { color: var(--ink); font-weight: 500; }
+  .tile:not(.on) .state, .tile:not(.on) .tile-read { color: var(--faint); }
 
   /* the switch: a dot that takes the colour of its own lamp. No lever, no lens. */
   .key {
