@@ -1,22 +1,25 @@
-// Draw the home-screen icon: the board, with one room lit — as glass.
+// Draw the home-screen icon: one pane, with light rising through it.
 //
-// Two wrong turns got here, and both are worth keeping.
+// Three wrong turns got here, and all of them are worth keeping.
 //
-// The first icon was a soft amber blob on paper. It said "warm light", which
-// is true and is also what half the lamp apps on a phone say, and a gaussian
-// smudge loses everything it has at the size an icon is actually read.
+// A soft amber blob on paper said "warm light", which is true and is also what
+// half the lamp apps on a phone say, and a gaussian keeps nothing at the size
+// an icon is actually read.
 //
-// The second was four flat opaque squares. Legible, unmistakably this app —
-// and completely solid, which is the one thing the interface is not. The page
-// is panes of glass floating over a photograph; an icon made of stickers
-// describes a different product.
+// Four flat opaque squares were legible and unmistakably this app — and
+// completely solid, which is the one thing the interface is not. An icon made
+// of stickers describes a different product than a page made of glass.
 //
-// So: the same board, made of the same material. A cold atmosphere behind,
-// panes that are barely there and take their colour from what is behind them,
-// a specular rim that catches light along the top-left edge exactly as the
-// tiles do, and one pane burning warm and bleeding into its neighbours. The
-// shapes stay hard — that is what survives being shrunk to a fingernail — but
-// nothing in it is opaque.
+// Four *glass* squares fixed the material and kept the real problem: a grid.
+// A 2x2 reads as a launcher, a folder, an app-picker — the most generic shape
+// on a home screen, and at 60px four small panes are four smudges. The board
+// is what the app shows; it is not what the app is *about*.
+//
+// So: one pane, big enough to be a shape rather than a texture, with light
+// rising inside it and blooming past its edges into a cold room. That is the
+// whole design in a single object — the glow is one gradient and never a box,
+// the rim catches light only where a lamp is on, and the only colour anywhere
+// is the light itself.
 //
 // Written by hand because the box has no image libraries. A PNG is a few
 // chunks and a zlib stream, and a generated asset nobody can regenerate is
@@ -89,78 +92,71 @@ function rrect(u, v, x0, y0, x1, y1, rad) {
   return outside + Math.min(Math.max(px, py), 0) - rad;
 }
 
-// ── the board ──────────────────────────────────────────────────────────────
-// Four panes. The one that is lit is top-left, the same corner the page puts
-// its brightest room in.
-const M = 0.135;                 // margin: keeps everything inside the squircle
-const GAP = 0.052;
-const CELL = (1 - 2 * M - GAP) / 2;
-const RAD = 0.072;
-const LIT = 0;                   // index of the burning pane
+// ── the pane ───────────────────────────────────────────────────────────────
+// One rounded square, held slightly above centre so the light it throws has
+// somewhere to fall. The margin keeps it inside the squircle iOS masks it to.
+const M = 0.175;
+const RAD = 0.20;
+const PANE = { x0: M, y0: M - 0.015, x1: 1 - M, y1: 1 - M - 0.015 };
+const H = PANE.y1 - PANE.y0;
 
-const PANES = [0, 1, 2, 3].map((i) => {
-  const col = i % 2, row = (i - (i % 2)) / 2;
-  const x0 = M + col * (CELL + GAP);
-  const y0 = M + row * (CELL + GAP);
-  return { x0, y0, x1: x0 + CELL, y1: y0 + CELL, lit: i === LIT };
-});
+// How far up the pane the light reaches. Not full: a lamp at its level, which
+// is what every tile in the app draws.
+const FILL = 0.62;
 
 function board(u, v, px) {
-  // ── the atmosphere ──────────────────────────────────────────────────────
-  // Glass shows nothing over a flat field, so the ground is weather: a cool
-  // wash falling from the top-left, a deeper blue in the far corner, and the
-  // house's own warmth rising from the foot. This is the backdrop the panes
-  // are going to bend, in miniature.
-  const dawn = Math.exp(-((u + 0.15) ** 2 + (v + 0.10) ** 2) / 0.42);
-  const deep = Math.exp(-((u - 1.05) ** 2 + (v - 1.10) ** 2) / 0.46);
-  let r = 224 - 52 * deep + 22 * dawn;
-  let g = 231 - 42 * deep + 20 * dawn;
-  let b = 239 - 16 * deep + 14 * dawn;
+  // ── the room ────────────────────────────────────────────────────────────
+  // Cold, and unevenly so — glass shows nothing over a flat field. Light from
+  // somewhere off the top-left, depth in the far corner.
+  const dawn = Math.exp(-((u + 0.18) ** 2 + (v + 0.14) ** 2) / 0.40);
+  const deep = Math.exp(-((u - 1.05) ** 2 + (v - 1.12) ** 2) / 0.44);
+  let r = 223 - 54 * deep + 24 * dawn;
+  let g = 230 - 44 * deep + 22 * dawn;
+  let b = 239 - 17 * deep + 15 * dawn;
 
-  // The lit pane throws light into the atmosphere before any glass is drawn,
-  // which is what stops the panes reading as stickers laid on a gradient.
-  const L = PANES[LIT];
-  const lx = (L.x0 + L.x1) / 2, ly = (L.y0 + L.y1) / 2;
-  const glow = Math.exp(-(((u - lx) ** 2 + (v - ly) ** 2)) / 0.085);
-  const near = Math.exp(-(((u - lx) ** 2 + (v - ly) ** 2)) / 0.020);
-  r += 34 * glow + 16 * near;
-  g += 10 * glow + 2 * near;
-  b -= 52 * glow + 34 * near;
+  // ── the light in the air ────────────────────────────────────────────────
+  // Thrown before the glass is drawn, and reaching well past the pane, because
+  // a lamp lights the room it is in. Two falloffs: a wide wash and a tighter
+  // one at the source, since a single blur radius never reads as light.
+  const lx = (PANE.x0 + PANE.x1) / 2;
+  const ly = PANE.y1 - H * FILL * 0.42;
+  const d2 = (u - lx) ** 2 + (v - ly) ** 2;
+  const wide = Math.exp(-d2 / 0.115);
+  const near = Math.exp(-d2 / 0.028);
+  r += 30 * wide + 20 * near;
+  g += 9 * wide + 4 * near;
+  b -= 46 * wide + 40 * near;
 
-  const aa = px * 1.1;           // roughly one pixel of feathering
+  const aa = px * 1.1;
+  const d = rrect(u, v, PANE.x0, PANE.y0, PANE.x1, PANE.y1, RAD);
+  const inside = 1 - smooth(-aa, aa, d);
 
-  for (const p of PANES) {
-    const d = rrect(u, v, p.x0, p.y0, p.x1, p.y1, RAD);
-    const inside = 1 - smooth(-aa, aa, d);
-    if (inside <= 0.001) continue;
+  // A whisper of shadow outside the pane, so it floats rather than sits.
+  const cast = smooth(0.045, 0, d) * (1 - inside);
+  r *= 1 - 0.07 * cast; g *= 1 - 0.07 * cast; b *= 1 - 0.055 * cast;
 
-    // ── the pane ──────────────────────────────────────────────────────────
-    // A veil rather than a fill: it lifts what is behind it toward white and
-    // keeps its colour, which is what a frosted pane does and what a painted
-    // one cannot. The lit pane is the exception — light rising to a level,
-    // the way a tile fills.
-    let pr = mix(r, 253, 0.26), pg = mix(g, 251, 0.26), pb = mix(b, 247, 0.26);
-    if (p.lit) {
-      const up = smooth(p.y1 + CELL * 0.10, p.y0 + CELL * 0.34, v);
-      pr = mix(pr, 246, up * 0.86);
-      pg = mix(pg, 191, up * 0.86);
-      pb = mix(pb, 98, up * 0.86);
-    }
+  if (inside > 0.001) {
+    // The glass: a veil that lifts what is behind it toward white and keeps
+    // its colour. Frosted, never painted.
+    let pr = mix(r, 253, 0.24), pg = mix(g, 251, 0.24), pb = mix(b, 247, 0.24);
 
-    // ── the specular rim ──────────────────────────────────────────────────
-    // The thing that makes glass read as glass: a hairline that is bright at
-    // the top-left, almost gone across the middle, and returns at the foot —
-    // the same gradient the tiles lay in their border box. Lit panes catch it
-    // warm and hold it all the way round; the rest barely catch it at all.
-    const t = ((u - p.x0) / CELL + (v - p.y0) / CELL) / 2;          // 0 top-left → 1 bottom-right
-    const sheen = 0.92 * (1 - smooth(0.0, 0.46, t)) + 0.42 * smooth(0.62, 1.0, t) + 0.10;
-    const edge = smooth(-aa, -aa - 0.011, d) * sheen * (p.lit ? 1 : 0.55);
-    if (p.lit) { pr = mix(pr, 255, edge); pg = mix(pg, 244, edge); pb = mix(pb, 214, edge); }
-    else { pr = mix(pr, 255, edge * 0.9); pg = mix(pg, 255, edge * 0.9); pb = mix(pb, 255, edge * 0.9); }
+    // The light rising to its level. One gradient, never a box — the edge
+    // where a fill meets a bloom is a seam, and this is why there is no fill.
+    // Rises: full at the foot, gone by the level it reaches. Written the
+    // wrong way round first, which hung the light from the ceiling.
+    const up = smooth(PANE.y1 - H * FILL, PANE.y1 + H * 0.05, v);
+    pr = mix(pr, 247, up * 0.94);
+    pg = mix(pg, 191, up * 0.94);
+    pb = mix(pb, 96, up * 0.94);
 
-    // A whisper of shadow just outside the pane, so it floats rather than sits.
-    const cast = smooth(0.030, 0, d) * (1 - inside) * 0.5;
-    r = mix(r, r * 0.93, cast); g = mix(g, g * 0.93, cast); b = mix(b, b * 0.94, cast);
+    // The specular rim: bright at the top-left, almost gone across the middle,
+    // returning at the foot. This is the single thing that makes a pane read
+    // as glass rather than as a rounded rectangle, and the app uses it for
+    // exactly the same job.
+    const t = ((u - PANE.x0) + (v - PANE.y0)) / (2 * H);
+    const sheen = 0.95 * (1 - smooth(0, 0.44, t)) + 0.50 * smooth(0.60, 1, t) + 0.12;
+    const edge = smooth(-aa, -aa - 0.013, d) * sheen;
+    pr = mix(pr, 255, edge); pg = mix(pg, 247, edge); pb = mix(pb, 222, edge);
 
     r = mix(r, pr, inside); g = mix(g, pg, inside); b = mix(b, pb, inside);
   }
