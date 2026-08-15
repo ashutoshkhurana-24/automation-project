@@ -2519,8 +2519,14 @@ const HTML = /* html */ `<!doctype html>
   .main em { font-style: normal; color: var(--faint); }
 
   /* ── rooms and cues down one side ────────────────────────────────────── */
-  .board { flex: 1; min-height: 0; display: grid; gap: clamp(20px, 2.6vw, 44px);
-           grid-template-columns: clamp(168px, 15vw, 212px) 1fr; }
+  /* The board leads and the column sits to its right. The room list that used
+     to live there is gone on a wide screen: the bars in the hero card and the
+     room cards under them are both navigation, and a third list of the same
+     seven names was only ever a third chance to click the same thing. */
+  .board { flex: 1; min-height: 0; display: grid; gap: clamp(18px, 2.2vw, 32px);
+           grid-template-columns: 1fr clamp(230px, 21vw, 300px); }
+  .field { order: 1; }
+  .index { order: 2; }
   .index { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 26px;
            overflow-y: auto; scrollbar-width: thin;
            scrollbar-color: rgba(255,255,255,.16) transparent; }
@@ -2584,6 +2590,7 @@ const HTML = /* html */ `<!doctype html>
 
   /* ── the field ───────────────────────────────────────────────────────── */
   .field { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .field-head[hidden] { display: none; }
   .field-head { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 16px; margin-bottom: 20px; }
   /* Going back deserves saying outright. The rail and a sideways swipe both do
      it, but neither is visible when you are looking at one room and wondering
@@ -2802,15 +2809,44 @@ const HTML = /* html */ `<!doctype html>
   }
   .plate .tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
                   text-transform: uppercase; color: var(--faint); }
-  .seek-in { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-  .seek-hint {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* The field is the widest thing in the bar, because it is the fastest way to
+     reach any of 88 circuits — and it takes commands as well as searches, so it
+     had to stop looking like an afterthought bolted to the title. */
+  .seek {
+    flex: 1 1 auto; max-width: 520px; margin-left: clamp(12px, 3vw, 40px);
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 12px 0 14px; height: 42px; border-radius: 12px;
+    background: var(--paper-2); border: 1px solid var(--line);
+    transition: border-color .2s, background .2s, box-shadow .2s;
   }
-  .seek input { font-family: var(--sans); }
+  .seek:focus-within {
+    background: var(--paper); border-color: var(--line-up);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 14%, transparent);
+  }
+  .seek svg { width: 15px; height: 15px; color: var(--faint); flex: 0 0 auto; }
+  .seek input {
+    flex: 1 1 auto; min-width: 0; font-family: var(--sans); font-size: 14px; color: var(--ink);
+    background: none; border: 0; outline: none;
+  }
+  .seek input::placeholder { color: var(--faint); }
+  /* The shortcut, shown where the shortcut is used. It disappears once you are
+     typing, because by then it has done its job. */
+  .seek-key {
+    flex: 0 0 auto; font-family: var(--mono); font-size: 10px; color: var(--faint);
+    padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px;
+    transition: opacity .15s;
+  }
+  .seek:focus-within .seek-key { opacity: 0; }
+
+  /* All-off lives at the far right, on its own, away from the field — it is
+     the one destructive control on the page and should never be a neighbour
+     of the thing you type into. */
   .main {
-    font-family: var(--mono); text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px;
+    margin-left: auto; font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: .08em; font-size: 10.5px;
+    background: var(--paper); border: 1px solid var(--line-up); color: var(--ink);
   }
+  .main:disabled { color: var(--faint); border-color: var(--line); }
   /* the cue list, on paper */
   .cue { background: var(--paper); border: 1px solid var(--line); box-shadow: none; }
   .cue-name { font-family: var(--sans); }
@@ -2822,9 +2858,36 @@ const HTML = /* html */ `<!doctype html>
   .field-head h2 { font-family: var(--display); font-weight: 400; }
   .field-sub, .nudge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em;
                        text-transform: uppercase; }
-  .nudge { background: var(--paper); border-color: var(--line); }
-  .nudge button { font-family: var(--mono); font-size: 10px; letter-spacing: .07em;
-                  text-transform: uppercase; }
+  /* In a narrow column an alert cannot be a row: the sentence stacks, then the
+     two answers sit under it side by side. */
+  /* In a narrow column an alert cannot be a row: the sentence runs full width
+     and the two answers sit under it. */
+  .nudges .nudge {
+    display: block; background: var(--paper); border-color: var(--line);
+    padding: 12px 13px; text-transform: none;
+  }
+  .nudges .nudge .pip { display: inline-block; vertical-align: middle; margin-right: 7px; }
+  .nudges .nudge .said { display: inline; line-height: 1.5; font-family: var(--mono); font-size: 10.5px; }
+  .nudges .nudge button {
+    display: inline-block; margin: 10px 6px 0 0;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
+    text-transform: uppercase; padding: 5px 10px;
+  }
+
+  /* All COBs: the room's ceiling as one control. It leads the board, so it is
+     the one card that states a number in the display face. */
+  .tile.gang { grid-column: 1 / -1; }
+  .gangbody { gap: 4px; }
+  .gangtitle { letter-spacing: .08em; }
+  .gangsame {
+    cursor: pointer; font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: .07em; font-size: 10px; color: var(--ink);
+    background: var(--paper); border: 1px solid var(--line-up); border-radius: 999px;
+    padding: 5px 11px; transition: background .18s, border-color .18s;
+  }
+  .gangsame:hover { background: var(--paper-2); border-color: var(--ink); }
+  .tile.gang .big { font-size: clamp(30px, 4vw, 44px); margin-top: 6px; }
+  .tile.gang .controls { position: static; margin-top: 14px; }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
@@ -3388,6 +3451,7 @@ const HTML = /* html */ `<!doctype html>
        bottom edge lies across the hero and the field heading, reading as a
        faint straight line drawn through the text. The phone layout has clamped
        this since it was built; the desktop one never did. */
+    #secrooms { display: none; }        /* the board is the room list now */
     .plate .stamp h1 { font-size: 14px; white-space: nowrap; }
     .plate .tally { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .plate .seek { flex: 0 0 260px; margin-left: 0; }
@@ -3399,7 +3463,11 @@ const HTML = /* html */ `<!doctype html>
        and starting the items collapses .field to its content, so the grid grew
        past the window and the overflow was clipped rather than scrollable.
        A room has fourteen circuits and would simply lose the last of them. */
-    .board { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 34px; min-height: 0; }
+    /* Board first, column second — the room list that used to justify a left
+       rail is gone, so the side is for cues and alerts and nothing else. */
+    .board { display: grid; grid-template-columns: 1fr minmax(240px, 310px); gap: 30px; min-height: 0; }
+    .field { order: 1; }
+    .index { order: 2; }
     .index { min-height: 0; display: flex; flex-direction: column; }
 
     /* the house, stated */
@@ -3534,8 +3602,9 @@ const HTML = /* html */ `<!doctype html>
     .index { display: contents; }
     #secrooms { order: 1; }
     #seccues  { order: 2; }
-    .field    { order: 3; }
-    #sechouse { order: 4; margin-top: 4px; }
+    #secleft  { order: 3; }
+    .field    { order: 4; }
+    #sechouse { order: 5; margin-top: 4px; }
     #secrooms .legend, #seccues .legend { display: none; }
 
     /* A cue on a phone is a chip: the name is the whole target. The reading and
@@ -3667,7 +3736,7 @@ const HTML = /* html */ `<!doctype html>
 <div class="shell">
   <header class="plate">
     <div class="stamp">
-      <h1>Neo Console</h1>
+      <h1>Pravita's Apartment</h1>
       <p class="tally" id="tally"></p>
     </div>
     <button class="seek-toggle" id="seektoggle" type="button" aria-expanded="false" aria-label="Find a circuit">
@@ -3675,11 +3744,9 @@ const HTML = /* html */ `<!doctype html>
     </button>
     <label class="seek">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <span class="seek-in">
-        <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
-               aria-label="Search, or type a command">
-        <span class="seek-hint">TRY ashu cobs 40 · living off · master warmth-70</span>
-      </span>
+      <input type="search" id="seek" placeholder="Search, or type a command" autocomplete="off"
+             aria-label="Search, or type a command">
+      <kbd class="seek-key">/</kbd>
     </label>
     <button class="main" id="main" type="button" disabled aria-describedby="tally">
       <i id="mainfill"></i><span id="mainword">All off</span><em id="maincount"></em>
@@ -3691,6 +3758,10 @@ const HTML = /* html */ `<!doctype html>
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
+      </div>
+      <div class="index-sec" id="secleft">
+        <div class="legend">Left on</div>
+        <div class="nudges" id="nudges"></div>
       </div>
       <div class="index-sec" id="seccues">
         <div class="legend">Cues</div>
@@ -3722,7 +3793,6 @@ const HTML = /* html */ `<!doctype html>
         <span class="glance-say" id="glancesay"></span>
         <span class="glance-bars" id="glancebars"></span>
       </button>
-      <div class="nudges" id="nudges"></div>
       <div class="field-head">
         <div>
           <button class="back" id="back" type="button" hidden>
@@ -4234,6 +4304,10 @@ function drawField() {
   stack.innerHTML = '';
   stack.scrollTop = 0;
 
+  // The say card states the house in a sentence, so a heading saying the same
+  // thing above it is a label on a label.
+  const head = document.querySelector('.field-head');
+  if (head) head.hidden = state.view === 'house' && !state.q;
   el('#fieldname').textContent =
     state.q ? (parseCommand(state.q) ? 'Command' : 'Search')
       : state.view === 'room' ? title(state.room) : 'The house';
@@ -4420,13 +4494,16 @@ function roomTileState(tile, room) {
   tile.querySelector('.tile-fill').style.setProperty('--fill', load.toFixed(3));
   // The reading a room deserves is the light in it, not a tally of switches.
   const pct = Math.round(output(items) * 100);
-  tile.querySelector('.big').textContent = on.length ? pct + '%' : 'dark';
-  tile.querySelector('.big').classList.toggle('dark', !on.length);
+  // A dark room states nothing and offers nothing: no reading, and no chip,
+  // because there is nothing there to switch off. Saying "dark" twice — once
+  // as a word and once as a disabled button — was noise on six of seven cards.
+  tile.querySelector('.big').textContent = on.length ? pct + '%' : '';
   tile.querySelector('.sub').textContent = on.length + ' of ' + items.length + ' lit';
   const chip = tile.querySelector('.chip');
-  chip.textContent = on.length ? 'ALL OFF' : 'DARK';
-  chip.setAttribute('role', on.length ? 'button' : 'presentation');
-  chip.setAttribute('aria-label', on.length ? 'Turn off everything in ' + title(room) : '');
+  chip.hidden = !on.length;
+  chip.textContent = 'ALL OFF';
+  chip.setAttribute('role', 'button');
+  chip.setAttribute('aria-label', 'Turn off everything in ' + title(room));
   tile.querySelector('.tile-body').setAttribute('aria-label',
     'Open ' + title(room) + ', ' + (on.length ? pct + ' per cent, ' + on.length + ' of ' + items.length + ' lit' : 'dark'));
 }
@@ -4485,13 +4562,10 @@ function circuitTile(d) {
   return tile;
 }
 
-/* A strip rather than a track, and it says which of the two it is — because
-   one of them is a reading and the other is a belief. The hub reports
-   brightness back; colour temperature it accepts and never mentions again. */
+/* A strip rather than a track. The colour one carries its value in the label,
+   since warmth has no unit anybody reads off a scale. */
 function stripLabel(d, key) {
-  return key === 'level'
-    ? 'BRIGHTNESS · REPORTS BACK'
-    : 'WARM ' + Math.round(d.tune) + ' · NEVER READ BACK';
+  return key === 'level' ? 'BRIGHTNESS' : 'WARM ' + Math.round(d.tune);
 }
 
 function slider(d, key) {
@@ -4546,20 +4620,16 @@ function cobTile(room, members) {
   fill.className = 'tile-fill';
   tile.appendChild(fill);
 
-  const body = document.createElement('button');
-  body.type = 'button';
-  body.className = 'tile-body';
-  body.innerHTML = '<span class="tile-name"></span><span class="tile-read"></span>';
-  body.querySelector('.tile-name').textContent = 'All COBs';
-  body.onclick = () => setGang(tile);
+  const body = document.createElement('div');
+  body.className = 'tile-body gangbody';
+  body.innerHTML =
+    '<span class="roomhead"><span class="roomname gangtitle"></span>' +
+      '<button class="chip gangsame" type="button"></button></span>' +
+    '<span class="big gangbig"></span>';
+  body.querySelector('.gangtitle').textContent =
+    'ALL COBS · ' + members.length + ' ON ONE MODULE';
+  body.querySelector('.gangsame').onclick = () => setGang(tile);
   tile.appendChild(body);
-
-  const key = document.createElement('button');
-  key.type = 'button';
-  key.className = 'key';
-  key.innerHTML = '<i></i>';
-  key.onclick = () => setGang(tile);
-  tile.appendChild(key);
 
   if (dims || tunes) {
     const controls = document.createElement('div');
@@ -4604,8 +4674,6 @@ function paintGang(tile) {
   tile.classList.toggle('on', on.length > 0);
   tile.style.setProperty('--lit', load.toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', load.toFixed(3));
-  tile.querySelector('.tile-read').textContent = gangRead(members);
-
   // A drag owns these sliders until the hub has answered — the same rule the
   // single tiles follow, or a repaint would jump the handle under the finger.
   const busy = members.some(d => inFlight.has(d.record_id));
@@ -4616,12 +4684,16 @@ function paintGang(tile) {
     if (input.dataset.key === 'level') input.style.setProperty('--pct', v + '%');
   }
 
-  const key = tile.querySelector('.key');
-  key.setAttribute('aria-pressed', String(on.length > 0));
-  key.setAttribute('aria-label',
-    (members.every(d => d.status) ? 'Turn off' : 'Turn on') + ' all ' + members.length + ' COBs');
-  tile.querySelector('.tile-body').setAttribute('aria-label',
-    'All COBs in ' + title(tile.dataset.gang) + ', ' + gangRead(members));
+  const allOn = members.every(d => d.status);
+  const big = tile.querySelector('.gangbig');
+  if (big) big.textContent = on.length ? gangMean(members, 'level') + '%' : '';
+  const same = tile.querySelector('.gangsame');
+  if (same) {
+    // The button says what pressing it will do, which changes with the state:
+    // a ceiling half on wants levelling, a ceiling fully on wants putting out.
+    same.textContent = allOn ? 'ALL OFF' : on.length ? 'MAKE THEM ALL THE SAME' : 'ALL ON';
+    same.setAttribute('aria-label', same.textContent.toLowerCase() + ', ' + members.length + ' COBs');
+  }
 }
 
 function gangSlider(tile, key) {
@@ -5996,6 +6068,8 @@ function drawNudges() {
     row.append(off, seen);
     host.appendChild(row);
   }
+  const sec = document.getElementById('secleft');
+  if (sec) sec.hidden = !auto.nudges.length;
   fitTiles();          // the alerts have taken their space; the tiles take the rest
 }
 

@@ -1,5 +1,5 @@
-// Draw the home-screen icon: a warm lamp glowing in a cold dark room, which is
-// the whole app in one square. Written by hand because the box has no image
+// Draw the home-screen icon: a warm lamp pooling on paper, which is the whole
+// app in one square now that the interface is warm white rather than night. Written by hand because the box has no image
 // libraries — a PNG is a few chunks and a zlib stream, and this keeps the icon
 // reproducible instead of a binary nobody can regenerate.
 //
@@ -58,31 +58,35 @@ const smooth = (e0, e1, x) => {
   return t * t * (3 - 2 * t);
 };
 
-// A cold slate ground, a warm lamp a little above centre, and the pool of light
-// it throws on the floor below it — the same three ideas the tiles are built on.
+// Warm white paper, a lamp a little above centre, and the pool it throws below
+// it — the same three ideas the cards are built on, in the same palette.
 function lamp(u, v) {
   const cx = 0.5, cy = 0.42;
   const dx = u - cx, dy = v - cy;
   const d = Math.sqrt(dx * dx + dy * dy);
 
-  // ground: cool, darker toward the corners
-  const vig = 1 - 0.42 * Math.sqrt((u - .5) ** 2 + (v - .5) ** 2) * 1.4;
-  let r = 34 * vig, g = 42 * vig, b = 55 * vig;
+  // ground: warm white, easing very slightly at the corners
+  const vig = 1 - 0.08 * Math.sqrt((u - .5) ** 2 + (v - .5) ** 2) * 1.4;
+  let r = 253 * vig, g = 250 * vig, b = 245 * vig;
 
   // the pool the lamp throws downward
+  // The pool: amber soaking into the paper rather than light thrown into dark,
+  // so it subtracts blue instead of adding red.
   const pool = smooth(0.70, 0.0, Math.abs(u - cx) * 1.15) * smooth(1.06, 0.44, v) * 0.85;
-  r += 190 * pool; g += 122 * pool; b += 52 * pool;
+  r -= 2 * pool; g -= 34 * pool; b -= 108 * pool;
 
   // the halo, two falloffs so it reads like light rather than a blurred disc
   const wide = Math.exp(-(d * d) / 0.040) * 0.85;
   const tight = Math.exp(-(d * d) / 0.0075);
-  r += 255 * wide * 0.42 + 255 * tight * 0.55;
-  g += 168 * wide * 0.42 + 205 * tight * 0.55;
-  b += 74 * wide * 0.42 + 130 * tight * 0.55;
+  r -= 4 * wide * 0.5 + 2 * tight;
+  g -= 40 * wide * 0.5 + 26 * tight;
+  b -= 120 * wide * 0.5 + 96 * tight;
 
-  // the source itself
-  const core = smooth(0.085, 0.055, d);
-  r += 255 * core; g += 236 * core; b += 198 * core;
+  // the source itself: the one saturated thing, the colour a lamp makes
+  const core = smooth(0.10, 0.06, d);
+  r = r * (1 - core) + 224 * core;
+  g = g * (1 - core) + 180 * core;
+  b = b * (1 - core) + 99 * core;
 
   return [clamp(r), clamp(g), clamp(b)];
 }
