@@ -2542,18 +2542,15 @@ const HTML = /* html */ `<!doctype html>
   .seek-toggle svg { width: 16px; height: 16px; }
   .seek-toggle:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
 
-  .seek { position: relative; margin-left: auto; flex: 0 1 clamp(160px, 26vw, 290px); min-width: 0; }
-  .seek input {
-    width: 100%; padding: 10px 14px 10px 34px; color: var(--ink);
-    background: var(--pane); border: 1px solid var(--edge); border-radius: 12px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    box-shadow: inset 0 1px 0 var(--lip);
-    font: 400 13.5px/1 var(--sans); outline: none; transition: border-color .2s, background .2s;
-  }
-  .seek input::placeholder { color: var(--faint); }
-  .seek input:focus { border-color: var(--edge-up); background: var(--pane-up); }
-  .seek svg { position: absolute; left: 12px; top: 50%; width: 14px; height: 14px;
-              margin-top: -7px; color: var(--faint); pointer-events: none; }
+  /* The field's own styling lives further down, with the rest of the command
+     bar. What used to be here was the pre-redesign version — a bordered box
+     with its own backdrop-filter — and two parts of it were still landing:
+     the filter, which lifted its own rectangle a shade brighter than the pill
+     it sits in and drew a second box around the placeholder, and a :focus rule
+     that put the background back the moment you clicked in. Its descendant
+     svg rule also out-specified .seek-glyph and threw the search mark out of
+     the flex row. Deleted rather than overridden: half-live dead CSS is worse than
+     none. */
 
   /* Everything off is a big, irreversible thing, so it is held rather than tapped. */
   .main {
