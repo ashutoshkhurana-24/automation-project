@@ -2911,6 +2911,12 @@ const HTML = /* html */ `<!doctype html>
   .gangsame:hover { background: var(--paper-2); border-color: var(--ink); }
   .tile.gang .big { font-size: clamp(30px, 4vw, 44px); margin-top: 6px; }
   .tile.gang .controls { position: static; margin-top: 14px; }
+  .tile.gang .tile-body { position: static; }
+  /* The ceiling card carries two strips under its reading, so it sizes to its
+     contents rather than to the tile grid's row height. */
+  .tile.gang { display: flex; flex-direction: column; padding: 15px 16px 14px;
+               height: auto; min-height: var(--tile-h); overflow: visible; }
+  .tile.gang .tile-fill { border-radius: inherit; }
 
   /* The backdrop is half the design and changing it was two clicks into a
      sheet. Three of them live in the bar instead. */
@@ -2949,6 +2955,18 @@ const HTML = /* html */ `<!doctype html>
                         text-transform: uppercase; }
   }
   @media (min-width: 861px) { nav.quick .qmin { display: none; } }
+
+  /* the column's smaller voices */
+  .headpct { margin-left: auto; margin-right: 14px; align-self: center; font-family: var(--display);
+             font-size: clamp(20px, 2.4vw, 28px); color: var(--ink); }
+  .roomsay { margin: 0; font-family: var(--display); font-size: 17px; line-height: 1.3;
+             color: var(--ink); }
+  .roomnote { margin: 8px 0 0; font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em;
+              text-transform: uppercase; color: var(--faint); line-height: 1.6; }
+  .blindnote { display: block; margin-top: 6px; font-family: var(--mono); font-size: 9px;
+               letter-spacing: .05em; text-transform: uppercase; color: var(--faint);
+               line-height: 1.5; }
+  #secsync .roomnote { margin-top: 0; }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
@@ -3823,6 +3841,11 @@ const HTML = /* html */ `<!doctype html>
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
       </div>
+      <div class="index-sec" id="secroom" hidden>
+        <div class="legend">What this room is doing</div>
+        <p class="roomsay" id="roomsay"></p>
+        <p class="roomnote" id="roomnote"></p>
+      </div>
       <div class="index-sec" id="secleft">
         <div class="legend">Left on</div>
         <div class="nudges" id="nudges"></div>
@@ -3831,6 +3854,13 @@ const HTML = /* html */ `<!doctype html>
         <div class="legend">Cues</div>
         <div id="cues"></div>
         <button class="newcue" id="newcue" type="button">+ Create a cue</button>
+      </div>
+      <div class="index-sec" id="sectimer">
+        <div class="legend">Sleep</div>
+        <p class="roomnote" id="timerstate">No timer running</p>
+      </div>
+      <div class="index-sec" id="secsync">
+        <p class="roomnote" id="syncline"></p>
       </div>
       <div class="index-sec" id="sechouse">
         <div class="legend">The house itself</div>
@@ -3869,6 +3899,7 @@ const HTML = /* html */ `<!doctype html>
           <h2 id="fieldname"></h2>
           <p class="field-sub" id="fieldsub"></p>
         </div>
+        <span class="headpct" id="headpct"></span>
         <button class="cut" id="cut" type="button" hidden>Turn room off</button>
       </div>
       <div class="tiles" id="stack"></div>
@@ -4115,6 +4146,41 @@ function tick() {
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
   if (sub) sub.innerHTML = fieldSub();
+  const sync = el('#syncline');
+  if (sync && state.sync) {
+    const age = Math.max(0, Math.round((Date.now() - (state.sync.synced_at || 0)) / 1000));
+    sync.textContent = 'Synced ' + (age < 60 ? age + 's' : Math.round(age / 60) + 'm') +
+      ' ago · ' + state.devices.length + ' devices, ' + rooms().length + ' rooms';
+  }
+}
+
+/* Beside a room's board: what it is doing, and what of that is actually known.
+   The second sentence is the one no other dashboard writes — half of what this
+   hub reports is a reading and half is only what it last sent. */
+function drawRoomSay() {
+  const sec = el('#secroom');
+  if (!sec) return;
+  const inRoomView = state.view === 'room' && !state.q;
+  sec.hidden = !inRoomView;
+  if (!inRoomView) return;
+
+  const items = inRoom(state.room);
+  const on = lit(items);
+  const cobs = cobsIn(state.room);
+  const tunable = on.filter(d => d.is_tunable);
+  const blind = items.filter(d => d.is_ac || d.is_curtain);
+
+  el('#roomsay').textContent = on.length
+    ? Math.round(output(items) * 100) + '% across ' + on.length +
+      (on.length === 1 ? ' circuit' : ' circuits') +
+      (cobs.length && lit(cobs).length ? ', ' + lit(cobs).length + ' of them COBs' : '') + '.'
+    : 'Nothing is on in here.';
+
+  const notes = [];
+  if (tunable.length) notes.push('COLOUR IS ASKED FOR AND NEVER READ BACK');
+  if (blind.length) notes.push(blind.length + ' CIRCUIT' + (blind.length === 1 ? '' : 'S') +
+    ' REPORT NOTHING — THE AC IS INFRARED AND A CURTAIN HAS NO POSITION');
+  el('#roomnote').textContent = notes.join(' · ');
 }
 
 /* The sentence moved onto the board, into sayCard(), so the side column can be
@@ -4381,6 +4447,13 @@ function drawField() {
     state.q ? (parseCommand(state.q) ? 'Command' : 'Search')
       : state.view === 'room' ? title(state.room) : 'The house';
   el('#fieldsub').innerHTML = fieldSub();
+  // A room's heading carries its reading, so the number you came to see is at
+  // the top of the screen rather than only inside a card.
+  const pct = el('#headpct');
+  if (pct) {
+    const here = state.view === 'room' && !state.q ? inRoom(state.room) : null;
+    pct.textContent = here && lit(here).length ? Math.round(output(here) * 100) + '%' : '';
+  }
 
   const back = el('#back');
   back.hidden = state.view === 'house' && !state.q;
@@ -4396,6 +4469,7 @@ function drawField() {
     };
   }
 
+  drawRoomSay();
   const drawn = state.q ? fillSearch(stack)
     : state.view === 'room' ? fillRoom(stack, state.room)
     : fillHouse(stack);
@@ -4624,6 +4698,14 @@ function circuitTile(d) {
     tile.appendChild(controls);
   }
 
+  // The one circuit class that has to say why its reading is not a reading.
+  if (d.is_ac) {
+    const note_ = document.createElement('span');
+    note_.className = 'blindnote';
+    note_.textContent = 'IR IS ONE-WAY — THE REMOTE IS INVISIBLE TO US';
+    body.appendChild(note_);
+  }
+
   if (d.is_curtain) tile.appendChild(curtainPulls(d));
   if (d.is_ac) tile.appendChild(climateDrawer(d));
 
@@ -4748,9 +4830,14 @@ function paintGang(tile) {
   const busy = members.some(d => inFlight.has(d.record_id));
   for (const input of tile.querySelectorAll('.slider')) {
     if (busy || input === document.activeElement) continue;
-    const v = gangMean(members, input.dataset.key);
+    const k = input.dataset.key;
+    const v = gangMean(members, k);
     input.value = v;
-    if (input.dataset.key === 'level') input.style.setProperty('--pct', v + '%');
+    const strip = input.closest('.strip');
+    if (strip) {
+      strip.style.setProperty('--at', v + '%');
+      strip.querySelector('.strip-label').textContent = k === 'level' ? 'BRIGHTNESS' : 'WARM ' + v;
+    }
   }
 
   const allOn = members.every(d => d.status);
@@ -4766,6 +4853,11 @@ function paintGang(tile) {
 }
 
 function gangSlider(tile, key) {
+  const wrap = document.createElement('label');
+  wrap.className = 'strip ' + (key === 'level' ? 'dimstrip' : 'warmstrip');
+  wrap.innerHTML = '<span class="strip-fill"></span><span class="strip-hand"></span>' +
+                   '<span class="strip-label"></span>';
+
   const input = document.createElement('input');
   input.type = 'range';
   input.className = key === 'level' ? 'slider dim' : 'slider warm';
@@ -4773,7 +4865,10 @@ function gangSlider(tile, key) {
   input.dataset.key = key;
   const start = gangMean(cobsIn(tile.dataset.gang), key);
   input.value = start;
-  if (key === 'level') input.style.setProperty('--pct', start + '%');
+  wrap.style.setProperty('--at', start + '%');
+  wrap.querySelector('.strip-label').textContent =
+    key === 'level' ? 'BRIGHTNESS' : 'WARM ' + start;
+  wrap.appendChild(input);
   input.setAttribute('aria-label',
     'All COBs ' + (key === 'level' ? 'brightness' : 'warmth, 0 cool to 100 warm'));
 
@@ -4784,12 +4879,14 @@ function gangSlider(tile, key) {
       if (key === 'level') d.status = v > 0;
       paint(d);                                  // the room's own tiles follow
     }
-    if (key === 'level') { input.style.setProperty('--pct', v + '%'); tick(); }
+    wrap.style.setProperty('--at', v + '%');
+    wrap.querySelector('.strip-label').textContent = key === 'level' ? 'BRIGHTNESS' : 'WARM ' + v;
+    if (key === 'level') tick();
     paintGang(tile);
     queueGang(tile, key);
   });
   input.addEventListener('change', () => queueGang(tile, key, true));
-  return input;
+  return wrap;
 }
 
 /* ────────────────────────────────────────────────── drawing one circuit */
@@ -6299,6 +6396,13 @@ if (window.ResizeObserver) {
 }
 
 function drawTimers() {
+  const state_ = el('#timerstate');
+  if (state_) {
+    const t = (auto.timers || [])[0];
+    state_.textContent = t
+      ? Math.max(1, Math.round(t.seconds_left / 60)) + ' MIN LEFT · ' + (t.label || 'THE HOUSE').toUpperCase()
+      : 'No timer running';
+  }
   const host = el('#timerrunning');
   host.innerHTML = '';
   for (const t of auto.timers) {
