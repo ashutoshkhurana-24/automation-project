@@ -2338,9 +2338,19 @@ const HTML = /* html */ `<!doctype html>
     --line-up: rgba(43,38,34,.20);
 
     /* A lit circuit is warm paper, not a glow: the light is in the fill. */
-    --warm:   #e0b463;
-    --cool:   #bcd0e2;
-    --neutral:#cfc6b8;
+    /* ── the colour of on ────────────────────────────────────────────────
+       These were sand, haze and oatmeal: correct as *paper* colours and
+       useless as a signal, because a lit tile mixed from them landed within a
+       few levels of the unlit glass beside it. On has to contrast, not blend.
+       Amber against cold glass is the contrast the house actually makes — and
+       the hue still carries its meaning, so a lamp tuned to daylight glows
+       blue and one at candle glows orange, side by side.
+       --neutral covers the things that emit nothing at all (a fan, a curtain,
+       a screen); it is a definite slate rather than a shade of the paper, or
+       a fan that is running looks exactly like one that is not. */
+    --warm:   #f2a233;
+    --cool:   #7fb2e0;
+    --neutral:#9fb0bd;
     --clay:   #c8553d;
     --accent: #e0574a;
 
@@ -2912,7 +2922,16 @@ const HTML = /* html */ `<!doctype html>
   }
   .strip + .strip { margin-top: 9px; }
   .strip-fill { position: absolute; inset: 0 auto 0 0; width: var(--at, 0%);
-                background: var(--tint, var(--warm)); transition: width .3s, background .4s; }
+                background: var(--tint, var(--warm));
+                transition: width .3s, background .4s, opacity .3s; }
+  /* A dark lamp's warmth strip still shows the colour it is set to — that is
+     what you are choosing while it is off — but at full strength a bank of
+     unlit COBs was a wall of amber, which is precisely the signal that is
+     supposed to mean something is burning. The *track* is what shouts, not
+     the fill: the track carries the whole cool-to-warm scale whatever the
+     lamp is doing, so it is the thing that has to stand down. */
+  .tile:not(.on) .strip-fill { opacity: .30; }
+  .tile:not(.on) .warmstrip { opacity: .38; }
   .strip-label { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
                  z-index: 2; color: var(--ink); pointer-events: none; }
   .strip-hand { position: absolute; top: 8px; bottom: 8px; width: 2px; z-index: 2;
@@ -3354,8 +3373,8 @@ const HTML = /* html */ `<!doctype html>
      it is 80% opaque, so mixing a tint into it lost most of the tint to the
      photograph behind. The lit pane is solid. */
   .tile.on {
-    background: color-mix(in oklab, var(--tint) calc(26% + var(--lit) * 22%), #fdfaf5);
-    border-color: color-mix(in oklab, var(--tint) calc(72% + var(--lit) * 28%), var(--line));
+    background: color-mix(in oklab, var(--tint) calc(62% + var(--lit) * 24%), #fdfaf5);
+    border-color: color-mix(in oklab, var(--tint) 92%, var(--line));
     box-shadow:
       0 0 0 1px color-mix(in oklab, var(--tint) calc(34% + var(--lit) * 26%), transparent),
       0 8px 26px -8px color-mix(in oklab, var(--tint) calc(40% + var(--lit) * 34%), transparent),
@@ -4393,7 +4412,10 @@ const HTML = /* html */ `<!doctype html>
     .tiles .tile.cobmember .warmstrip {
       background: linear-gradient(90deg, var(--cool), #f3e3c4 46%, var(--warm));
     }
-    .tiles .tile.cobmember .warmstrip .strip-fill { opacity: .82; }
+    /* Scoped to a lit lamp. Unscoped it beat the rule that dims a dark lamp's
+       warmth rail, so a bank of five unlit COBs was a wall of amber — the one
+       signal that is supposed to mean something is burning. */
+    .tiles .tile.cobmember.on .warmstrip .strip-fill { opacity: .82; }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
@@ -4735,11 +4757,37 @@ const output = (list) =>
 
 /* 0 is cool and 100 is warm on this installation, so a lamp's colour is a
    mix between moonlight and sodium — and the bar burns that exact colour. */
+/* The colour a lamp at this temperature is making.
+ *
+ * This used to be one straight mix from cool to warm, which sounds right and
+ * looks wrong: the two ends are near-complementary, so every value in the
+ * middle — where most lamps in this house actually sit — came out as mud, and
+ * a ceiling set to "warm white" rendered as oatmeal. Real light does not pass
+ * through grey on its way from daylight to candlelight; it passes through a
+ * warm white. So the scale has three stops, and chroma survives the middle. */
+const LAMP_MID = '#ffedd2';
+/* The neutral point sits at 38, not halfway. On this hub 0 is cool and 100 is
+   warm, and real lamps live in the top half of that — 70 to 100 is where every
+   fitting in the house actually sits. With the pivot at 50, the settings people
+   use mapped to a fifth of the amber and every room card came out cream. 38
+   also matches where warmthWord stops saying "soft white" and starts saying
+   "neutral", so the colour and the word turn over together.
+   The curve is there for the same reason: linear, most of the useful range is
+   spent near the pale end. */
+const LAMP_PIVOT = 38;
+const lampColour = (t) => {
+  const v = Math.max(0, Math.min(100, Number(t) || 0));
+  const ramp = (x) => Math.round(100 * Math.pow(Math.max(0, Math.min(1, x)), 0.72));
+  return v >= LAMP_PIVOT
+    ? 'color-mix(in oklab, var(--warm) ' + ramp((v - LAMP_PIVOT) / (100 - LAMP_PIVOT)) + '%, ' + LAMP_MID + ')'
+    : 'color-mix(in oklab, var(--cool) ' + ramp((LAMP_PIVOT - v) / LAMP_PIVOT) + '%, ' + LAMP_MID + ')';
+};
+
 const tintOf = (d) => {
   const kind = kindOf(d);
   if (kind !== 'light') return KINDS[kind].tint;
   if (!d.is_tunable) return 'var(--warm)';
-  return 'color-mix(in oklab, var(--warm) ' + Math.round(d.tune) + '%, var(--cool))';
+  return lampColour(d.tune);
 };
 /* Colour temperature has no unit anybody reads off a scale — nobody has an
    opinion about 68. They have a strong opinion about candlelight. So the
@@ -4952,7 +5000,7 @@ function readout() {
   const warmth = tuned.length ? tuned.reduce((s, d) => s + d.tune, 0) / tuned.length : 78;
   const root = document.documentElement.style;
   root.setProperty('--glow', Math.min(1, Math.sqrt(on.length / 9)).toFixed(3));
-  root.setProperty('--lamp', 'color-mix(in oklab, var(--warm) ' + Math.round(warmth) + '%, var(--cool))');
+  root.setProperty('--lamp', lampColour(warmth));
 
   drawHero();
   drawGlance();
@@ -5042,12 +5090,23 @@ function houseTabState(b) {
   fill.style.setProperty('--tint', on.length ? roomTint(on) : 'rgba(255,213,160,.09)');
 }
 
-// The colour a room is burning: the average temperature of its lit lamps.
+/* The colour a room is burning.
+ *
+ * Weighted by how much light each lamp is actually making, not a flat average
+ * of their settings — a lamp at 5% has almost no say in what a room looks
+ * like, and letting it vote equally with one at 80% put a room with a single
+ * dim daylight COB somewhere near the middle of the scale, where the colour
+ * goes to cream and the card stops reading as lit at all. */
 function roomTint(on) {
   const tuned = on.filter(d => d.is_tunable && kindOf(d) === 'light');
   if (!tuned.length) return on.some(d => kindOf(d) === 'light') ? 'var(--warm)' : 'var(--neutral)';
-  const t = tuned.reduce((s, d) => s + d.tune, 0) / tuned.length;
-  return 'color-mix(in oklab, var(--warm) ' + Math.round(t) + '%, var(--cool))';
+  let sum = 0, weight = 0;
+  for (const d of tuned) {
+    const w = Math.max(0.08, (d.is_dimmable ? d.level : 100) / 100);
+    sum += d.tune * w;
+    weight += w;
+  }
+  return lampColour(weight ? sum / weight : 50);
 }
 
 /* Which way the next board should arrive from.
@@ -6447,7 +6506,7 @@ function stepRow(st, d) {
   const open = openStep === st.record_id;
   wrap.className = 'sheet-step' + (lit ? ' lit' : '') + (open ? ' open' : '');
   wrap.style.setProperty('--pip', lit && st.tune != null
-    ? 'color-mix(in oklab, var(--warm) ' + Math.round(st.tune) + '%, var(--cool))'
+    ? lampColour(st.tune)
     : 'var(--warm)');
 
   const head = document.createElement('button');
@@ -6534,7 +6593,7 @@ function stepSlider(label, key, st, d, word, warm) {
     const wrapEl = row.closest('.sheet-step');
     if (key === 'tune') {
       wrapEl.style.setProperty('--pip',
-        'color-mix(in oklab, var(--warm) ' + st.tune + '%, var(--cool))');
+        lampColour(st.tune));
     }
     wrapEl.querySelector('.to').textContent = stepWord(st);
     saveSteps();
@@ -6740,7 +6799,7 @@ function cuePreview(cue) {
   const tuned = on.filter(st => st.tune != null);
   if (!tuned.length) return { brightness, colour: 'var(--warm)' };
   const warmth = Math.round(tuned.reduce((sum, st) => sum + st.tune, 0) / tuned.length);
-  return { brightness, colour: 'color-mix(in oklab, var(--warm) ' + warmth + '%, var(--cool))' };
+  return { brightness, colour: lampColour(warmth) };
 }
 
 async function fire(cue) {
