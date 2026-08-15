@@ -2410,7 +2410,7 @@ const HTML = /* html */ `<!doctype html>
        ridge far less. The page sets --shot-dim from the picture itself, so
        any photograph — including one just taken on a phone — lands at a
        luminance the white type and the lamps can live with. */
-    filter: saturate(.72) brightness(var(--shot-dim, 1.04)) contrast(.94);
+    filter: saturate(.86) brightness(var(--shot-dim, 1.02)) contrast(1.0);
     /* Zoomed past the buildings. This photograph has an apartment block at
        each edge, and the left one put a faint vertical line straight through
        the hero text — read as a rendering artefact, but it was masonry. The
@@ -2630,7 +2630,7 @@ const HTML = /* html */ `<!doctype html>
   .tiles {
     flex: 1; min-height: 0; overflow-y: auto; padding: 2px 4px 8px 2px;
     display: grid; gap: clamp(12px, 1.4vw, 18px); align-content: start;
-    grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(206px, 1fr)); min-width: 0;
     grid-auto-rows: min-content;
     scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent;
   }
@@ -2763,8 +2763,8 @@ const HTML = /* html */ `<!doctype html>
   /* a room, as a card that states its own reading */
   .tile[data-room] { display: flex; flex-direction: column; }
   .tile[data-room] .tile-body {
-    align-items: stretch; justify-content: flex-start; gap: 0;
-    padding: 15px 16px 14px;
+    position: static; align-items: stretch; justify-content: flex-start; gap: 0;
+    padding: 15px 16px 14px; width: 100%; height: 100%; box-sizing: border-box;
   }
   /* Every card carries a wash, faint when dark and its own colour when lit, so
      the grid reads as paper with light soaked into it rather than a set of
@@ -2778,7 +2778,14 @@ const HTML = /* html */ `<!doctype html>
   .roomhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .roomname { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em;
               font-size: 12px; color: var(--ink); }
-  .chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; }
+  .chip {
+    position: absolute; top: 13px; right: 13px; z-index: 3; cursor: pointer;
+    padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--paper); color: var(--soft);
+    transition: color .18s, border-color .18s, background .18s;
+  }
+  .chip:hover { color: var(--ink); border-color: var(--line-up); }
+  .chip[hidden] { display: none; }
   /* The reading sits under the name with air, not adrift at the foot of an
      empty card — a room card is a label and a number, and the reference reads
      as one block for that reason. */
@@ -2910,6 +2917,7 @@ const HTML = /* html */ `<!doctype html>
   }
   .gangsame:hover { background: var(--paper-2); border-color: var(--ink); }
   .tile.gang .big { font-size: clamp(30px, 4vw, 44px); margin-top: 6px; }
+  .big:empty { display: none; }
   .tile.gang .controls { position: static; margin-top: 14px; }
   .tile.gang .tile-body { position: static; }
   /* The ceiling card carries two strips under its reading, so it sizes to its
@@ -2967,6 +2975,65 @@ const HTML = /* html */ `<!doctype html>
                letter-spacing: .05em; text-transform: uppercase; color: var(--faint);
                line-height: 1.5; }
   #secsync .roomnote { margin-top: 0; }
+
+  @media (max-width: 860px) {
+    /* A phone reads a list, not a grid. Seven rooms as wide rows put the name,
+       the reading and the switch on one line each — the two-column cards had
+       the name wrapping over a chip that was wrapping under it. */
+    .tiles.as-house { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .tiles.as-house .tile[data-room] { height: auto; min-height: 0; }
+    .tiles.as-house .tile[data-room] .tile-body {
+      display: grid; grid-template-columns: 1fr auto; align-items: center;
+      gap: 0 12px; padding: 13px 96px 13px 15px;
+    }
+    .tiles.as-house .roomname { grid-column: 1; grid-row: 1; }
+    .tiles.as-house .sub { grid-column: 1; grid-row: 2; margin-top: 3px; }
+    .tiles.as-house .big { grid-column: 2; grid-row: 1 / 3; margin-top: 0; font-size: 27px; }
+    .tiles.as-house .chip { top: 50%; transform: translateY(-50%); }
+
+    /* Inside a room, the board is what you came for: it goes above the rooms
+       and cues rather than under them, and the heading disappears because the
+       status line already says where you are and how lit it is. */
+    .field.in-room { order: 0; }
+    .field.in-room .field-head { display: none; }
+
+    .tiles .tile.cobmember { display: none; }
+
+    /* A circuit that dims needs room for its strips under its name, or they
+       come up over it — the card was sized for a name and a word. */
+    .tiles .tile.dims, .tiles .tile.tunes { height: auto; min-height: 0; }
+    .tiles .tile.dims .tile-body, .tiles .tile.tunes .tile-body { position: static; }
+    .tiles .tile.dims .controls, .tiles .tile.tunes .controls {
+      position: static; margin: 12px 0 0; padding: 0;
+    }
+    .tiles .tile.dims, .tiles .tile.tunes { padding: 14px 15px 14px; }
+
+    /* Inside a room the id is detail for a screen with room to spare. The name
+       and what it is doing are the whole card on a phone. */
+    .idline { display: none; }
+    .blindnote { font-size: 8.5px; }
+  }
+
+  .thinbar { display: none; }
+  @media (max-width: 860px) {
+    .thinbar {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+      padding: 2px 4px 10px; font-family: var(--mono); font-size: 10.5px;
+      letter-spacing: .07em; text-transform: uppercase; color: var(--soft);
+    }
+    .thinbar #thinmid { flex: 1; text-align: center; font-family: var(--display);
+                        font-size: 15px; letter-spacing: .02em; text-transform: none;
+                        color: var(--ink); }
+    .thinbar #thinright { color: var(--faint); }
+    .thinbar #thinleft { cursor: pointer; }
+    /* The card it replaces: on a phone the bar held a title and a search icon,
+       and the title is what the status line now says. */
+    header.plate { display: none; }
+    .thinbar #thinfind {
+      background: none; border: 0; padding: 0 2px; cursor: pointer; color: var(--faint);
+      font: inherit; font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
+    }
+  }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
                  text-shadow: var(--halo); }
@@ -3683,7 +3750,10 @@ const HTML = /* html */ `<!doctype html>
     #seccues  { order: 2; }
     #secleft  { order: 3; }
     .field    { order: 4; }
-    #sechouse { order: 5; margin-top: 4px; }
+    #secroom  { order: 5; }
+    #sectimer { order: 6; }
+    #secsync  { order: 7; }
+    #sechouse { order: 8; margin-top: 4px; }
     #secrooms .legend, #seccues .legend { display: none; }
 
     /* A cue on a phone is a chip: the name is the whole target. The reading and
@@ -3764,7 +3834,7 @@ const HTML = /* html */ `<!doctype html>
   }
 
   @media (max-width: 560px) {
-    .tiles { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
     /* a fingertip needs more than a mouse: a bigger switch, but not a taller
        tile — height here buys nothing and costs a whole row per screen */
     .tile { --tile-h: 132px; }
@@ -3813,6 +3883,14 @@ const HTML = /* html */ `<!doctype html>
 <div class="spill"></div>
 
 <div class="shell">
+  <!-- The phone's masthead is a status line, not a card: the time, and what the
+       house consists of. On a room it becomes the way back, the room, and its
+       reading. Both are one row of 11px type, which is all a phone can spare. -->
+  <div class="thinbar" id="thinbar">
+    <span id="thinleft"></span><span id="thinmid"></span><span id="thinright"></span>
+    <button type="button" id="thinfind" aria-label="Search, or type a command">FIND</button>
+  </div>
+
   <header class="plate">
     <div class="stamp">
       <h1>Pravita's Apartment</h1>
@@ -4154,6 +4232,27 @@ function tick() {
   }
 }
 
+/* The phone's masthead: the time and what the house consists of, or — inside a
+   room — the way back, the room, and its reading. */
+function drawThin() {
+  const tl = el('#thinleft'), tm = el('#thinmid'), tr = el('#thinright');
+  if (!tl) return;
+  if (state.view === 'room' && !state.q) {
+    tl.textContent = '‹ HOUSE';
+    tl.onclick = () => go('house');
+    tm.textContent = title(state.room);
+    const here = inRoom(state.room);
+    tr.textContent = lit(here).length ? Math.round(output(here) * 100) + '%' : '';
+  } else {
+    const now = new Date();
+    tl.textContent = String(now.getHours()).padStart(2, '0') + ':' +
+                     String(now.getMinutes()).padStart(2, '0');
+    tl.onclick = null;
+    tm.textContent = '';
+    tr.textContent = state.devices.length + ' devices · ' + rooms().length + ' rooms';
+  }
+}
+
 /* Beside a room's board: what it is doing, and what of that is actually known.
    The second sentence is the one no other dashboard writes — half of what this
    hub reports is a reading and half is only what it last sent. */
@@ -4268,7 +4367,12 @@ function readout() {
   const q = el('#qoff');
   if (q) {
     q.disabled = !on.length;
-    el('#qoffword').textContent = on.length ? 'All off · ' + on.length : 'All dark';
+  // The label names what it will actually switch off from where you are.
+  const inRoomView = state.view === 'room' && !state.q;
+  const here = inRoomView ? lit(inRoom(state.room)) : on;
+  el('#qoffword').textContent = here.length
+    ? (inRoomView ? 'Room off · ' : 'All off · ') + here.length
+    : (inRoomView ? 'Room dark' : 'All dark');
   }
 }
 
@@ -4469,7 +4573,11 @@ function drawField() {
     };
   }
 
+  drawThin();
+  const fieldEl = document.querySelector('.field');
+  if (fieldEl) fieldEl.classList.toggle('in-room', state.view === 'room' && !state.q);
   drawRoomSay();
+  stack.classList.toggle('as-house', state.view === 'house' && !state.q);
   const drawn = state.q ? fillSearch(stack)
     : state.view === 'room' ? fillRoom(stack, state.room)
     : fillHouse(stack);
@@ -4561,7 +4669,14 @@ function fillRoom(stack, room) {
     // switches. Their own tiles stay below it for the times one lamp is the point.
     const cobs = kind === 'light' ? group.filter(isCob) : [];
     if (cobs.length > 1) stack.appendChild(cobTile(room, cobs));
-    group.forEach(d => stack.appendChild(circuitTile(d)));
+    group.forEach(d => {
+      const t = circuitTile(d);
+      // A phone shows the ceiling as one control, as the reference does: five
+      // identical cards under a card that already drives all five is noise on a
+      // screen that has none to spare. They are still there on a wide screen.
+      if (cobs.length > 1 && isCob(d)) t.classList.add('cobmember');
+      stack.appendChild(t);
+    });
   }
 }
 
@@ -4611,9 +4726,9 @@ function roomTile(room) {
   tile.innerHTML =
     '<span class="tile-fill"></span>' +
     '<button class="tile-body" type="button">' +
-      '<span class="roomhead"><span class="roomname"></span><span class="chip"></span></span>' +
-      '<span class="big"></span><span class="sub"></span>' +
-    '</button>';
+      '<span class="roomname"></span><span class="big"></span><span class="sub"></span>' +
+    '</button>' +
+    '<button class="chip" type="button"></button>';
   tile.querySelector('.roomname').textContent = title(room);
   tile.querySelector('.tile-body').onclick = () => go('room', room);
   tile.querySelector('.chip').onclick = (e) => {
@@ -5915,9 +6030,15 @@ function wireMain() {
   });
 }
 
+/* In a room, the one held control switches off that room rather than the
+   house — it is the thing you want at the door, and switching off the whole
+   house from inside a bedroom is never what the thumb meant. */
 function allOff() {
-  const on = lit(state.devices);
-  switchOffMany(on, on.length + (on.length === 1 ? ' circuit' : ' circuits') + ' switching off.');
+  const inRoomView = state.view === 'room' && !state.q;
+  const on = lit(inRoomView ? inRoom(state.room) : state.devices);
+  switchOffMany(on, inRoomView
+    ? 'Switching off ' + on.length + ' in ' + title(state.room) + '.'
+    : on.length + (on.length === 1 ? ' circuit' : ' circuits') + ' switching off.');
 }
 
 /**
@@ -5988,7 +6109,7 @@ const setShot = (v) => {
  * guessed: mean luminance off a canvas, and a multiplier that lands it at the
  * value the fog was approved at. Any photograph then behaves, including one
  * uploaded from a phone thirty seconds ago. */
-const SHOT_TARGET = 172;
+const SHOT_TARGET = 158;
 
 function fitShot(v) {
   const img = new Image();
@@ -6002,7 +6123,7 @@ function fitShot(v) {
     const d = x.getImageData(0, 0, c.width, c.height).data;
     for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
     const mean = sum / (d.length / 4);
-    const dim = Math.max(0.7, Math.min(1.9, SHOT_TARGET / Math.max(1, mean)));
+    const dim = Math.max(0.72, Math.min(1.32, SHOT_TARGET / Math.max(1, mean)));
     document.documentElement.style.setProperty('--shot-dim', dim.toFixed(3));
   };
   img.src = '/bg.jpg?v=' + v;
@@ -6505,6 +6626,7 @@ el('#timermins').addEventListener('click', async (e) => {
 
 /* the thumb bar */
 el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
+el('#thinfind').onclick = () => { openSeek(true); el('#seek').focus(); };
 for (const b of document.querySelectorAll('.qmin')) {
   b.onclick = async () => {
     const minutes = Number(b.dataset.min);
