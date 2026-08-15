@@ -1676,10 +1676,13 @@ function resolveAction(word, records) {
 function spokenFor(label, where, sent) {
   const place = where === 'HOUSE' ? '' : ' in ' + title_(where);
   if (sent.on === false) return label + place + ' off';
-  if (sent.on === true) return label + place + ' on';
-  if (sent.level != null) return label + place + ' at ' + sent.level + '%';
-  if (sent.tune != null) return label + place + ' set to ' + warmthName(sent.tune);
-  return label + place + ' set';
+  // A compound command has to say both halves, or a command that did two
+  // things reports one and sounds like it half worked.
+  const did = [];
+  if (sent.level != null) did.push('at ' + sent.level + '%');
+  else if (sent.on === true) did.push('on');
+  if (sent.tune != null) did.push('set to ' + warmthName(sent.tune));
+  return did.length ? label + place + ' ' + did.join(' and ') : label + place + ' set';
 }
 
 // 0 is cool and 100 is warm on this hub, so the number is meaningless spoken
@@ -1747,10 +1750,26 @@ app.all('/do/:room/:action', (req, res) =>
 app.all('/do/:room/:circuit/:action', (req, res) =>
   runAddress(req, res, req.params.room, req.params.circuit, req.params.action));
 
+/* Two things at once: `/do/ashu/cobs/40/warm`.
+ *
+ * Brightness and colour go down separate channels anyway, so setting both in
+ * one address costs nothing and saves the thing you actually want — a lamp
+ * that comes on at the level *and* the colour you meant, rather than at the
+ * level and then, a second later, the colour. Both spellings work, because a
+ * URL wants segments and the command bar wants spaces:
+ *   /do/ashu/cobs/40/warm   and   /do/ashu/cobs/40+warm */
+app.all('/do/:room/:circuit/:action/:also', (req, res) =>
+  runAddress(req, res, req.params.room, req.params.circuit,
+             req.params.action + '+' + req.params.also));
+
 async function runAddress(req, res, roomWord, circuitWord, actionWord) {
   if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
-  const action = slug(actionWord);
-  if (!isAction(action)) {
+  // Split before slugging, not after: slug() turns every run of punctuation
+  // into a hyphen, so a '+' joiner would be eaten and `40+warm` would arrive
+  // as the single nonsense word `40-warm`.
+  const words = String(actionWord).toLowerCase().split(/[+,]/).map(slug).filter(Boolean);
+  const action = words.join('+');
+  if (!words.length || words.length > 2 || !words.every(isAction)) {
     return res.status(404).json({ ok: false, error: 'No such action', known: ACTIONS,
       spoken: 'I do not know how to do that' });
   }
@@ -1771,7 +1790,7 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
   }
 
   // A relative or toggling action is only as good as its reading of now.
-  if (['toggle', 'up', 'down', 'warmer', 'cooler'].includes(action)
+  if (words.some(w => ['toggle', 'up', 'down', 'warmer', 'cooler'].includes(w))
       && (!hubSync.taken || Date.now() - hubSync.taken > 4000)) {
     await readHubStateFresh().catch(() => {});
   }
@@ -1798,7 +1817,7 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
   // or stop, never a level.
   const curtains = target.records.filter(r => (r.app_type || '') === 'C');
   if (curtains.length) {
-    if (!CURTAIN_VERB[action]) {
+    if (words.length > 1 || !CURTAIN_VERB[action]) {
       return res.status(400).json({ ok: false, error: 'A curtain takes open, close or stop',
         spoken: 'A curtain only opens, closes or stops' });
     }
@@ -1811,7 +1830,14 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
     }
   }
 
-  const sent = resolveAction(action, target.records);
+  // Merged in the order they were typed, so the later word wins where they
+  // disagree. `40+warm` is a level and a colour, which do not collide at all.
+  let sent = null;
+  for (const w of words) {
+    const part = resolveAction(w, target.records);
+    if (!part) { sent = null; break; }
+    sent = { ...(sent || {}), ...part };
+  }
   if (!sent) {
     return res.status(400).json({ ok: false, error: 'That action does not apply here',
       spoken: 'That does not apply here' });
@@ -2261,7 +2287,12 @@ const HTML = /* html */ `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- No zoom. This is an app, not a document: a pinch on a board of switches
+     is always an accident, and a mis-hit that leaves the page at 1.4x with the
+     thumb bar off screen is worse than anything zoom buys here. iOS ignores
+     user-scalable in Safari but honours it once the page is installed to the
+     Home Screen, and the gesturestart handler below covers the rest. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#f3ede3">
 <!-- Saved to a phone's home screen this opens without browser chrome, which is
      the only way the fixed, non-scrolling layout works properly on a phone. -->
@@ -2696,6 +2727,7 @@ const HTML = /* html */ `<!doctype html>
   .chips-lead {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
     text-transform: uppercase; color: var(--faint); margin-right: 3px;
+    white-space: nowrap; flex: 0 0 auto;
   }
   .chip-word {
     padding: 5px 10px; cursor: pointer; border-radius: 8px;
@@ -2898,7 +2930,9 @@ const HTML = /* html */ `<!doctype html>
   .seek {
     position: relative;
     flex: 1 1 auto; min-width: 0; max-width: 520px;
-    margin-left: clamp(10px, 1.6vw, 18px);
+    /* All-off used to hold the right end of the bar. With it gone the field
+       centres in what is left rather than hanging off the title. */
+    margin-left: clamp(10px, 1.6vw, 18px); margin-right: auto;
     display: flex; align-items: center; gap: 9px;
     padding: 8px 11px; height: auto;
     background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px;
@@ -2914,6 +2948,12 @@ const HTML = /* html */ `<!doctype html>
   .seek input {
     flex: 1 1 auto; min-width: 0; font-family: var(--sans); font-size: 14px; color: var(--ink);
     background: none; border: 0; outline: none; padding: 0;
+    /* The field is the pill; the input inside it is only a caret and some
+       glyphs. It was arriving with the generic input treatment still on it —
+       its own radius and a white inner lip — which drew a second, brighter
+       box around the text inside the one that is meant to be the control. */
+    appearance: none; -webkit-appearance: none;
+    border-radius: 0; box-shadow: none;
   }
   .seek input::placeholder { color: var(--faint); }
   .seek input::-webkit-search-cancel-button { display: none; }
@@ -2948,11 +2988,19 @@ const HTML = /* html */ `<!doctype html>
      the one destructive control on the page and should never be a neighbour
      of the thing you type into. */
   .main {
-    margin-left: auto; font-family: var(--mono); text-transform: uppercase;
+    position: fixed; z-index: 40; left: 14px; bottom: 14px; margin: 0;
+    font-family: var(--mono); text-transform: uppercase;
     letter-spacing: .08em; font-size: 10.5px;
     background: var(--paper); border: 1px solid var(--line-up); color: var(--ink);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    box-shadow: var(--cast); opacity: .78;
+    transition: opacity .25s, color .18s, background .18s, border-color .18s,
+                transform .24s cubic-bezier(.22,.94,.3,1);
   }
-  .main:disabled { color: var(--faint); border-color: var(--line); }
+  .main:hover:not(:disabled), .main:focus-visible { opacity: 1; }
+  .main:active:not(:disabled) { transform: scale(.96); transition-duration: .06s; }
+  /* Nothing is on: it is there, but it has nothing to say. */
+  .main:disabled { color: var(--faint); border-color: var(--line); opacity: .42; }
   /* the cue list, on paper */
   .cue { background: var(--paper); border: 1px solid var(--line); box-shadow: none;
          backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens); }
@@ -3176,7 +3224,7 @@ const HTML = /* html */ `<!doctype html>
          technically clear of it, visually crowded into it, which is what
          reads as cut off. The extra 16px is breathing room, not clearance,
          and the max() gives the same room on a phone with no notch. */
-      padding: max(calc(16px + env(safe-area-inset-top)), 18px) 16px 11px;
+      padding: max(calc(26px + env(safe-area-inset-top)), 26px) 16px 12px;
       font-family: var(--mono); font-size: 10.5px;
       letter-spacing: .07em; text-transform: uppercase; color: var(--soft);
       background: color-mix(in oklab, var(--paper) 88%, transparent);
@@ -3191,10 +3239,6 @@ const HTML = /* html */ `<!doctype html>
     /* The card it replaces: on a phone the bar held a title and a search icon,
        and the title is what the status line now says. */
     header.plate { display: none; }
-    .thinbar #thinfind {
-      background: none; border: 0; padding: 0 2px; cursor: pointer; color: var(--faint);
-      font: inherit; font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em;
-    }
   }
 
   .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
@@ -4040,7 +4084,7 @@ const HTML = /* html */ `<!doctype html>
 
     /* The thumb bar already carries all-off and find, so the top bar drops both
        rather than saying everything twice. */
-    .plate .seek-toggle, .plate #main { display: none; }
+    .plate .seek-toggle, #main { display: none; }
     .plate .seek { display: none; margin-left: auto; }
     .plate.searching .seek { display: block; }
 
@@ -4155,15 +4199,58 @@ const HTML = /* html */ `<!doctype html>
        lives inside that masthead — so tapping Find switched the board to
        Search and gave you nothing to type into. The masthead comes back when
        and only when you are searching, carrying the field and nothing else. */
+    /* It docks at the bottom, where the thumb and the keyboard already are.
+       Typing at the top of a phone means reaching across the screen to a field
+       that the keyboard is about to cover; every search on the device that
+       people actually use puts the field at the bottom. It takes the thumb
+       bar's place rather than sitting above it — while you are typing, the
+       three buttons are not what you want.
+       The --kb custom property is set from visualViewport: a fixed element
+       stays pinned to the *layout* viewport, so without it iOS would put the
+       field under the keyboard it just raised. */
     header.plate.searching {
-      /* the hint hangs under the pill, so the row below has to clear it */
-      display: flex; margin: 0 0 24px; padding: 0; gap: 8px;
+      display: flex; gap: 8px; margin: 0; padding: 0;
+      /* top: auto matters — the masthead is sticky with top: 0 on a wide
+         screen, and a fixed box with both top and bottom set stretches to
+         fill the window instead of sizing to its content. */
+      position: fixed; z-index: 46; top: auto; left: 12px; right: 12px;
+      bottom: calc(10px + env(safe-area-inset-bottom) + var(--kb, 0px));
+      background: none; border: 0; box-shadow: none; backdrop-filter: none;
+      transition: bottom .18s ease;
     }
     .plate.searching .stamp { display: none; }
     .plate.searching .seek {
       display: flex; flex: 1 1 auto; max-width: none; margin-left: 0;
+      padding: 11px 14px; border-radius: 18px;
+      background: #fbf7f0; border-color: var(--line); box-shadow: var(--cast);
     }
+    .plate.searching .seek input { font-size: 16px; }   /* under 16 and iOS zooms the field */
+    .plate.searching .seek-ghost { font-size: 16px; }
     .plate.searching .seek-key { display: none; }
+    /* Above the pill, not below it — there is nothing below it. */
+    .plate.searching .seek-hint {
+      top: auto; bottom: calc(100% + 7px); left: 14px;
+      padding: 3px 8px; border-radius: 6px;
+      background: #fbf7f0; border: 1px solid var(--line);
+    }
+    /* The thumb bar steps aside while the field has its place. */
+    body.seeking .quick { display: none; }
+    /* The next word has to be next to the field. On a wide screen the chips
+       live on the board because the field is at the top of it; with the field
+       docked at the foot of a phone, chips at the top of the page are a
+       suggestion you would have to scroll to take. They stack above the pill,
+       in one scrolling line so a room with eleven circuits does not build a
+       wall of them over the keyboard. */
+    body.seeking .chips {
+      position: fixed; z-index: 46; left: 12px; right: 12px;
+      bottom: calc(88px + env(safe-area-inset-bottom) + var(--kb, 0px));
+      margin: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+      padding: 8px 10px; border-radius: 14px;
+      background: #fbf7f0; border: 1px solid var(--line); box-shadow: var(--cast);
+      transition: bottom .18s ease;
+    }
+    body.seeking .chips::-webkit-scrollbar { display: none; }
+    body.seeking .chips .chip-word { flex: 0 0 auto; }
 
     /* ── one COB, compact ────────────────────────────────────────────────
        A tunable circuit spans the row so its two strips are wide enough to
@@ -4279,7 +4366,6 @@ const HTML = /* html */ `<!doctype html>
        reading. Both are one row of 11px type, which is all a phone can spare. -->
   <div class="thinbar" id="thinbar">
     <span id="thinleft"></span><span id="thinmid"></span><span id="thinright"></span>
-    <button type="button" id="thinfind" aria-label="Search, or type a command">FIND</button>
   </div>
 
   <header class="plate">
@@ -4306,9 +4392,6 @@ const HTML = /* html */ `<!doctype html>
       <kbd class="seek-key" id="seekkey">/</kbd>
       <span class="seek-hint" id="seekhint" hidden></span>
     </label>
-    <button class="main" id="main" type="button" disabled aria-describedby="tally">
-      <i id="mainfill"></i><span id="mainword">Hold · all off</span><em id="maincount"></em>
-    </button>
   </header>
 
   <main class="board">
@@ -4471,6 +4554,17 @@ const HTML = /* html */ `<!doctype html>
      and a backdrop-filter makes an element the containing block for any fixed
      descendant — so docked in there it pinned itself to the header's corner
      rather than the window's. -->
+<!-- All-off and the backdrop picker book-end the foot of the window: the one
+     destructive control as far from the masthead as it can get, and as far
+     from the picker as the window is wide. It was in the top-right corner,
+     which is where a masthead should be reporting the house rather than
+     offering to switch it off — and where a mis-hit is nearest the things you
+     reach for most. Outside the header for the same reason the dock is: a
+     backdrop-filter makes an element the containing block for fixed children. -->
+<button class="main" id="main" type="button" disabled aria-describedby="tally">
+  <i id="mainfill"></i><span id="mainword">Hold · all off</span><em id="maincount"></em>
+</button>
+
 <div class="shots" id="shots" aria-label="Backdrop"></div>
 
 <div class="note" id="note" role="status" aria-live="polite"></div>
@@ -4911,21 +5005,37 @@ const ACTION_SAYS = {
   open: 'open', close: 'closed', stop: 'stopped',
 };
 
+const isActionWord = (w) =>
+  /^\\d{1,3}$/.test(w) || /^(warmth|tune)-\\d{1,3}$/.test(w) || !!ACTION_SAYS[w];
+
+const saysFor = (w) => /^\\d{1,3}$/.test(w) ? 'to ' + Number(w) + '%'
+  : /^(warmth|tune)-\\d{1,3}$/.test(w) ? 'to ' + warmthWord(Number(w.split('-')[1]))
+  : ACTION_SAYS[w];
+
+/* Read the line back to front.
+ *
+ * The grammar is room, then an optional circuit, then one or two actions —
+ * and the only way to tell "ashu cobs 40" from "ashu 40 warm" is which of the
+ * middle words is a circuit. So the actions are taken off the end first, and
+ * whatever is left in the middle is the circuit. Two actions are allowed
+ * because brightness and colour go down different channels and setting both
+ * at once is the thing you actually want: a lamp that comes on at the level
+ * *and* the colour you meant, not the level and then, a second later, the
+ * colour. */
 function parseCommand(q) {
   if (!grammar) return null;
   const w = q.trim().toLowerCase().split(/\\s+/).filter(Boolean);
-  if (w.length < 2 || w.length > 3) return null;
+  if (w.length < 2 || w.length > 4) return null;
 
-  const action = w[w.length - 1];
-  const level = /^\\d{1,3}$/.test(action);
-  const warmth = /^(warmth|tune)-\\d{1,3}$/.test(action);
-  if (!level && !warmth && !ACTION_SAYS[action]) return null;
+  const acts = [];
+  while (w.length > 1 && acts.length < 2 && isActionWord(w[w.length - 1])) acts.unshift(w.pop());
+  if (!acts.length || w.length > 2) return null;
 
   const room = grammar.rooms.find(r => r.room.startsWith(w[0]));
   if (!room) return null;
 
   let circuit = null;
-  if (w.length === 3) {
+  if (w.length === 2) {
     const hits = room.circuits.filter(c => c.startsWith(w[1]));
     if (hits.length !== 1) {
       return { bad: hits.length
@@ -4937,12 +5047,9 @@ function parseCommand(q) {
 
   const what = circuit ? title(circuit.replace(/-/g, ' ')) : 'Everything';
   const where = title(room.room.replace(/-/g, ' '));
-  const does = level ? 'to ' + Number(action) + '%'
-    : warmth ? 'to warmth ' + action.split('-')[1]
-    : ACTION_SAYS[action];
   return {
-    path: '/do/' + [room.room, circuit, action].filter(Boolean).join('/'),
-    says: what + ' in ' + where + ' — ' + does,
+    path: '/do/' + [room.room, circuit, acts.join('+')].filter(Boolean).join('/'),
+    says: what + ' in ' + where + ' \u2014 ' + acts.map(saysFor).join(' and '),
   };
 }
 
@@ -4971,8 +5078,12 @@ function nextWords(q) {
   else {
     const room = grammar.rooms.find(r => r.room.startsWith(done[0]));
     if (!room) return null;
-    if (done.length === 1) { pool = room.circuits.concat(PLAIN_ACTIONS); what = 'circuit or action'; }
-    else if (done.length === 2) { pool = PLAIN_ACTIONS; what = 'action'; }
+    const rest = done.slice(1);
+    if (rest.length === 0) { pool = room.circuits.concat(PLAIN_ACTIONS); what = 'circuit or action'; }
+    else if (rest.length === 1) { pool = PLAIN_ACTIONS; what = 'action'; }
+    // A second action is allowed, but only after the first — 'and also' rather
+    // than 'action', because by here it is plainly an addition.
+    else if (rest.length === 2 && isActionWord(rest[1])) { pool = PLAIN_ACTIONS; what = 'and also'; }
     else return null;
   }
   return { partial, what, options: pool.filter(o => o.startsWith(partial) && o !== partial) };
@@ -6901,7 +7012,9 @@ function drawSeekHint() {
   const words = cmd && !cmd.bad ? '↵ runs it'
     : cmd && cmd.bad ? cmd.bad.toLowerCase()
     : q && n ? n + (n === 1 ? ' match · ↵ switches it' : ' matches')
-    : next && next.options.length ? 'now a ' + next.what + ' · tab completes'
+    : next && next.options.length
+      ? (next.what === 'and also' ? 'and also · tab completes'
+                                  : 'now a ' + next.what + ' · tab completes')
     : q ? 'nothing by that name'
     : '';
   hint.textContent = words;
@@ -6947,8 +7060,36 @@ const seekToggle = el('#seektoggle');
 const plate = el('.plate');
 function openSeek(open) {
   plate.classList.toggle('searching', open);
+  // The thumb bar stands down while the field takes its place at the bottom.
+  document.body.classList.toggle('seeking', open);
   seekToggle.setAttribute('aria-expanded', String(open));
   if (open) el('#seek').focus();
+}
+
+/* Where the keyboard is.
+ *
+ * A fixed-position element is pinned to the layout viewport, which does not
+ * shrink when a phone raises its keyboard — so a field docked to the bottom
+ * edge ends up underneath the keyboard that was raised to type into it. The
+ * visual viewport does shrink, and the difference between the two is exactly
+ * how far the field has to lift. Nothing to do on a desktop, where the two
+ * viewports agree. */
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const followKeyboard = () => {
+    const hidden = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', Math.round(hidden) + 'px');
+  };
+  vv.addEventListener('resize', followKeyboard);
+  vv.addEventListener('scroll', followKeyboard);
+  followKeyboard();
+}
+
+/* Pinch does nothing. iOS Safari ignores user-scalable in a browser tab, but
+ * it does raise gesture events first, so refusing them is the one thing that
+ * actually holds — and it is a no-op everywhere else. */
+for (const g of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(g, (e) => e.preventDefault(), { passive: false });
 }
 seekToggle.addEventListener('click', () => openSeek(!plate.classList.contains('searching')));
 el('#seek').addEventListener('blur', () => { if (!state.q.trim()) openSeek(false); });
@@ -7279,7 +7420,6 @@ el('#timermins').addEventListener('click', async (e) => {
 
 /* the thumb bar */
 el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
-el('#thinfind').onclick = () => { openSeek(true); el('#seek').focus(); };
 for (const b of document.querySelectorAll('.qmin')) {
   b.onclick = async () => {
     const minutes = Number(b.dataset.min);
