@@ -2289,6 +2289,14 @@ const HTML = /* html */ `<!doctype html>
     --paper:   rgba(253,250,245,.66);
     --paper-2: rgba(246,239,227,.72);
     --ink:     #2b2622;
+    /* The ground under everything, and the colour ink is reversed out to.
+       This went missing in the move to paper: --base was still referenced in
+       six places and defined in none, so every var(--base) was invalid and
+       fell back to inherited colour — which is how the primary button in the
+       cue sheet ended up as ink on ink, and the checkmark in a picker was
+       drawn in the same colour as the box behind it. Invisible rather than
+       wrong, which is why it survived a sweep. */
+    --base:    #f4efe6;
     --soft:    #6b635a;
     --faint:   #9a9187;
     --line:    rgba(43,38,34,.10);
@@ -2671,7 +2679,7 @@ const HTML = /* html */ `<!doctype html>
   .bgshot {
     position: relative; aspect-ratio: 16 / 10; cursor: pointer; overflow: hidden;
     padding: 0; border-radius: 14px; border: 1px solid var(--edge);
-    background-size: cover; background-position: center; background-color: var(--raise);
+    background-size: cover; background-position: center; background-color: var(--paper-2);
     transition: border-color .2s, transform .16s;
   }
   .bgshot:hover { transform: translateY(-2px); }
@@ -2679,13 +2687,13 @@ const HTML = /* html */ `<!doctype html>
   .bgshot.on { border-color: var(--accent); }
   .bgshot .tag {
     position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 7px;
-    font-size: 11.5px; color: var(--ink); background: rgba(10,14,20,.55);
+    font-size: 11.5px; color: var(--ink); background: rgba(250,246,239,.88);
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   }
   .bgshot .drop {
     position: absolute; right: 6px; top: 6px; width: 24px; height: 24px; padding: 0;
     border-radius: 8px; border: 1px solid var(--edge); cursor: pointer;
-    color: var(--soft); background: rgba(10,14,20,.55); font: inherit; font-size: 13px;
+    color: var(--soft); background: rgba(250,246,239,.88); font: inherit; font-size: 13px;
     opacity: 0; transition: opacity .18s, color .18s;
   }
   .bgshot:hover .drop, .bgshot .drop:focus-visible { opacity: 1; }
@@ -2925,7 +2933,14 @@ const HTML = /* html */ `<!doctype html>
   .tile.gang .big { font-size: clamp(30px, 4vw, 44px); margin-top: 6px; }
   .big:empty { display: none; }
   .tile.gang .controls { position: static; margin-top: 14px; }
-  .tile.gang .tile-body { position: static; }
+  /* A normal tile reserves the foot of its face for strips that are pinned
+     there absolutely. This card stacks instead, so that reservation is an
+     empty 70px band between the title and the controls — which is exactly
+     what made the ceiling card twice the size it needed on a phone. */
+  .tile.gang .tile-body,
+  .tile.gang.dims .tile-body,
+  .tile.gang.tunes .tile-body,
+  .tile.gang.dims.tunes .tile-body { position: static; padding-bottom: 0; }
   /* The ceiling card carries two strips under its reading, so it sizes to its
      contents rather than to the tile grid's row height. */
   .tile.gang { display: flex; flex-direction: column; padding: 15px 16px 14px;
@@ -3023,12 +3038,28 @@ const HTML = /* html */ `<!doctype html>
     #secsync .roomnote, #sectimer .roomnote { color: var(--soft); }
     #sechouse .settings-row { margin-top: 2px; }
 
-    .tiles .tile.cobmember { display: none; }
+    /* The individual COBs were hidden here to keep the phone board short.
+       That was the wrong trade: it left the room with no way to touch one
+       lamp at all, and the reason a room has both controls is that sometimes
+       one lamp *is* the point. They come back; the ceiling card is what gets
+       smaller instead. */
+    .tiles .tile.gang {
+      min-height: 0; padding: 12px 14px 12px;
+    }
+    .tiles .tile.gang .big { font-size: 30px; margin-top: 2px; }
+    .tiles .tile.gang .controls { margin-top: 10px; }
 
     /* A circuit that dims needs room for its strips under its name, or they
        come up over it — the card was sized for a name and a word. */
     .tiles .tile.dims, .tiles .tile.tunes { height: auto; min-height: 0; }
-    .tiles .tile.dims .tile-body, .tiles .tile.tunes .tile-body { position: static; }
+    /* Once the strips stack under the face instead of being pinned to it, the
+       space that was reserved for them is a hole. A tunable lamp reserved 70px
+       and then put its strips below that, which is why one COB was taller than
+       the card that drives all five. */
+    .tiles .tile.dims .tile-body, .tiles .tile.tunes .tile-body,
+    .tiles .tile.dims.tunes .tile-body {
+      position: static; padding-bottom: 0;
+    }
     .tiles .tile.dims .controls, .tiles .tile.tunes .controls {
       position: static; margin: 12px 0 0; padding: 0;
     }
@@ -3049,7 +3080,11 @@ const HTML = /* html */ `<!doctype html>
       position: sticky; top: 0; z-index: 30;
       display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
       margin: 0 -16px 12px;
-      padding: calc(9px + env(safe-area-inset-top)) 16px 9px;
+      /* The notch inset alone leaves the line sitting *on* the status bar —
+         technically clear of it, visually crowded into it, which is what
+         reads as cut off. The extra 16px is breathing room, not clearance,
+         and the max() gives the same room on a phone with no notch. */
+      padding: max(calc(16px + env(safe-area-inset-top)), 18px) 16px 11px;
       font-family: var(--mono); font-size: 10.5px;
       letter-spacing: .07em; text-transform: uppercase; color: var(--soft);
       background: color-mix(in oklab, var(--paper) 88%, transparent);
@@ -3229,8 +3264,10 @@ const HTML = /* html */ `<!doctype html>
   .slider::-webkit-slider-thumb {
     -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%;
     background: var(--ink); border: 0;
+    transition: transform .16s cubic-bezier(.22,.94,.3,1), background .2s;
   }
-  .slider::-moz-range-thumb { width: 11px; height: 11px; border-radius: 50%; background: var(--ink); border: 0; }
+  .slider::-moz-range-thumb { width: 11px; height: 11px; border-radius: 50%; background: var(--ink); border: 0;
+    transition: transform .16s cubic-bezier(.22,.94,.3,1), background .2s; }
 
   /* brightness fills to its level in the lamp's own colour */
   .slider.dim::-webkit-slider-runnable-track {
@@ -3271,6 +3308,7 @@ const HTML = /* html */ `<!doctype html>
   .pull:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .pull:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .pull.working { color: var(--ink); border-color: var(--edge-up); }
+  .timerstop { margin-top: 9px; width: 100%; }
 
   .degrees { display: flex; align-items: center; gap: 7px; }
   .degrees b { flex: 1; text-align: center; font-weight: 500; font-size: 14px; color: var(--ink); }
@@ -3298,17 +3336,20 @@ const HTML = /* html */ `<!doctype html>
   /* ── the sheet ───────────────────────────────────────────────────────── */
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
-    padding: 22px; background: rgba(16,20,27,.34);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    padding: 22px; background: rgba(28,24,20,.32);
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
     animation: fade .22s ease both;
   }
   .scrim[hidden] { display: none; }
   @keyframes fade { from { opacity: 0; } }
+  /* Opaque, for the same reason the sleep timer is: this is a panel you read
+     and type into, and it was still wearing the dark translucent skin from
+     before the paper palette — a whole room board legible straight through a
+     cue's own list of rooms. Glass is for chrome you look past. */
   .sheet {
     width: min(540px, 100%); max-height: min(680px, 88vh); display: flex; flex-direction: column;
-    border-radius: 24px; border: 1px solid var(--edge-up); background: rgba(22,28,38,.40);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    box-shadow: inset 0 1px 0 var(--lip), 0 40px 80px -28px rgba(0,0,0,.75);
+    border-radius: 24px; border: 1px solid var(--line); background: #fbf7f0;
+    box-shadow: 0 40px 80px -26px rgba(24,20,16,.55);
     animation: lift .3s cubic-bezier(.2,.8,.3,1) both;
   }
   @keyframes lift { from { opacity: 0; transform: translateY(12px) scale(.985); } }
@@ -3435,7 +3476,7 @@ const HTML = /* html */ `<!doctype html>
   .sheet-btn:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .sheet-btn:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
   .sheet-btn.go { background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500; }
-  .sheet-btn.go:hover { color: var(--base); background: #fff; }
+  .sheet-btn.go:hover { color: var(--base); background: #443b34; border-color: #443b34; }
   .sheet-btn.danger { margin-left: auto; }
   .sheet-btn.danger:hover, .sheet-btn.danger.armed { color: var(--clay); border-color: var(--clay); }
 
@@ -3444,9 +3485,11 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; left: 50%; bottom: 26px; z-index: 60;
     transform: translate(-50%, 180%); visibility: hidden; opacity: 0;
     max-width: min(92vw, 440px); padding: 13px 18px;
-    background: rgba(22,28,38,.42); border: 1px solid var(--edge-up); border-radius: 14px;
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    box-shadow: inset 0 1px 0 var(--lip), 0 24px 50px -20px rgba(0,0,0,.7);
+    /* Opaque, like the sheet and the sleep timer: this is a sentence you have
+       about three seconds to read, over whatever the photograph happens to be
+       doing under it. */
+    background: #fbf7f0; border: 1px solid var(--line); border-radius: 14px;
+    box-shadow: 0 24px 50px -20px rgba(24,20,16,.5);
     font-size: 13.5px; color: var(--ink);
     transition: transform .34s cubic-bezier(.2,.8,.3,1), opacity .22s, visibility .34s;
   }
@@ -3463,6 +3506,84 @@ const HTML = /* html */ `<!doctype html>
 
   .enter { animation: rise .34s cubic-bezier(.2,.8,.3,1) both; }
   @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+
+  /* ══ it should behave like a thing, not a page ═════════════════════════
+     What separates an app from a web page is almost entirely the hundred
+     milliseconds after a finger lands. A real control moves under the press,
+     takes longer coming back than it took going down, arrives rather than
+     appears, and never shows a browser artefact. None of that is default, and
+     every one of them is cheap. */
+
+  /* No 300ms wait for a second tap, and no pinch-zoom starting from a
+     mis-hit. A page you can accidentally zoom never feels installed. */
+  body, button, .tile, .cue, .barcol, .setting, .pick { touch-action: manipulation; }
+  /* A drag along a slider belongs to the slider. Without this the phone
+     claims it as a scroll the moment it wanders a few pixels off-axis. */
+  .slider, .strip { touch-action: none; }
+  /* Momentum inside the boards, and no rubber-band handing the gesture to
+     the page behind once a list hits its end. */
+  #stack, .sheet-body, .rail, .cues, .settings-row {
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  }
+
+  /* ── the press ───────────────────────────────────────────────────────
+     Down in 60ms, back in 240 on a curve that overshoots slightly. The
+     asymmetry is the whole trick: symmetrical motion reads as an animation,
+     asymmetrical motion reads as weight.
+     The transitions are restated in full rather than added to, because
+     transition is a shorthand and a second declaration would silently drop
+     the colour fades these controls already had. */
+  .seg, .step, .mins button, .scopes button, .sheet-btn, .note-do, .chip {
+    transition: color .18s, background .18s, border-color .18s, filter .16s,
+                transform .24s cubic-bezier(.22,.94,.3,1);
+  }
+  .pull { transition: color .18s, background .18s,
+                      transform .24s cubic-bezier(.22,.94,.3,1); }
+  .key  { transition: background .2s,
+                      transform .24s cubic-bezier(.22,.94,.3,1); }
+  .quick button { transition: color .18s, background .18s, border-color .18s,
+                              transform .24s cubic-bezier(.22,.94,.3,1); }
+  .barcol { transition: transform .24s cubic-bezier(.22,.94,.3,1); }
+
+  .seg:active, .step:active:not(:disabled), .pull:active, .sheet-btn:active,
+  .note-do:active, .mins button:active, .scopes button:active,
+  .quick button:active:not(:disabled), .chip:active, .key:active:not(:disabled) {
+    transform: scale(.93); transition-duration: .06s;
+  }
+  .tab:active, .cue:active, .barcol:active, .setting:active, .pick:active {
+    transform: scale(.972); transition-duration: .06s;
+  }
+  /* A tile is pressed by its face. Its key and its sliders are their own
+     controls sitting on top, and the pane must stay still under them or a
+     brightness drag would shrink the thing being dragged. */
+  @supports selector(:has(*)) {
+    .tile:has(.tile-body:active, .gangbody:active) { transform: scale(.982); }
+  }
+
+  /* A range thumb that does not answer the finger is the clearest tell that
+     this is an <input>. It swells while held, like a control being gripped. */
+  .slider:active::-webkit-slider-thumb { transform: scale(1.5); }
+  .slider:active::-moz-range-thumb { transform: scale(1.5); }
+
+  /* The strips are the sliders you actually touch — the range input inside is
+     invisible — and their fill carried a 300ms width transition, so the light
+     arrived a third of a second after the finger. Nothing gives a page away
+     faster than a control the hand can outrun. While a strip is being dragged
+     it is driven directly, and the handle thickens so the grip is visible. */
+  .strip.dragging .strip-fill { transition: background .4s; }
+  .strip.dragging .strip-hand { width: 3px; opacity: .92; }
+  .strip.dragging { border-color: var(--line-up, var(--edge-up)); }
+
+  /* ── arriving ────────────────────────────────────────────────────────
+     A board that replaces itself all at once is a page load. Dealt in, one
+     card every 26ms, it is a screen being built — and the direction says
+     which way you moved through the house: forward slides in from the right,
+     back from the left, the way every navigation stack on a phone does. */
+  #stack.push > * { animation: dealt-r .38s cubic-bezier(.2,.86,.28,1) both; }
+  #stack.pop  > * { animation: dealt-l .38s cubic-bezier(.2,.86,.28,1) both; }
+  @keyframes dealt-r { from { opacity: 0; transform: translate3d(26px, 0, 0); } }
+  @keyframes dealt-l { from { opacity: 0; transform: translate3d(-26px, 0, 0); } }
+  #stack.dealt > .enter { animation: rise .42s cubic-bezier(.2,.86,.28,1) both; }
 
   /* ── narrow ──────────────────────────────────────────────────────────── */
   /* ── the phone ───────────────────────────────────────────────────────── */
@@ -3545,21 +3666,35 @@ const HTML = /* html */ `<!doctype html>
   /* ── sleep timer ───────────────────────────────────────────────────────
      The thing you want while already in bed, so it is reachable without
      going anywhere: a small panel, never a page. */
+  /* ── the sleep timer ─────────────────────────────────────────────────
+     This was still wearing the old dark palette *and* it was translucent, so
+     the room names behind it read straight through its own room names — two
+     lists of the same words on top of each other. A panel you make a choice
+     in has to be opaque; glass is for chrome you look past, not for a dialog
+     you look at. It gets a veil behind it as well, so the board recedes and
+     the panel is plainly the thing in front. */
   .timerpop {
     position: fixed; z-index: 46; right: 18px; bottom: 18px;
     width: min(330px, calc(100vw - 36px));
-    padding: 15px; border-radius: 16px;
-    background: rgba(14,17,23,.52); border: 1px solid var(--edge-up);
-    backdrop-filter: var(--lens);
-    -webkit-backdrop-filter: var(--lens);
-    box-shadow: var(--cast);
+    padding: 15px; border-radius: 18px;
+    background: #fbf7f0; border: 1px solid var(--line);
+    box-shadow: 0 30px 60px -22px rgba(24,20,16,.5), var(--cast);
+    animation: pop-in .26s cubic-bezier(.2,.9,.3,1) both;
   }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
   .timerpop[hidden] { display: none; }
+  .popveil {
+    position: fixed; inset: 0; z-index: 44;
+    background: rgba(28,24,20,.28);
+    backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+    animation: fade .2s ease both;
+  }
+  .popveil[hidden] { display: none; }
   .timerpop h3 { margin: 0 0 2px; font-size: 13px; font-weight: 500; color: var(--ink); }
   .timerpop p { margin: 0 0 11px; font-size: 12px; color: var(--faint); }
   .scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 11px; }
   .scopes button {
-    font: inherit; font-size: 12px; color: var(--faint); cursor: pointer;
+    font: inherit; font-size: 12px; color: var(--soft); cursor: pointer;
     padding-top: 7px; padding-right: 11px; padding-bottom: 7px; padding-left: 11px;
     border-radius: 9px; background: transparent; border: 1px solid var(--edge);
   }
@@ -3728,6 +3863,11 @@ const HTML = /* html */ `<!doctype html>
 
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
+    /* A board sliding in from 26px to the right must not widen the document
+       for the two frames it is in flight. Clip rather than hidden, which
+       would make the body a scroll container and break the sticky status
+       line above it. */
+    html, body { overflow-x: clip; }
     body { display: block; min-height: 100%; padding-top: 0; }
     /* Clear the thumb bar so the last tile is never trapped under it. */
     /* Clearance for the floating pill: its own height, the gap it hangs on,
@@ -3768,6 +3908,37 @@ const HTML = /* html */ `<!doctype html>
     .quick button.on { color: var(--ink); border-color: var(--edge-up); background: var(--pane-up); }
 
     .timerpop { left: 12px; right: 12px; width: auto; bottom: calc(80px + env(safe-area-inset-bottom)); }
+    /* Clear of the thumb bar, which it was landing on top of. */
+    .note { bottom: calc(88px + env(safe-area-inset-bottom)); }
+
+    /* ── the sheet, as a phone does sheets ───────────────────────────────
+       A dialog floating in the middle of a phone screen is a web page's idea
+       of a dialog. Every app on the device does the same thing instead: the
+       panel comes up from the bottom edge, keeps its top corners round and
+       loses its bottom ones because there is no bottom, wears a grab handle,
+       and can be thrown back down. The handle is not decoration — it is the
+       only thing that says the drag is available. */
+    .scrim { place-items: end stretch; padding: 0; }
+    .sheet {
+      width: 100%; max-height: 92dvh;
+      border-radius: 24px 24px 0 0; border-bottom: 0;
+      padding-bottom: env(safe-area-inset-bottom);
+      animation: sheet-up .36s cubic-bezier(.2,.9,.28,1) both;
+      transform: translateY(var(--drag, 0px));
+    }
+    @keyframes sheet-up { from { transform: translateY(100%); } }
+    /* While a finger is on it the sheet is driven directly, not animated. */
+    .scrim.gripped .sheet { animation: none; transition: none; }
+    .scrim.settling .sheet { animation: none; transition: transform .3s cubic-bezier(.2,.9,.28,1); }
+    .scrim.closing { animation: fade .24s ease reverse both; }
+    .scrim.closing .sheet { animation: none; transition: transform .26s cubic-bezier(.4,0,.7,.2); }
+
+    .sheet-head { padding-top: 28px; position: relative; touch-action: none; }
+    .sheet-head input, .sheet-head button { touch-action: auto; }
+    .sheet-head::before {
+      content: ''; position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+      width: 40px; height: 4px; border-radius: 2px; background: var(--line-up, var(--edge-up));
+    }
 
     /* The thumb bar already carries all-off and find, so the top bar drops both
        rather than saying everything twice. */
@@ -3991,6 +4162,11 @@ const HTML = /* html */ `<!doctype html>
       <div class="index-sec" id="sectimer">
         <div class="legend">Sleep</div>
         <p class="roomnote" id="timerstate">No timer running</p>
+        <!-- Setting a timer took one tap from the thumb bar; calling it off
+             took finding the timer sheet, and inside a room on a phone the
+             sheet is not even in the bar. Something that switches the lights
+             off while you are in bed has to be one tap to stop. -->
+        <button class="pull timerstop" id="timerstop" type="button" hidden>Cancel it</button>
       </div>
       <div class="index-sec" id="secsync">
         <p class="roomnote" id="syncline"></p>
@@ -4066,6 +4242,7 @@ const HTML = /* html */ `<!doctype html>
   <button type="button" class="qmin" data-min="60">60 min</button>
 </nav>
 
+<div class="popveil" id="popveil" hidden></div>
 <div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
   <h3>Sleep timer</h3>
   <p id="timerwhy">Lights off by themselves, later. The fan and AC keep running.</p>
@@ -4186,8 +4363,17 @@ const tintOf = (d) => {
   if (!d.is_tunable) return 'var(--warm)';
   return 'color-mix(in oklab, var(--warm) ' + Math.round(d.tune) + '%, var(--cool))';
 };
+/* Colour temperature has no unit anybody reads off a scale — nobody has an
+   opinion about 68. They have a strong opinion about candlelight. So the
+   number is never the label: the strip says what the light *is*, and carries
+   the number after it for anyone setting it by hand. Seven steps rather than
+   five, because the strip changes its word as you drag and four bands over a
+   hundred points means the label sits still for a quarter of the travel. */
 const warmthWord = (t) =>
-  t == null ? '' : t < 20 ? 'cool' : t < 42 ? 'soft white' : t < 64 ? 'neutral' : t < 84 ? 'warm' : 'candle';
+  t == null ? '' : t < 12 ? 'daylight' : t < 26 ? 'cool' : t < 40 ? 'soft white'
+    : t < 56 ? 'neutral' : t < 70 ? 'warm white' : t < 86 ? 'amber' : 'candle';
+// The same word, dressed for a strip label: CANDLE · 92
+const warmthLabel = (t) => warmthWord(t).toUpperCase() + ' · ' + Math.round(t);
 
 /* ───────────────────────────────────────────────────────── loading state */
 
@@ -4486,7 +4672,21 @@ function roomTint(on) {
   return 'color-mix(in oklab, var(--warm) ' + Math.round(t) + '%, var(--cool))';
 }
 
+/* Which way the next board should arrive from.
+ *
+ * Replacing a board's contents in place is a page load: everything is simply
+ * different the next frame. A phone never does that — going into a room comes
+ * from the right, coming back out from the left — and that direction is the
+ * only thing telling you whether you went deeper or backed out. Set here
+ * rather than in drawField(), because drawField also runs on every keystroke
+ * of a search and on the fifteen-second refresh, and neither of those is a
+ * move through the house. */
+let navFrom = null;
+
 function go(view, room) {
+  const same = state.view === view && state.room === (room || null);
+  navFrom = same ? null : view === 'room' ? 'push' : 'pop';
+  if (!same) tick_haptic(6);
   state.view = view;
   state.room = room || null;
   if (state.q) { state.q = ''; el('#seek').value = ''; }
@@ -4642,10 +4842,30 @@ function drawField() {
   const drawn = state.q ? fillSearch(stack)
     : state.view === 'room' ? fillRoom(stack, state.room)
     : fillHouse(stack);
+  dealIn(stack);
   fitTiles();
   watchScroll();
   wheelToBoard();
   return drawn;
+}
+
+/* Deal the board in rather than switching it on.
+ *
+ * One card every 26ms, capped at ten so a fourteen-circuit room does not take
+ * half a second to finish arriving, and sliding in from whichever side the
+ * move came from. The cap matters more than the interval: an uncapped stagger
+ * makes long rooms feel slower than short ones, which is backwards. */
+function dealIn(stack) {
+  stack.classList.remove('push', 'pop');
+  if (!navFrom) return;
+  const dir = navFrom;
+  navFrom = null;
+  void stack.offsetWidth;                 // restart the animation, do not resume it
+  stack.classList.add(dir);
+  let i = 0;
+  for (const kid of stack.children) {
+    kid.style.animationDelay = Math.min(i++, 10) * 26 + 'ms';
+  }
 }
 
 // The house is a board of rooms.
@@ -4892,7 +5112,7 @@ function circuitTile(d) {
 /* A strip rather than a track. The colour one carries its value in the label,
    since warmth has no unit anybody reads off a scale. */
 function stripLabel(d, key) {
-  return key === 'level' ? 'BRIGHTNESS' : 'WARM ' + Math.round(d.tune);
+  return key === 'level' ? 'BRIGHTNESS' : warmthLabel(d.tune);
 }
 
 function slider(d, key) {
@@ -5012,7 +5232,7 @@ function paintGang(tile) {
     const strip = input.closest('.strip');
     if (strip) {
       strip.style.setProperty('--at', v + '%');
-      strip.querySelector('.strip-label').textContent = k === 'level' ? 'BRIGHTNESS' : 'WARM ' + v;
+      strip.querySelector('.strip-label').textContent = k === 'level' ? 'BRIGHTNESS' : warmthLabel(v);
     }
   }
 
@@ -5043,7 +5263,7 @@ function gangSlider(tile, key) {
   input.value = start;
   wrap.style.setProperty('--at', start + '%');
   wrap.querySelector('.strip-label').textContent =
-    key === 'level' ? 'BRIGHTNESS' : 'WARM ' + start;
+    key === 'level' ? 'BRIGHTNESS' : warmthLabel(start);
   wrap.appendChild(input);
   input.setAttribute('aria-label',
     'All COBs ' + (key === 'level' ? 'brightness' : 'warmth, 0 cool to 100 warm'));
@@ -5056,7 +5276,7 @@ function gangSlider(tile, key) {
       paint(d);                                  // the room's own tiles follow
     }
     wrap.style.setProperty('--at', v + '%');
-    wrap.querySelector('.strip-label').textContent = key === 'level' ? 'BRIGHTNESS' : 'WARM ' + v;
+    wrap.querySelector('.strip-label').textContent = key === 'level' ? 'BRIGHTNESS' : warmthLabel(v);
     if (key === 'level') tick();
     paintGang(tile);
     queueGang(tile, key);
@@ -5117,7 +5337,7 @@ function stateWord(d) {
   if (d.is_ac) return 'HUB LAST SENT ' + (d.status ? 'ON' : 'OFF');
   if (!d.status) return 'OFF';
   if (d.is_fan) return 'TURNING';
-  if (d.is_dimmable) return d.level + '%' + (d.is_tunable ? ' · WARM ' + Math.round(d.tune) : '');
+  if (d.is_dimmable) return d.level + '%' + (d.is_tunable ? ' · ' + warmthWord(d.tune).toUpperCase() : '');
   return 'ON';
 }
 
@@ -5618,8 +5838,31 @@ function openSheet(cue) {
   drawSheet();
 }
 
+/* ── dismissing a sheet ───────────────────────────────────────────────────
+   On a phone the sheet comes up from the bottom edge, so it has to go back
+   down the same way; snapping it out of existence is the one remaining thing
+   that gives the whole page away as a document. On a wide screen the fade it
+   already had is right, so this costs nothing there. */
+const onPhone = () => window.matchMedia('(max-width: 860px)').matches;
+
+function hideScrim(scrim, after) {
+  const done = () => {
+    scrim.hidden = true;
+    scrim.classList.remove('gripped', 'settling', 'closing');
+    const sheet = scrim.querySelector('.sheet');
+    if (sheet) sheet.style.removeProperty('--drag');
+    if (after) after();
+  };
+  const sheet = scrim.querySelector('.sheet');
+  if (!onPhone() || !sheet) return done();
+  scrim.classList.remove('gripped', 'settling');
+  scrim.classList.add('closing');
+  sheet.style.setProperty('--drag', Math.ceil(sheet.getBoundingClientRect().height) + 'px');
+  setTimeout(done, 260);
+}
+
 function closeSheet() {
-  el('#scrim').hidden = true;
+  hideScrim(el('#scrim'));
   sheetCue = null;
   openStep = null;
   const danger = el('#sheetdelete');
@@ -6301,8 +6544,8 @@ async function drawShots() {
 drawShots();
 
 el('#setbg').onclick = () => { el('#bgscrim').hidden = false; drawBackdrops(); };
-el('#bgdone').onclick = () => { el('#bgscrim').hidden = true; };
-el('#bgscrim').addEventListener('click', (e) => { if (e.target === el('#bgscrim')) el('#bgscrim').hidden = true; });
+el('#bgdone').onclick = () => hideScrim(el('#bgscrim'));
+el('#bgscrim').addEventListener('click', (e) => { if (e.target === el('#bgscrim')) hideScrim(el('#bgscrim')); });
 
 el('#bgfile').addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
@@ -6577,6 +6820,16 @@ if (window.ResizeObserver) {
   }
 }
 
+async function cancelTimers() {
+  const running = auto.timers || [];
+  if (!running.length) return;
+  await Promise.all(running.map(t =>
+    fetch('/api/timers/' + t.id, { method: 'DELETE' }).catch(() => {})));
+  tick_haptic(9);
+  note(running.length === 1 ? 'Timer cancelled.' : running.length + ' timers cancelled.');
+  loadAuto();
+}
+
 function drawTimers() {
   const state_ = el('#timerstate');
   if (state_) {
@@ -6584,6 +6837,12 @@ function drawTimers() {
     state_.textContent = t
       ? Math.max(1, Math.round(t.seconds_left / 60)) + ' MIN LEFT · ' + (t.label || 'THE HOUSE').toUpperCase()
       : 'No timer running';
+  }
+  const stop = el('#timerstop');
+  if (stop) {
+    const n = (auto.timers || []).length;
+    stop.hidden = !n;
+    stop.textContent = n > 1 ? 'Cancel all ' + n : 'Cancel it';
   }
   const host = el('#timerrunning');
   host.innerHTML = '';
@@ -6661,8 +6920,10 @@ function pickScope(room) {
 }
 function openTimer(open) {
   timerpop.hidden = !open;
+  el('#popveil').hidden = !open;
   el('#qtimer').setAttribute('aria-expanded', String(open));
   if (open) {
+    tick_haptic(6);
     // Start on the room being looked at — usually the one being gone to bed in.
     if (state.view === 'room' && state.room) timerScope = state.room;
     else if (!timerScope || !rooms().includes(timerScope)) timerScope = rooms()[0] || null;
@@ -6704,6 +6965,7 @@ for (const b of document.querySelectorAll('.qmin')) {
 }
 
 el('#qtimer').onclick = () => openTimer(timerpop.hidden);
+el('#timerstop').onclick = cancelTimers;
 document.addEventListener('click', (e) => {
   if (timerpop.hidden) return;
   if (!timerpop.contains(e.target) && !el('#qtimer').contains(e.target)) openTimer(false);
@@ -6773,6 +7035,70 @@ loadAuto();
     next === 'house' ? go('house') : go('room', next);
   }, { passive: true });
 })();
+
+/* ── a strip knows when it is being held ───────────────────────────────────
+   The visible slider is the strip; the range input inside it is invisible, so
+   the input's own active state is not something CSS can reach from the strip
+   in every engine. One delegated pair of listeners marks the strip instead —
+   which drops the fill's 300ms width transition for the duration of the drag,
+   so the light tracks the finger instead of chasing it, and thickens the
+   handle so the grip is visible. Capturing, because the range input stops the
+   event from bubbling in some browsers. */
+/* ── a sheet you can throw back down ──────────────────────────────────────
+   A panel that can only be dismissed by finding its Close button is a dialog;
+   one that follows the thumb and can be flicked away is a sheet. Both the
+   distance and the speed count, because the two gestures people actually make
+   are a slow deliberate push and a quick flick, and a distance-only rule
+   ignores the second one. */
+(function sheetDrag() {
+  let grip = null;
+  document.addEventListener('pointerdown', (e) => {
+    if (!onPhone() || !e.target.closest) return;
+    const head = e.target.closest('.sheet-head');
+    // The head carries the cue's name field and its buttons; those are
+    // controls, not a handle.
+    if (!head || e.target.closest('input, textarea, button, a')) return;
+    const scrim = head.closest('.scrim');
+    const sheet = head.closest('.sheet');
+    if (!scrim || !sheet) return;
+    grip = { scrim, sheet, from: e.clientY, y: 0, at: performance.now() };
+    scrim.classList.add('gripped');
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!grip) return;
+    // Upward is resisted rather than refused: a sheet that stops dead reads
+    // as broken, one that gives a quarter reads as attached to something.
+    const raw = e.clientY - grip.from;
+    grip.y = raw > 0 ? raw : raw / 4;
+    grip.sheet.style.setProperty('--drag', grip.y + 'px');
+  });
+  const letGo = () => {
+    if (!grip) return;
+    const g = grip;
+    grip = null;
+    g.scrim.classList.remove('gripped');
+    const flick = g.y / Math.max(1, performance.now() - g.at);   // px per ms
+    if (g.y > 110 || flick > 0.55) {
+      if (g.scrim.id === 'scrim') closeSheet(); else hideScrim(g.scrim);
+      return;
+    }
+    g.scrim.classList.add('settling');
+    g.sheet.style.setProperty('--drag', '0px');
+    setTimeout(() => g.scrim.classList.remove('settling'), 320);
+  };
+  document.addEventListener('pointerup', letGo);
+  document.addEventListener('pointercancel', letGo);
+})();
+
+const dropGrip = () => {
+  for (const s of document.querySelectorAll('.strip.dragging')) s.classList.remove('dragging');
+};
+document.addEventListener('pointerdown', (e) => {
+  const strip = e.target.closest && e.target.closest('.strip');
+  if (strip) strip.classList.add('dragging');
+}, true);
+document.addEventListener('pointerup', dropGrip, true);
+document.addEventListener('pointercancel', dropGrip, true);
 
 // Keep up with the house: poll while the tab is in view, re-read on return.
 setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
