@@ -3579,7 +3579,9 @@ const HTML = /* html */ `<!doctype html>
   @media (min-width: 861px) {
     .shell {
       max-width: 1500px;
-      padding-top: 104px; padding-bottom: 104px;
+      /* 104px of it was clearance for a pill that floated over the page. The
+         masthead is in the page now, so that space was just a hole above it. */
+      padding-top: clamp(16px, 2.2vh, 26px); padding-bottom: 104px;
       gap: 0;
     }
 
@@ -3591,7 +3593,10 @@ const HTML = /* html */ `<!doctype html>
        the page with the name at one end and all-off at the other; a centred
        pill left the two ends of the bar hanging in the middle of the screen. */
     .plate {
-      position: static; transform: none; z-index: 40; width: 100%; max-width: none;
+      /* Sticky rather than static: it stays at the top of the window when the
+         page moves, which is what it did as a floating pill and the one thing
+         worth keeping from that. */
+      position: sticky; top: 0; transform: none; z-index: 40; width: 100%; max-width: none;
       margin-bottom: 16px;
       padding-top: 10px; padding-right: 14px; padding-bottom: 10px; padding-left: 20px;
       border-radius: 16px; gap: 18px;
