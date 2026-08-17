@@ -2932,10 +2932,34 @@ const HTML = /* html */ `<!doctype html>
      lamp is doing, so it is the thing that has to stand down. */
   .tile:not(.on) .strip-fill { opacity: .30; }
   .tile:not(.on) .warmstrip { opacity: .38; }
-  .strip-label { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
-                 z-index: 2; color: var(--ink); pointer-events: none; }
-  .strip-hand { position: absolute; top: 8px; bottom: 8px; width: 2px; z-index: 2;
-                left: var(--at, 0%); background: var(--ink); opacity: .5; }
+  /* The label starts clear of where the knob rests. A dark lamp sits at 0, and
+     that is most of the house most of the time, so the one position worth
+     keeping uncluttered is the left end. Crossing the label mid-travel is
+     unavoidable for a handle that runs the whole width — the label stands down
+     while a drag is live instead. */
+  .strip-label { position: absolute; left: 38px; top: 50%; transform: translateY(-50%);
+                 z-index: 2; color: var(--ink); pointer-events: none;
+                 transition: opacity .18s; }
+  .strip.dragging .strip-label { opacity: .3; }
+  /* A knob, not a hairline. This was a 2px rule the width of a pencil stroke:
+     nothing to aim a thumb at, so a drag began by stabbing the track and the
+     value jumped before the finger had hold of anything. It is a round handle
+     now, light against the fill with a dark rim so it reads on the amber end
+     and the cool end alike.
+     The position is clamped rather than set straight to --at, because the strip
+     clips its overflow to keep the fill inside those rounded ends — a knob at
+     0% or 100% would be sliced in half by the very corner that makes the
+     control look like a control. */
+  .strip-hand {
+    position: absolute; top: 50%; z-index: 2;
+    left: clamp(13px, var(--at, 0%), calc(100% - 13px));
+    width: 24px; height: 24px; margin-left: -12px; transform: translateY(-50%);
+    border-radius: 50%; background: #fdfaf5;
+    border: 1.5px solid color-mix(in oklab, var(--ink) 62%, transparent);
+    box-shadow: 0 1px 3px rgba(43,38,34,.30), 0 4px 10px -4px rgba(43,38,34,.34);
+    transition: transform .16s cubic-bezier(.22,.94,.3,1), border-color .2s;
+  }
+  .tile:not(.on) .strip-hand { border-color: color-mix(in oklab, var(--soft) 70%, transparent); }
   .strip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0;
                  margin: 0; cursor: pointer; }
 
@@ -3372,8 +3396,14 @@ const HTML = /* html */ `<!doctype html>
      climbs from there. The paper token is deliberately not used for the pane:
      it is 80% opaque, so mixing a tint into it lost most of the tint to the
      photograph behind. The lit pane is solid. */
+  /* The pane carries less of the tint than it used to. At 62–86% a lit amber
+     card was a slab of paint: harsh to look at, and it took the secondary text
+     down with it — measured 1.65:1 on the reading under a room name, against
+     the 4.5 it needs. The signal does not live in the flood. It lives in the
+     edge and the two halos below, which are untouched, so a lit card still
+     reads as lit from across the room while its own words stay readable. */
   .tile.on {
-    background: color-mix(in oklab, var(--tint) calc(62% + var(--lit) * 24%), #fdfaf5);
+    background: color-mix(in oklab, var(--tint) calc(42% + var(--lit) * 18%), #fdfaf5);
     border-color: color-mix(in oklab, var(--tint) 92%, var(--line));
     box-shadow:
       0 0 0 1px color-mix(in oklab, var(--tint) calc(34% + var(--lit) * 26%), transparent),
@@ -3437,6 +3467,19 @@ const HTML = /* html */ `<!doctype html>
      sat *after* the one that said ink, so the state line quietly lost — the
      same half-live-CSS trap as the search field and --base before it. */
   .tile.on .tile-read, .tile.on .state { color: var(--ink); font-weight: 500; }
+  /* Everything secondary on a lit card was still drawn in the greys that were
+     chosen against paper, and on a tinted pane they disappeared — the reading
+     under a room name measured 1.65:1 and the corner button 3.14:1. Tied to the
+     lamp's own colour rather than set to flat black, so a lit card still reads
+     as one object. */
+  .tile.on .sub { color: color-mix(in oklab, var(--ink) 76%, var(--tint)); }
+  .tile.on .big.dark { color: color-mix(in oklab, var(--ink) 76%, var(--tint)); }
+  .tile.on .chip {
+    color: color-mix(in oklab, var(--ink) 82%, var(--tint));
+    background: color-mix(in oklab, #fdfaf5 72%, var(--tint));
+    border-color: color-mix(in oklab, var(--ink) 34%, transparent);
+  }
+  .tile.on .chip:hover { color: var(--ink); border-color: color-mix(in oklab, var(--ink) 58%, transparent); }
   .tile:not(.on) .state, .tile:not(.on) .tile-read { color: var(--faint); }
 
   /* the switch: a dot that takes the colour of its own lamp. No lever, no lens. */
@@ -3791,7 +3834,11 @@ const HTML = /* html */ `<!doctype html>
      faster than a control the hand can outrun. While a strip is being dragged
      it is driven directly, and the handle thickens so the grip is visible. */
   .strip.dragging .strip-fill { transition: background .4s; }
-  .strip.dragging .strip-hand { width: 3px; opacity: .92; }
+  .strip.dragging .strip-hand {
+    transform: translateY(-50%) scale(1.14);
+    border-color: var(--ink);
+    box-shadow: 0 2px 5px rgba(43,38,34,.34), 0 7px 16px -5px rgba(43,38,34,.42);
+  }
   .strip.dragging { border-color: var(--line-up, var(--edge-up)); }
 
   /* ── arriving ────────────────────────────────────────────────────────
@@ -4385,21 +4432,24 @@ const HTML = /* html */ `<!doctype html>
     .tiles .tile.cobmember .tile-body {
       position: absolute; inset: 0; padding: 13px 74px 13px 13px;
     }
+    /* The rails have to widen with the handle: a 23px knob inside a 27px rail
+       was clipped on both sides and back to being hard to catch, which is the
+       whole reason the handle grew. */
     .tiles .tile.cobmember .controls {
-      position: absolute; top: 14px; bottom: 14px; right: 12px; left: auto;
-      width: 62px; display: block; padding: 0; margin: 0;
+      position: absolute; top: 14px; bottom: 14px; right: 10px; left: auto;
+      width: 76px; display: block; padding: 0; margin: 0;
       --vrail: 104px;                     /* the tile's height, less the insets */
     }
     .tiles .tile.cobmember .strip {
       position: absolute; top: 0; left: 0; margin: 0;
-      width: var(--vrail); height: 27px; border-radius: 9px;
+      width: var(--vrail); height: 34px; border-radius: 11px;
       transform-origin: 0 0; transform: rotate(-90deg) translateX(-100%);
     }
-    .tiles .tile.cobmember .strip:nth-of-type(2) { left: 35px; }
+    .tiles .tile.cobmember .strip:nth-of-type(2) { left: 42px; }
     /* Living's COBs dim but do not tune, so they get one rail — which then has
        to sit where the second one would, against the right edge, or the card
        reads as a control with a piece missing. */
-    .tiles .tile.cobmember .strip:only-of-type { left: 35px; }
+    .tiles .tile.cobmember .strip:only-of-type { left: 42px; }
     /* The key cannot stay in the top-right corner — the rails are there now.
        It goes to the foot of the left column, under the reading. */
     .tiles .tile.cobmember .ring {
