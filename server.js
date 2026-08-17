@@ -4101,7 +4101,7 @@ const HTML = /* html */ `<!doctype html>
 
   /* One line, and it is the whole control: pressing it opens the schedules. */
   .whatsnext {
-    display: none; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+    display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
     margin: 10px 0 0; padding: 9px 14px; border-radius: 12px; cursor: pointer;
     border: 1px solid var(--line); background: var(--paper); color: var(--ink);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
@@ -4122,27 +4122,6 @@ const HTML = /* html */ `<!doctype html>
   .wn-in { margin-left: auto; flex: none; font-family: var(--mono); font-size: 9.5px;
            letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
 
-  /* ── what's on ───────────────────────────────────────────────────────
-     A chip is one lit circuit and pressing it puts that circuit out. The dot
-     carries the lamp's own colour, so the rail reads as the house's light
-     rather than as a list of words. */
-  .litchip {
-    display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto;
-    padding: 9px 13px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
-    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
-    font: 400 13px/1 var(--sans); white-space: nowrap;
-    transition: border-color .18s, background .18s;
-  }
-  .litchip:hover { border-color: var(--line-up); }
-  .litchip:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
-  .litdot {
-    width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center;
-    background: var(--tint, var(--warm));
-    box-shadow: 0 0 7px color-mix(in oklab, var(--tint, var(--warm)) 70%, transparent);
-  }
-  .litwhere { font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
-              text-transform: uppercase; color: var(--faint); }
 
   .sched-field { padding: 14px 0 4px; border-bottom: 1px solid var(--edge); }
   .sched-field:last-child { border-bottom: 0; }
@@ -4551,16 +4530,10 @@ const HTML = /* html */ `<!doctype html>
     #secrooms .tab .tab-load { display: none; }
     #secrooms .tab.here { background: var(--pane-up); border-color: var(--edge-up); }
 
-    /* A wide screen shows every room's card at once and each carries its own
-       all-off, so putting out one circuit is already two presses from here.
-       What's-on is a phone answer to a phone problem — a board you scroll. */
-    #seclit { display: none !important; }
-
     /* The schedules leave the column for the top bar: at the foot of a list as
        long as you have made it, they were behind a scroll. */
     #secsched { display: none; }
     .plans-btn { display: inline-flex; }
-    .whatsnext { display: flex; }
     /* The air under the bar sits on the board rather than on either of the two
        things above it, so the gap is the same whether or not there is anything
        next — otherwise it changes depth every time a schedule finishes. */
@@ -4749,10 +4722,13 @@ const HTML = /* html */ `<!doctype html>
     /* The room rail goes here too. Choosing a room was already the say-card's
        job (its columns navigate) and the swipe's, so this was the third way to
        do one thing — and it sat in the most expensive 50px on the screen. The
-       wide layout dropped its own copy for the same reason a while back. What's
-       on takes the slot: the one action the house board could not offer. */
+       wide layout dropped its own copy for the same reason a while back.
+       What's-next takes the slot: one line that never grows, and the only
+       place a phone can see the schedules without opening them. A rail of
+       everything lit was tried here first and was worse — twenty chips, and
+       sixteen of them single COBs nobody thinks about one at a time. */
     #secrooms { display: none; }
-    #seclit   { order: 1; }
+    .whatsnext { margin: 0 0 12px; }
     #seccues  { order: 2; }
     #secleft  { order: 3; }
     .field    { order: 4; }
@@ -5083,15 +5059,6 @@ const HTML = /* html */ `<!doctype html>
 
   <main class="board">
     <aside class="index">
-      <!-- On a phone this takes the room rail's place. Picking a room was
-           already the say-card's job and the swipe's, said three ways; what
-           the house board genuinely could not do was put out one lamp you can
-           see from where you are standing without first walking into its
-           room. Each chip is that lamp, and pressing it switches it off. -->
-      <div class="index-sec" id="seclit" hidden>
-        <div class="legend">What's on</div>
-        <div id="litrail"></div>
-      </div>
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
@@ -5681,11 +5648,6 @@ function readout() {
 
   drawHero();
   drawGlance();
-  /* Rebuilt here rather than on its own schedule: readout already runs after
-     every change the page knows about, and a stale list of what is on is the
-     one thing this rail must never show. */
-  drawLit();
-
   /* Moved here from tick(), which does not run on first load — so the sync
      card sat empty until something else in the house moved. Now that the
      section is a card it has to earn one: an empty card is furniture. */
@@ -5744,45 +5706,8 @@ function drawIndex() {
   host.innerHTML = '';
   host.appendChild(tab('house', 'The house'));
   rooms().forEach(room => host.appendChild(tab('room', title(room), room)));
-  drawLit();
 }
 
-/* What is on, as a row of things you can put out.
- *
- * Only on a phone, and only on the house board: in a room the board itself is
- * already the list of that room's circuits, so this would be the same thing
- * twice. It hides itself when the house is dark rather than sitting there
- * empty, because a heading over nothing is worse than no heading. */
-function drawLit() {
-  const sec = el('#seclit');
-  const host = el('#litrail');
-  if (!sec || !host) return;
-
-  const on = lit(state.devices).filter(d => !d.is_ac);
-  const show = state.view === 'house' && !state.q && on.length > 0;
-  sec.hidden = !show;
-  if (!show) { host.innerHTML = ''; return; }
-
-  /* Brightest first: the lamp you are most likely to have noticed is the one
-     you are most likely to be reaching for. */
-  const order = [...on].sort((a, b) =>
-    (b.is_dimmable ? b.level : 100) - (a.is_dimmable ? a.level : 100) || natural(a.name, b.name));
-
-  host.innerHTML = '';
-  for (const d of order) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'litchip';
-    b.style.setProperty('--tint', tintOf(d));
-    b.setAttribute('aria-label', 'Switch off ' + pretty(d.name) + ' in ' + title(d.room));
-    b.innerHTML = '<i class="litdot"></i><span class="litname"></span><span class="litwhere"></span>';
-    b.querySelector('.litname').textContent = pretty(d.name);
-    b.querySelector('.litwhere').textContent = title(d.room);
-    b.onclick = () => setDevice(d, false);
-    host.appendChild(b);
-  }
-  markScrollX(host);
-}
 
 function tab(view, name, room) {
   const b = document.createElement('button');
