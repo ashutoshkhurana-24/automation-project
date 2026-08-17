@@ -332,8 +332,17 @@ function scheduleSays(sch) {
   const days = (sch.days || []).length === 7 ? 'every day'
     : (sch.days || []).length ? 'on ' + sch.days.map(d => DAY_NAMES[d]).join(', ')
       : 'never — no days chosen';
-  return `${sch.at} · ${verb} ${what}, ${days}`;
+  const after = sch.off_after ? `, then off after ${offAfterWord(sch.off_after)}` : '';
+  return `${sch.at} · ${verb} ${what}, ${days}${after}`;
 }
+
+/** 90 reads as an hour and a half, not as ninety. */
+const offAfterWord = (m) => {
+  if (!m) return '';
+  if (m < 60) return m + (m === 1 ? ' minute' : ' minutes');
+  const h = m / 60;
+  return (Number.isInteger(h) ? h : h.toFixed(1)) + (h === 1 ? ' hour' : ' hours');
+};
 
 const scheduleList = () => schedules.map(sch => ({
   ...sch,
@@ -347,6 +356,29 @@ async function runSchedule(sch) {
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return fireCue(t.scene);
   return setRecords([t.entry.record], { on: sch.action !== 'off' });
+}
+
+/* Put out whatever this schedule lit, once its time is up.
+ *
+ * Only what it *lit*: a cue is a picture of a room and usually names circuits
+ * to switch off as well as on, and re-sending those would be pointless at best.
+ * So the undo here is "switch off the ones it turned on", not "reverse the
+ * cue" — a schedule that lights the porch at dusk should leave the porch dark
+ * two hours later and touch nothing else. */
+async function runScheduleOff(sch) {
+  const t = scheduleTarget(sch);
+  if (!t) throw new Error('what this schedule points at is gone');
+  if (t.kind === 'device') return setRecords([t.entry.record], { on: false });
+
+  const lit = [];
+  for (const step of t.scene.steps) {
+    const entry = devices.get(step.record_id);
+    if (!entry) continue;
+    const level = step.level != null ? pct(step.level) : (step.on === false ? 0 : 100);
+    if (level > 0) lit.push(entry.record);
+  }
+  if (!lit.length) return 0;
+  return setRecords(lit, { on: false });
 }
 
 /* A schedule fires at most once a day, and only near its time.
@@ -368,6 +400,23 @@ async function tickSchedules() {
   const weekday = now.getDay();
 
   for (const sch of schedules) {
+    /* The auto-off is checked before the enable test on purpose: pausing a
+       schedule after it has already fired should not strand the lights it
+       turned on. Its own timer still has to finish. */
+    if (sch.off_at && Date.now() >= sch.off_at) {
+      sch.off_at = null;
+      saveSchedules();
+      try {
+        await runScheduleOff(sch);
+        console.log(`schedule ${sch.id} auto-off ran`);
+      } catch (err) {
+        console.error(`schedule ${sch.id} auto-off failed:`, err.message);
+        sch.last_error = err.message;
+        saveSchedules();
+      }
+      pushSoon();
+    }
+
     if (!sch.enabled) continue;
     if (!(sch.days || []).includes(weekday)) continue;
     if (sch.fired_on === today) continue;
@@ -377,6 +426,10 @@ async function tickSchedules() {
     if (late < 0 || late > SCHEDULE_GRACE_MIN) continue;
 
     sch.fired_on = today;
+    /* Written as a time rather than a countdown so it survives a restart: a
+       box that reboots an hour into a two-hour timer still puts the lights out
+       on the hour it promised. */
+    sch.off_at = sch.off_after ? Date.now() + sch.off_after * 60000 : null;
     saveSchedules();
     try {
       await runSchedule(sch);
@@ -385,6 +438,7 @@ async function tickSchedules() {
     } catch (err) {
       console.error(`schedule ${sch.id} failed:`, err.message);
       sch.last_error = err.message;
+      sch.off_at = null;
       saveSchedules();
     }
     pushSoon();
@@ -702,7 +756,8 @@ function stateSignature() {
      count as a change — otherwise editing one on a phone pushes nothing and the
      laptop keeps showing yesterday's list until something else moves. */
   parts.push('sch:' + schedules.map(s =>
-    `${s.id}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}${s.target?.id ?? s.target?.record_id}`).join(','));
+    `${s.id}${s.name || ''}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}` +
+    `${s.off_after || 0}${s.target?.id ?? s.target?.record_id}`).join(','));
   return parts.join('|');
 }
 let lastSignature = '';
@@ -1620,14 +1675,37 @@ function readSchedule(body, base) {
   const action = String(body?.action ?? base?.action ?? 'on');
   if (!['on', 'off'].includes(action)) return { error: 'action must be on or off' };
 
+  /* How long after firing to put it out again. Null is the normal case — most
+     schedules are meant to leave the house as they found it and stay. */
+  const rawAfter = body?.off_after === undefined ? (base?.off_after ?? null) : body.off_after;
+  let off_after = null;
+  if (rawAfter !== null && rawAfter !== '' && rawAfter !== false) {
+    off_after = Number(rawAfter);
+    if (!Number.isFinite(off_after) || off_after <= 0 || off_after > 1440) {
+      return { error: 'off_after must be a number of minutes from 1 to 1440, or null' };
+    }
+    off_after = Math.round(off_after);
+  }
+  /* Switching something off and then switching it off again is not a thing. */
+  if (off_after && target.kind === 'device' && action === 'off') {
+    return { error: 'a schedule that switches something off cannot also switch it off later' };
+  }
+
+  /* A name is optional. Left blank the row says what it does instead, which is
+     usually enough — "07:00 Run Morning" needs no title. It earns its keep when
+     two schedules do the same thing for different reasons. */
+  const name = String(body?.name ?? base?.name ?? '').trim().slice(0, 40);
+
   return {
     schedule: {
+      name,
       at,
       days,
       target: target.kind === 'cue'
         ? { kind: 'cue', id: target.id }
         : { kind: 'device', record_id: Number(target.record_id) },
       action,
+      off_after,
       enabled: body?.enabled === undefined ? (base?.enabled ?? true) : !!body.enabled,
     },
   };
@@ -3416,11 +3494,18 @@ const HTML = /* html */ `<!doctype html>
        for a scoped one. In a room: that room's switch and the three durations
        you would actually pick, because a sleep timer is a bedroom thing and
        has no business on the house board. */
-    nav.quick { grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; }
+    /* Plans joins the house bar as a fourth. It stays off the room bar, which
+       is deliberately given over to the three sleep durations — a schedule is
+       a house-level thing, and the room bar is already the one place where
+       what you want is a duration and nothing else. */
+    nav.quick { grid-template-columns: 1.5fr 1fr 1fr 1fr; gap: 5px; }
+    /* Four across leaves the held control narrow enough that its count wrapped
+       to a second line and took the whole bar with it. */
+    nav.quick #qoff span { white-space: nowrap; }
     nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
     nav.quick .qmin { display: none; }
     nav.quick.in-room .qmin { display: flex; }
-    nav.quick.in-room #qtimer, nav.quick.in-room #qfind { display: none; }
+    nav.quick.in-room #qtimer, nav.quick.in-room #qfind, nav.quick.in-room #qplans { display: none; }
     nav.quick .qmin {
       align-items: center; justify-content: center;
       font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
@@ -3975,6 +4060,10 @@ const HTML = /* html */ `<!doctype html>
     padding: 11px 12px; margin-bottom: 7px; cursor: pointer;
     border: 1px solid var(--line); border-radius: 13px;
     background: var(--paper); color: inherit; font: inherit;
+    /* Without the lens this was a translucent film over a photograph, and the
+       words in it were unreadable — a card here has to make its own contrast
+       the way every other card on the page does. */
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     transition: border-color .18s, background .18s, transform .18s;
   }
   .sched:hover { border-color: var(--line-up); background: var(--paper-2); }
@@ -3997,6 +4086,28 @@ const HTML = /* html */ `<!doctype html>
   .sched.gone { border-style: dashed; }
   .sched.gone .sched-what { color: var(--clay); }
   .sched-empty { font-size: 12.5px; color: var(--faint); padding: 4px 2px 10px; }
+
+  /* ── what's on ───────────────────────────────────────────────────────
+     A chip is one lit circuit and pressing it puts that circuit out. The dot
+     carries the lamp's own colour, so the rail reads as the house's light
+     rather than as a list of words. */
+  .litchip {
+    display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto;
+    padding: 9px 13px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    font: 400 13px/1 var(--sans); white-space: nowrap;
+    transition: border-color .18s, background .18s;
+  }
+  .litchip:hover { border-color: var(--line-up); }
+  .litchip:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  .litdot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center;
+    background: var(--tint, var(--warm));
+    box-shadow: 0 0 7px color-mix(in oklab, var(--tint, var(--warm)) 70%, transparent);
+  }
+  .litwhere { font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+              text-transform: uppercase; color: var(--faint); }
 
   .sched-field { padding: 14px 0 4px; border-bottom: 1px solid var(--edge); }
   .sched-field:last-child { border-bottom: 0; }
@@ -4405,6 +4516,11 @@ const HTML = /* html */ `<!doctype html>
     #secrooms .tab .tab-load { display: none; }
     #secrooms .tab.here { background: var(--pane-up); border-color: var(--edge-up); }
 
+    /* A wide screen shows every room's card at once and each carries its own
+       all-off, so putting out one circuit is already two presses from here.
+       What's-on is a phone answer to a phone problem — a board you scroll. */
+    #seclit { display: none !important; }
+
     /* An advisory is one short sentence and two small answers to it. Run the
        full width of the field it put most of a thousand pixels between the
        thing being said and the buttons that answer it, and the eye had to
@@ -4571,7 +4687,13 @@ const HTML = /* html */ `<!doctype html>
        and their chips are sentences rather than names. */
     .board { display: flex; flex-direction: column; }
     .index { display: contents; }
-    #secrooms { order: 1; }
+    /* The room rail goes here too. Choosing a room was already the say-card's
+       job (its columns navigate) and the swipe's, so this was the third way to
+       do one thing — and it sat in the most expensive 50px on the screen. The
+       wide layout dropped its own copy for the same reason a while back. What's
+       on takes the slot: the one action the house board could not offer. */
+    #secrooms { display: none; }
+    #seclit   { order: 1; }
     #seccues  { order: 2; }
     #secleft  { order: 3; }
     .field    { order: 4; }
@@ -4586,10 +4708,13 @@ const HTML = /* html */ `<!doctype html>
 
     /* Schedules stay a list rather than becoming a sideways rail. A row is a
        time, a sentence, the days it runs and a switch — squeezed into a chip
-       none of that survives, and it is not something you fire in passing the
-       way you fire a cue. It sits under the house, where you go looking for it
-       rather than meeting it on the way to the lights. */
+       none of that survives. On a phone the whole section leaves the page for
+       the thumb bar: under the house it sat below a 555px board, which is a
+       long way to scroll for the thing you opened the app to change. */
     #secsched > div:not(.legend) { display: block; overflow: visible; }
+    #secsched { display: none; }
+    #planbody #schedlist { display: block; }
+    #planbody .sched { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
     /* A cue on a phone is a chip: the name is the whole target. The reading and
        the colour swatch are detail for a screen with room to spare. The name
@@ -4879,6 +5004,15 @@ const HTML = /* html */ `<!doctype html>
 
   <main class="board">
     <aside class="index">
+      <!-- On a phone this takes the room rail's place. Picking a room was
+           already the say-card's job and the swipe's, said three ways; what
+           the house board genuinely could not do was put out one lamp you can
+           see from where you are standing without first walking into its
+           room. Each chip is that lamp, and pressing it switches it off. -->
+      <div class="index-sec" id="seclit" hidden>
+        <div class="legend">What's on</div>
+        <div id="litrail"></div>
+      </div>
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
         <div id="tabs"></div>
@@ -4972,6 +5106,12 @@ const HTML = /* html */ `<!doctype html>
     </svg>
     <span id="qtimerword">Timer</span>
   </button>
+  <button type="button" id="qplans" aria-label="Schedules">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18"/>
+    </svg>
+    <span>Plans</span>
+  </button>
   <button type="button" id="qfind" aria-label="Find a circuit">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
       <circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>
@@ -5038,6 +5178,26 @@ const HTML = /* html */ `<!doctype html>
   </div>
 </div>
 
+<!-- ── the schedules, on a phone ─────────────────────────────────────────
+     Under the house they sat below a board 555px tall, which is a long way to
+     scroll for something you came to the app to change. The thumb bar carries
+     them instead, and this is where they live while it is open — the list
+     itself is the very same node as the sidebar's, moved in and moved back,
+     so there is one list in the DOM and no chance of the two disagreeing. -->
+<div class="scrim" id="planscrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="plantitle">
+    <div class="sheet-head">
+      <div class="sheet-eyebrow">The house, ahead of time</div>
+      <p class="sheet-name" id="plantitle">Schedules</p>
+    </div>
+    <div class="sheet-body" id="planbody"></div>
+    <div class="sheet-foot">
+      <button class="sheet-btn go" id="planadd" type="button">Add a schedule</button>
+      <button class="sheet-btn" id="planclose" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── a schedule, opened up ─────────────────────────────────────────────
      Its own sheet rather than a mode of the cue one: a cue is a list of
      circuits and a schedule is a time, a set of days and one thing to do, and
@@ -5046,8 +5206,9 @@ const HTML = /* html */ `<!doctype html>
 <div class="scrim" id="schedscrim" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="schedtitle">
     <div class="sheet-head" id="schedhead">
-      <div class="sheet-eyebrow">Schedule</div>
-      <p class="sheet-name" id="schedtitle">New schedule</p>
+      <div class="sheet-eyebrow" id="schedeyebrow">Schedule</div>
+      <input class="sheet-name" id="schedname" type="text" maxlength="40"
+             placeholder="Name it, or leave it" aria-label="Schedule name">
       <p class="sheet-facts" id="schedsays"></p>
     </div>
     <div class="sheet-body">
@@ -5076,6 +5237,17 @@ const HTML = /* html */ `<!doctype html>
         <div class="seg-row" id="schedaction" hidden>
           <button class="seg" type="button" data-action="on">On</button>
           <button class="seg" type="button" data-action="off">Off</button>
+        </div>
+      </div>
+
+      <div class="sched-field" id="schedafterfield">
+        <span class="sched-lab">Then switch it off again</span>
+        <div class="seg-row" id="schedafter">
+          <button class="seg" type="button" data-after="">Leave it on</button>
+          <button class="seg" type="button" data-after="15">15 min</button>
+          <button class="seg" type="button" data-after="30">30 min</button>
+          <button class="seg" type="button" data-after="60">1 hour</button>
+          <button class="seg" type="button" data-after="120">2 hours</button>
         </div>
       </div>
     </div>
@@ -5436,6 +5608,10 @@ function readout() {
 
   drawHero();
   drawGlance();
+  /* Rebuilt here rather than on its own schedule: readout already runs after
+     every change the page knows about, and a stale list of what is on is the
+     one thing this rail must never show. */
+  drawLit();
 
   const s = state.sync || {};
   let when = 'status unread';
@@ -5483,6 +5659,44 @@ function drawIndex() {
   host.innerHTML = '';
   host.appendChild(tab('house', 'The house'));
   rooms().forEach(room => host.appendChild(tab('room', title(room), room)));
+  drawLit();
+}
+
+/* What is on, as a row of things you can put out.
+ *
+ * Only on a phone, and only on the house board: in a room the board itself is
+ * already the list of that room's circuits, so this would be the same thing
+ * twice. It hides itself when the house is dark rather than sitting there
+ * empty, because a heading over nothing is worse than no heading. */
+function drawLit() {
+  const sec = el('#seclit');
+  const host = el('#litrail');
+  if (!sec || !host) return;
+
+  const on = lit(state.devices).filter(d => !d.is_ac);
+  const show = state.view === 'house' && !state.q && on.length > 0;
+  sec.hidden = !show;
+  if (!show) { host.innerHTML = ''; return; }
+
+  /* Brightest first: the lamp you are most likely to have noticed is the one
+     you are most likely to be reaching for. */
+  const order = [...on].sort((a, b) =>
+    (b.is_dimmable ? b.level : 100) - (a.is_dimmable ? a.level : 100) || natural(a.name, b.name));
+
+  host.innerHTML = '';
+  for (const d of order) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'litchip';
+    b.style.setProperty('--tint', tintOf(d));
+    b.setAttribute('aria-label', 'Switch off ' + pretty(d.name) + ' in ' + title(d.room));
+    b.innerHTML = '<i class="litdot"></i><span class="litname"></span><span class="litwhere"></span>';
+    b.querySelector('.litname').textContent = pretty(d.name);
+    b.querySelector('.litwhere').textContent = title(d.room);
+    b.onclick = () => setDevice(d, false);
+    host.appendChild(b);
+  }
+  markScrollX(host);
 }
 
 function tab(view, name, room) {
@@ -6810,6 +7024,14 @@ function cueNote(cue) {
 const DAY_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const DAY_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+/** 90 reads as an hour and a half, not as ninety. */
+const offAfterWord = (m) => {
+  if (!m) return '';
+  if (m < 60) return m + ' min';
+  const h = m / 60;
+  return (Number.isInteger(h) ? h : h.toFixed(1)) + (h === 1 ? ' hour' : ' hours');
+};
+
 /* Which days, said the way a person would: the two everyday cases get their
    own words because "Mon, Tue, Wed, Thu, Fri" is a list you have to parse. */
 function daysWord(days) {
@@ -6847,13 +7069,20 @@ function drawSchedules() {
     when.className = 'sched-when';
     when.textContent = schedTime(sch.at);
 
+    /* A named schedule leads with its name and explains itself underneath;
+       an unnamed one just says what it does, which is usually plenty. */
     const what = document.createElement('span');
     what.className = 'sched-what';
-    what.textContent = schedWhat(sch);
+    what.textContent = sch.name || schedWhat(sch);
 
     const days = document.createElement('span');
     days.className = 'sched-days';
-    days.textContent = daysWord(sch.days) + (sch.enabled ? '' : ' · paused');
+    days.textContent = [
+      sch.name ? schedWhat(sch) : '',
+      daysWord(sch.days),
+      sch.off_after ? 'off after ' + offAfterWord(sch.off_after) : '',
+      sch.enabled ? '' : 'paused',
+    ].filter(Boolean).join(' · ');
 
     /* The dot is a switch, not a lamp: pausing a schedule is the thing you do
        most often and it should not cost opening the sheet. */
@@ -6894,15 +7123,17 @@ let schedDraft = null;          // the schedule being edited, or a new one
 let schedEditing = null;        // its id, or null when it is new
 
 function blankSchedule() {
-  return { at: '07:30', days: [1, 2, 3, 4, 5], target: null, action: 'on', enabled: true };
+  return { name: '', at: '07:30', days: [1, 2, 3, 4, 5], target: null, action: 'on', off_after: null, enabled: true };
 }
 
 function openSchedSheet(sch) {
   schedEditing = sch ? sch.id : null;
   schedDraft = sch
-    ? { at: sch.at, days: [...(sch.days || [])], target: { ...sch.target }, action: sch.action, enabled: sch.enabled }
+    ? { name: sch.name || '', at: sch.at, days: [...(sch.days || [])], target: { ...sch.target },
+        action: sch.action, off_after: sch.off_after || null, enabled: sch.enabled }
     : blankSchedule();
-  el('#schedtitle').textContent = sch ? 'Edit schedule' : 'New schedule';
+  el('#schedeyebrow').textContent = sch ? 'Schedule' : 'New schedule';
+  el('#schedname').value = schedDraft.name;
   el('#scheddelete').hidden = !sch;
   el('#schedrun').hidden = !sch;
   el('#schedscrim').hidden = false;
@@ -6976,6 +7207,17 @@ function drawSchedSheet() {
     }
   }
   syncSchedTarget();
+
+  /* Switching a circuit off and then off again is not a thing, so the question
+     is not asked of a schedule that already switches something off. */
+  const canAuto = !(kind === 'device' && schedDraft.action === 'off');
+  el('#schedafterfield').hidden = !canAuto;
+  if (!canAuto) schedDraft.off_after = null;
+  for (const b of el('#schedafter').querySelectorAll('.seg')) {
+    const mine = (b.dataset.after ? Number(b.dataset.after) : null) === (schedDraft.off_after || null);
+    b.setAttribute('aria-pressed', String(mine));
+  }
+
   el('#schedsays').textContent = schedPreview();
 }
 
@@ -6997,7 +7239,9 @@ function schedPreview() {
     : (schedDraft.action === 'off' ? 'switch off ' : 'switch on ') +
       (() => { const d = state.devices.find(x => x.record_id === Number(schedDraft.target.record_id));
                return d ? pretty(d.name) + ' in ' + title(d.room) : 'a circuit'; })();
-  return 'At ' + schedDraft.at + ', ' + what + '. ' + daysWord(schedDraft.days) + '.';
+  const after = schedDraft.off_after
+    ? ' Then off again after ' + offAfterWord(schedDraft.off_after) + '.' : '';
+  return 'At ' + schedDraft.at + ', ' + what + '. ' + daysWord(schedDraft.days) + '.' + after;
 }
 
 /** Create or update, then let the pushed snapshot redraw every open browser. */
@@ -7049,6 +7293,37 @@ for (const b of el('.daypresets').querySelectorAll('.seg')) {
     drawSchedSheet();
   };
 }
+for (const b of el('#schedafter').querySelectorAll('.seg')) {
+  b.onclick = () => {
+    schedDraft.off_after = b.dataset.after ? Number(b.dataset.after) : null;
+    drawSchedSheet();
+  };
+}
+el('#schedname').oninput = () => { if (schedDraft) schedDraft.name = el('#schedname').value; };
+
+/* ── the phone's schedules panel ──────────────────────────────────────────
+   The list is one node with two homes, the way the search field is: it lives
+   in the sidebar on a wide screen and moves into this sheet on a phone. Moved
+   rather than duplicated, so there is no second copy to fall out of step. */
+function openPlans() {
+  const list = el('#schedlist');
+  el('#planbody').appendChild(list);
+  el('#planscrim').hidden = false;
+  drawSchedules();
+}
+
+function closePlans() {
+  hideScrim(el('#planscrim'), () => {
+    // back to the sidebar, above its own add button
+    const home = el('#secsched');
+    home.insertBefore(el('#schedlist'), el('#newsched'));
+  });
+}
+
+el('#qplans').onclick = openPlans;
+el('#planclose').onclick = closePlans;
+el('#planadd').onclick = () => openSchedSheet(null);
+el('#planscrim').addEventListener('click', (e) => { if (e.target === el('#planscrim')) closePlans(); });
 
 el('#schedsave').onclick = async () => {
   if (!schedDraft.target || (!schedDraft.target.id && !schedDraft.target.record_id)) {
@@ -7056,8 +7331,8 @@ el('#schedsave').onclick = async () => {
   }
   if (!schedDraft.days.length) return note('Pick at least one day.');
   const saved = await saveSchedule(schedEditing, {
-    at: schedDraft.at, days: schedDraft.days, target: schedDraft.target,
-    action: schedDraft.action, enabled: schedDraft.enabled,
+    name: schedDraft.name, at: schedDraft.at, days: schedDraft.days, target: schedDraft.target,
+    action: schedDraft.action, off_after: schedDraft.off_after, enabled: schedDraft.enabled,
   });
   if (saved) { closeSchedSheet(); note('Saved · ' + saved.says); }
 };
