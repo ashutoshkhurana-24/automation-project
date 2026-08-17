@@ -369,17 +369,37 @@ async function runScheduleOff(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'device') return setRecords([t.entry.record], { on: false });
+  return clearCue(t.scene);
+}
 
-  const lit = [];
-  for (const step of t.scene.steps) {
+/** The records a cue actually lights — the ones it names at a level above zero. */
+function cueLights(scene) {
+  const out = [];
+  for (const step of scene.steps) {
     const entry = devices.get(step.record_id);
     if (!entry) continue;
     const level = step.level != null ? pct(step.level) : (step.on === false ? 0 : 100);
-    if (level > 0) lit.push(entry.record);
+    if (level > 0) out.push(entry.record);
   }
-  if (!lit.length) return 0;
-  return setRecords(lit, { on: false });
+  return out;
 }
+
+/** Put out what a cue lit, and nothing else it merely mentions. */
+function clearCue(scene) {
+  const on = cueLights(scene);
+  return on.length ? setRecords(on, { on: false }) : 0;
+}
+
+/* Is this cue already the state of the house?
+ *
+ * The same rule the group tile uses, and for the same reason: anything short
+ * of all-on counts as not set, so a cue with one lamp still burning from
+ * earlier fires the rest rather than putting that one out. Only a cue whose
+ * every lit circuit is actually lit is treated as already standing. */
+const cueIsSet = (scene) => {
+  const want = cueLights(scene);
+  return want.length > 0 && want.every(rec => decodeLevel(rec.device_status) > 0);
+};
 
 /* A schedule fires at most once a day, and only near its time.
  *
@@ -2005,13 +2025,15 @@ app.get('/do', (req, res) => {
     circuits: circuitsOf(name).map(c => c.slug),
   }));
   res.json({
-    shape: ['/do/<room>/<circuit>/<action>', '/do/<room>/<action>', '/do/cue/<id>'],
+    shape: ['/do/<room>/<circuit>/<action>', '/do/<room>/<action>',
+            '/do/cue/<id>', '/do/cue/<id>/<action>'],
     actions: ACTIONS,
+    cue_actions: CUE_ACTIONS,
     rooms,
     cues: scenes.map(sc => sc.id),
     examples: ['/do/ashu/fan/on', '/do/ashu/cobs/down', '/do/ashu/cobs/warmth-70',
                '/do/living/main-curtain/open', '/do/master/off', '/do/house/off',
-               '/do/cue/movie-night'],
+               '/do/cue/movie-night', '/do/cue/movie-night/toggle'],
   });
 });
 
@@ -2037,14 +2059,49 @@ app.get('/do/:room', (req, res, next) => {
   });
 });
 
-app.all('/do/cue/:id', async (req, res) => {
+/* `/do/cue/<id>` sets a cue; `/do/cue/<id>/<action>` also clears one.
+ *
+ * `toggle` is the one worth having: a single Shortcuts button that sets the
+ * scene and puts it out again is two shortcuts otherwise, and you have to
+ * remember which way round the room currently is. `on` and `off` come free
+ * from the same code, and refusing them once toggle exists would be odd.
+ *
+ * Clearing puts out only what the cue *lights*. A cue is a picture of a room
+ * and usually names circuits to switch off as well as on; sending those off
+ * again would be a no-op at best, and "undo the cue" is a different idea from
+ * "clear it" — that one is /api/undo, and it is one step deep.
+ *
+ * A toggle has to decide from the house as it is, so a stale reading would
+ * answer backwards. Same rule as the relative actions: re-read first. */
+const CUE_ACTIONS = ['on', 'off', 'set', 'clear', 'toggle'];
+
+app.all('/do/cue/:id/:action?', async (req, res) => {
   if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
   const scene = scenes.find(sc => sc.id === req.params.id);
   if (!scene) return res.status(404).json({ ok: false, error: 'No such cue', known: scenes.map(sc => sc.id) });
+
+  const action = (req.params.action || 'set').toLowerCase();
+  if (!CUE_ACTIONS.includes(action)) {
+    return res.status(400).json({ ok: false, error: `A cue takes ${CUE_ACTIONS.join(', ')}`,
+      known: CUE_ACTIONS, spoken: 'I do not know that action' });
+  }
+
   try {
+    if (action === 'toggle' && (!hubSync.taken || Date.now() - hubSync.taken > 4000)) {
+      await readHubStateFresh().catch(() => {});
+    }
+    const clearing = action === 'off' || action === 'clear'
+      || (action === 'toggle' && cueIsSet(scene));
+
+    if (clearing) {
+      const sent = await clearCue(scene);
+      return res.json({ ok: true, cue: scene.id, action, cleared: true, sent,
+        spoken: sent ? scene.name + ' cleared' : scene.name + ' was already out' });
+    }
     const result = await fireCue(scene);
-    res.json({ ok: true, ...result, spoken: result.missed
-      ? scene.name + ' set, but ' + result.missed + ' did not take' : scene.name + ' set' });
+    res.json({ ok: true, cue: scene.id, action, cleared: false, ...result,
+      spoken: result.missed ? scene.name + ' set, but ' + result.missed + ' did not take'
+        : scene.name + ' set' });
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message, spoken: 'The hub did not answer' });
   }
