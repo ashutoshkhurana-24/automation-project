@@ -4940,6 +4940,11 @@ const HTML = /* html */ `<!doctype html>
     .seeklayer .seek-hint {
       top: auto; bottom: calc(100% + 7px); left: 6px; right: auto;
     }
+    /* The hint is absolute and anchored above the pill, and the chips are a
+       flex item directly above it — so the two were drawn on top of each
+       other. The chips give up the band the hint needs rather than the hint
+       being hand-positioned past them. */
+    .seeklayer .seek-foot { margin-bottom: 22px; }
     /* Nothing of the old masthead treatment is wanted now. */
     header.plate.searching { display: none; }
     .quick { transition: opacity .16s ease; }
@@ -8311,16 +8316,24 @@ const seekEl = el('#seek');
 const ghostEl = el('#seekghost');
 let completion = null;              // the word the caret is part-way through
 
+/* The completion still exists on a phone — Enter takes it, see below — but it
+   is not drawn there, and the badge never says "tab".
+   Drawn, it was actively misleading: the field showed "ashu cobs off" while it
+   held "ashu cobs of", the badge advertised a key no phone keyboard has, and
+   Enter then did nothing at all because what was really typed was not a
+   command. Looking finished and doing nothing is the worst of both. The chips
+   above the field offer the same words and a thumb can reach them. */
 function drawGhost() {
   const q = seekEl.value;
   const next = nextWords(q);
   const at = seekEl.selectionStart === q.length;   // never complete mid-string
   completion = at && next && next.partial && next.options.length ? next.options[0] : null;
-  ghostEl.querySelector('i').textContent = completion ? q : '';
-  ghostEl.querySelector('b').textContent = completion ? completion.slice(next.partial.length) : '';
+  const show = completion && !onPhone();
+  ghostEl.querySelector('i').textContent = show ? q : '';
+  ghostEl.querySelector('b').textContent = show ? completion.slice(next.partial.length) : '';
   const key = el('#seekkey');
-  key.classList.toggle('offer', !!completion);
-  key.textContent = completion ? 'tab' : '/';
+  key.classList.toggle('offer', !!show);
+  key.textContent = show ? 'tab' : '/';
 }
 
 function takeWord(word) {
@@ -8338,6 +8351,8 @@ function takeWord(word) {
 // field, so anything that empties the field has to clear them too.
 function resetSeek() { drawGhost(); drawSeekHint(); }
 
+const article = (w) => (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w;
+
 function drawSeekHint() {
   const hint = el('#seekhint');
   if (!hint) return;
@@ -8351,9 +8366,15 @@ function drawSeekHint() {
   const words = cmd && !cmd.bad ? '↵ runs it'
     : cmd && cmd.bad ? cmd.bad.toLowerCase()
     : q && n ? n + (n === 1 ? ' match · ↵ switches it' : ' matches')
+    /* The chips sitting right above the field already list these, so on a
+       phone the line said the same thing twice — and half of what it said was
+       "tab completes", about a key that is not there. An/a, too: it read
+       "now a action". */
     : next && next.options.length
-      ? (next.what === 'and also' ? 'and also · tab completes'
-                                  : 'now a ' + next.what + ' · tab completes')
+      ? (onPhone()
+        ? (next.what === 'and also' ? 'and also' : 'now ' + article(next.what))
+        : (next.what === 'and also' ? 'and also · tab completes'
+                                    : 'now ' + article(next.what) + ' · tab completes'))
     : q ? 'nothing by that name'
     : '';
   hint.textContent = words;
@@ -8376,7 +8397,17 @@ seekEl.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key !== 'Enter') return;
-  const cmd = parseCommand(state.q);
+  let cmd = parseCommand(state.q);
+  /* Enter finishes the word first. "ashu cobs of" is one letter short of a
+     command and there is exactly one word it can be, so refusing to run is
+     pedantry — and on a phone, where there is no Tab to take the completion
+     with, it was a dead end you could not get out of. Only when the text as
+     typed is not already a command, so this never changes what Enter does to
+     something complete. */
+  if ((!cmd || cmd.bad) && completion) {
+    takeWord(completion);
+    cmd = parseCommand(state.q);
+  }
   if (cmd && !cmd.bad) {
     e.preventDefault();
     runCommand(cmd);      // the field keeps its text, so Enter again repeats it
