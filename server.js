@@ -4087,6 +4087,36 @@ const HTML = /* html */ `<!doctype html>
   .sched.gone .sched-what { color: var(--clay); }
   .sched-empty { font-size: 12.5px; color: var(--faint); padding: 4px 2px 10px; }
 
+  /* ── the schedules button, and what is coming ────────────────────────── */
+  .plans-btn {
+    display: none; align-items: center; gap: 7px; flex: 0 0 auto; cursor: pointer;
+    padding: 8px 13px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    font: 400 12.5px/1 var(--sans);
+    transition: border-color .18s, background .18s;
+  }
+  .plans-btn:hover { border-color: var(--line-up); background: var(--paper-2); }
+  .plans-btn:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  .plans-btn svg { width: 15px; height: 15px; flex: none; }
+
+  /* One line, and it is the whole control: pressing it opens the schedules. */
+  .whatsnext {
+    display: none; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+    margin: 10px 0 0; padding: 9px 14px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    font: 400 12.5px/1.3 var(--sans);
+    transition: border-color .18s, background .18s;
+  }
+  .whatsnext:hover { border-color: var(--line-up); background: var(--paper-2); }
+  .whatsnext:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  .wn-lab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+            text-transform: uppercase; color: var(--faint); flex: none; }
+  .wn-when { font-family: var(--mono); font-size: 13px; color: var(--ink); flex: none; }
+  .wn-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wn-in { margin-left: auto; flex: none; font-family: var(--mono); font-size: 9.5px;
+           letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+
   /* ── what's on ───────────────────────────────────────────────────────
      A chip is one lit circuit and pressing it puts that circuit out. The dot
      carries the lamp's own colour, so the rail reads as the house's light
@@ -4520,6 +4550,26 @@ const HTML = /* html */ `<!doctype html>
        all-off, so putting out one circuit is already two presses from here.
        What's-on is a phone answer to a phone problem — a board you scroll. */
     #seclit { display: none !important; }
+
+    /* The schedules leave the column for the top bar: at the foot of a list as
+       long as you have made it, they were behind a scroll. */
+    #secsched { display: none; }
+    .plans-btn { display: inline-flex; }
+    .whatsnext { display: flex; }
+
+    /* Everything under the cues was bare type on a photograph — a legend and a
+       sentence with nothing behind them, which on a bright picture is not
+       reading so much as guessing. They are cards now, the same paper and lens
+       the cues sit on, so the column reads as one kind of thing all the way
+       down. The cue list is already carded item by item and is left alone. */
+    #sectimer, #secsync, #sechouse {
+      padding: 12px 14px; border-radius: 14px;
+      border: 1px solid var(--line); background: var(--paper);
+      backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    }
+    #sectimer .legend, #sechouse .legend { margin-bottom: 7px; }
+    #secsync { margin-top: 10px; }
+    #secsync .roomnote, #sectimer .roomnote { margin: 0; }
 
     /* An advisory is one short sentence and two small answers to it. Run the
        full width of the field it put most of a thousand pixels between the
@@ -5000,7 +5050,27 @@ const HTML = /* html */ `<!doctype html>
       <button class="seek-cancel" id="seekcancel" type="button" aria-label="Close search">Done</button>
       <span class="seek-hint" id="seekhint" hidden></span>
     </label>
+    <!-- Wide screens reach the schedules from up here rather than from the
+         foot of a column you had to scroll. Same sheet the phone's thumb bar
+         opens, so there is one schedules surface, not two. -->
+    <button class="plans-btn" id="plansbtn" type="button" aria-label="Schedules">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18"/>
+      </svg>
+      <span>Plans</span>
+    </button>
   </header>
+
+  <!-- What the house will do next, directly under the bar. Hidden entirely
+       when nothing is scheduled — an empty strip saying "nothing next" is
+       furniture, not information. -->
+  <button class="whatsnext" id="whatsnext" type="button" hidden>
+    <span class="wn-lab">Next</span>
+    <span class="wn-when" id="wnwhen"></span>
+    <span class="wn-what" id="wnwhat"></span>
+    <span class="wn-in" id="wnin"></span>
+  </button>
 
   <main class="board">
     <aside class="index">
@@ -5495,12 +5565,6 @@ function tick() {
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
   if (sub) sub.innerHTML = fieldSub();
-  const sync = el('#syncline');
-  if (sync && state.sync) {
-    const age = Math.max(0, Math.round((Date.now() - (state.sync.synced_at || 0)) / 1000));
-    sync.textContent = 'Synced ' + (age < 60 ? age + 's' : Math.round(age / 60) + 'm') +
-      ' ago · ' + state.devices.length + ' devices, ' + rooms().length + ' rooms';
-  }
 }
 
 /* The phone's masthead: the time and what the house consists of, or — inside a
@@ -5612,6 +5676,18 @@ function readout() {
      every change the page knows about, and a stale list of what is on is the
      one thing this rail must never show. */
   drawLit();
+
+  /* Moved here from tick(), which does not run on first load — so the sync
+     card sat empty until something else in the house moved. Now that the
+     section is a card it has to earn one: an empty card is furniture. */
+  const sync = el('#syncline');
+  if (sync && state.sync) {
+    const age = Math.max(0, Math.round((Date.now() - (state.sync.synced_at || 0)) / 1000));
+    sync.textContent = 'Synced ' + (age < 60 ? age + 's' : Math.round(age / 60) + 'm') +
+      ' ago · ' + state.devices.length + ' devices, ' + rooms().length + ' rooms';
+  }
+  const syncsec = el('#secsync');
+  if (syncsec) syncsec.hidden = !(sync && sync.textContent);
 
   const s = state.sync || {};
   let when = 'status unread';
@@ -7056,6 +7132,7 @@ function drawSchedules() {
     p.className = 'sched-empty';
     p.textContent = 'Nothing scheduled. The house does what you tell it, when you tell it.';
     host.appendChild(p);
+    drawWhatsNext();          // deleting the last one has to clear the line too
     return;
   }
   const order = [...state.schedules].sort((a, b) => String(a.at).localeCompare(String(b.at)));
@@ -7103,6 +7180,7 @@ function drawSchedules() {
     row.append(when, what, days, dot);
     host.appendChild(row);
   }
+  drawWhatsNext();
 }
 
 /** What a schedule does, in the page's own words rather than the server's. */
@@ -7115,6 +7193,53 @@ function schedWhat(sch) {
   const d = state.devices.find(x => x.record_id === Number(sch.target?.record_id));
   const where = d ? pretty(d.name) + ' · ' + title(d.room) : 'a circuit';
   return (sch.action === 'off' ? 'Switch off ' : 'Switch on ') + where;
+}
+
+/* When a schedule will next come round, as a Date — or null if it never will.
+   Walks the coming week rather than doing calendar arithmetic: seven tries is
+   cheap and it cannot get a day boundary wrong. */
+function nextRun(sch, from) {
+  if (!sch.enabled || !(sch.days || []).length) return null;
+  const [h, m] = String(sch.at).split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(from);
+    d.setDate(d.getDate() + i);
+    d.setHours(h, m, 0, 0);
+    if (d <= from) continue;
+    if (sch.days.includes(d.getDay())) return d;
+  }
+  return null;
+}
+
+/** "in 3h", "in 25 min", "in 2 days" — near enough, and never a countdown. */
+function awayWord(then, from) {
+  const mins = Math.round((then - from) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return 'in ' + mins + ' min';
+  const h = Math.round(mins / 60);
+  if (h < 24) return 'in ' + h + (h === 1 ? ' hour' : ' hours');
+  const days = Math.round(h / 24);
+  return 'in ' + days + (days === 1 ? ' day' : ' days');
+}
+
+function drawWhatsNext() {
+  const bar = el('#whatsnext');
+  if (!bar) return;
+  const now = new Date();
+  let best = null;
+  for (const sch of state.schedules) {
+    if (sch.target_missing) continue;
+    const at = nextRun(sch, now);
+    if (at && (!best || at < best.at)) best = { at, sch };
+  }
+  if (!best) { bar.hidden = true; return; }
+  bar.hidden = false;
+  el('#wnwhen').textContent = best.sch.at;
+  el('#wnwhat').textContent = best.sch.name || schedWhat(best.sch);
+  el('#wnin').textContent = awayWord(best.at, now);
+  bar.setAttribute('aria-label',
+    'Next: ' + best.sch.at + ', ' + schedWhat(best.sch) + ', ' + awayWord(best.at, now) + '. Open schedules.');
 }
 
 /* ── the schedule sheet ───────────────────────────────────────────────── */
@@ -7321,6 +7446,11 @@ function closePlans() {
 }
 
 el('#qplans').onclick = openPlans;
+el('#plansbtn').onclick = openPlans;
+el('#whatsnext').onclick = openPlans;
+/* "in 3 hours" goes stale on its own, so it is re-read once a minute. Cheap,
+   and it keeps the line honest without touching the hub. */
+setInterval(drawWhatsNext, 60000);
 el('#planclose').onclick = closePlans;
 el('#planadd').onclick = () => openSchedSheet(null);
 el('#planscrim').addEventListener('click', (e) => { if (e.target === el('#planscrim')) closePlans(); });
