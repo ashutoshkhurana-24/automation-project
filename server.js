@@ -23,6 +23,7 @@ const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
 const SCENES_PATH = path.join(__dirname, 'scenes.json');
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
+const SCHEDULES_PATH = path.join(__dirname, 'schedules.json');
 
 // ---------------------------------------------------------------- device data
 
@@ -256,6 +257,140 @@ function saveScenes() {
 
 const sceneList = () => scenes.map(sc => ({ ...sc, devices: sc.steps.length }));
 
+/* ─────────────────────────────────────────────────────────────── schedules
+ *
+ * The hub's own scheduler is dead — addScheduledTrigger throws server-side on
+ * every call, whatever you send it (see CLAUDE.md). This replaces it, and it
+ * only works because the dashboard now runs on the hub itself: the one box in
+ * the house that is always on and always on the LAN.
+ *
+ * There is one list for the whole house, held here and pushed to every browser
+ * over SSE. A schedule is not per-phone and not per-user — two people looking
+ * at the page see the same thing, and editing on one changes it on the other.
+ *
+ * A schedule fires a cue, or switches one circuit on or off. Both are things
+ * the UI can already do by hand; this only decides when.
+ */
+let schedules = [];
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/* The hub stores every label in capitals; a schedule's sentence is read by a
+   person, so it gets sentence case here rather than shouting. */
+const sentence = (s) => String(s || '').trim().toLowerCase()
+  .replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+
+function loadSchedules() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SCHEDULES_PATH, 'utf8'));
+    schedules = Array.isArray(raw) ? raw : [];
+    console.log(`Loaded ${schedules.length} schedules from schedules.json`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('schedules.json unreadable, starting empty:', err.message);
+    schedules = [];
+  }
+}
+
+function saveSchedules() {
+  try {
+    fs.writeFileSync(SCHEDULES_PATH, JSON.stringify(schedules, null, 2));
+  } catch (err) {
+    console.error('could not write schedules.json:', err.message);
+  }
+}
+
+/** Local wall-clock day, as the string the fired-guard is keyed on. */
+const localDay = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const minutesOf = (hhmm) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+  if (!m) return null;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+};
+
+/** What a schedule points at, resolved now — null if it has gone missing. */
+function scheduleTarget(sch) {
+  if (sch.target?.kind === 'cue') {
+    const scene = scenes.find(sc => sc.id === sch.target.id);
+    return scene ? { kind: 'cue', scene, label: scene.name } : null;
+  }
+  if (sch.target?.kind === 'device') {
+    const entry = devices.get(Number(sch.target.record_id));
+    return entry ? { kind: 'device', entry, label: `${sentence(entry.record.device_name)} · ${sentence(entry.room)}` } : null;
+  }
+  return null;
+}
+
+/** The sentence a schedule reads as, used by the API and spoken back. */
+function scheduleSays(sch) {
+  const t = scheduleTarget(sch);
+  const what = t ? t.label : 'something that no longer exists';
+  const verb = sch.target?.kind === 'cue' ? 'run' : (sch.action === 'off' ? 'switch off' : 'switch on');
+  const days = (sch.days || []).length === 7 ? 'every day'
+    : (sch.days || []).length ? 'on ' + sch.days.map(d => DAY_NAMES[d]).join(', ')
+      : 'never — no days chosen';
+  return `${sch.at} · ${verb} ${what}, ${days}`;
+}
+
+const scheduleList = () => schedules.map(sch => ({
+  ...sch,
+  says: scheduleSays(sch),
+  target_missing: !scheduleTarget(sch),
+}));
+
+/** Do the thing. Shared by the tick and by "run it now" in the UI. */
+async function runSchedule(sch) {
+  const t = scheduleTarget(sch);
+  if (!t) throw new Error('what this schedule points at is gone');
+  if (t.kind === 'cue') return fireCue(t.scene);
+  return setRecords([t.entry.record], { on: sch.action !== 'off' });
+}
+
+/* A schedule fires at most once a day, and only near its time.
+ *
+ * `fired_on` is the date it last ran, so a restart at 07:05 does not re-run the
+ * 07:00 schedule that already happened. The grace window is the other half: a
+ * box that was off all morning must not come up at two in the afternoon and
+ * fire everything it slept through — switching the house on hours late is worse
+ * than not switching it at all. Within the window a genuine miss still runs,
+ * which is the case worth catching (a restart, a slow read). */
+const SCHEDULE_GRACE_MIN = 10;
+let scheduleTimer = null;
+
+async function tickSchedules() {
+  if (!schedules.length) return;
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const today = localDay(now);
+  const weekday = now.getDay();
+
+  for (const sch of schedules) {
+    if (!sch.enabled) continue;
+    if (!(sch.days || []).includes(weekday)) continue;
+    if (sch.fired_on === today) continue;
+    const at = minutesOf(sch.at);
+    if (at == null) continue;
+    const late = nowMin - at;
+    if (late < 0 || late > SCHEDULE_GRACE_MIN) continue;
+
+    sch.fired_on = today;
+    saveSchedules();
+    try {
+      await runSchedule(sch);
+      console.log(`schedule ${sch.id} fired: ${scheduleSays(sch)}`);
+      stats.schedulesFired = (stats.schedulesFired || 0) + 1;
+    } catch (err) {
+      console.error(`schedule ${sch.id} failed:`, err.message);
+      sch.last_error = err.message;
+      saveSchedules();
+    }
+    pushSoon();
+  }
+}
+
 // -------------------------------------------------------------------- hub call
 
 function hubSocket() {
@@ -302,7 +437,7 @@ const markCommanded = (recordId) => commandedAt.set(recordId, Date.now());
 const startedAt = Date.now();
 const stats = {
   readsOk: 0, readsFailed: 0, consecutiveReadFailures: 0,
-  commandsSent: 0, commandsFailed: 0, cuesFired: 0,
+  commandsSent: 0, commandsFailed: 0, cuesFired: 0, schedulesFired: 0,
 };
 
 function readHubState() {
@@ -542,6 +677,9 @@ function snapshot() {
     hub_ok: hubSync.ok,
     hub_error: hubSync.error,
     backdrop_v: backdropVersion(),
+    /* There is one schedule list for the house, so it rides the same frame the
+       devices do — edit on a phone and the laptop redraws without asking. */
+    schedules: scheduleList(),
   };
 }
 
@@ -560,6 +698,11 @@ function stateSignature() {
     parts.push(record.record_id + ':' + record.device_status + ':' +
       (record.device_status_tunable ?? '') + ':' + (record.ac_temp ?? ''));
   }
+  /* The schedule list is part of what the page draws, so a change to it has to
+     count as a change — otherwise editing one on a phone pushes nothing and the
+     laptop keeps showing yesterday's list until something else moves. */
+  parts.push('sch:' + schedules.map(s =>
+    `${s.id}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}${s.target?.id ?? s.target?.record_id}`).join(','));
   return parts.join('|');
 }
 let lastSignature = '';
@@ -1453,6 +1596,92 @@ async function fireCue(scene) {
   return { ...result, undoable: !!undoable, undo_skipped: skipped };
 }
 
+/* ── schedules: one shared list, edited from anywhere ───────────────────── */
+
+/** Reads a schedule off a request body, or explains what is wrong with it. */
+function readSchedule(body, base) {
+  const at = String(body?.at ?? base?.at ?? '');
+  if (minutesOf(at) == null) return { error: 'at must be a time like 07:30' };
+
+  const days = body?.days === undefined ? (base?.days || [])
+    : (Array.isArray(body.days) ? [...new Set(body.days.map(Number))].filter(d => d >= 0 && d <= 6).sort() : null);
+  if (!days) return { error: 'days must be an array of 0 (Sunday) to 6' };
+  if (!days.length) return { error: 'a schedule with no days would never run — pick at least one' };
+
+  const target = body?.target ?? base?.target;
+  if (target?.kind === 'cue') {
+    if (!scenes.some(sc => sc.id === target.id)) return { error: `no cue with id ${target.id}` };
+  } else if (target?.kind === 'device') {
+    if (!devices.has(Number(target.record_id))) return { error: `no device with record_id ${target.record_id}` };
+  } else {
+    return { error: 'target must be {kind:"cue",id} or {kind:"device",record_id}' };
+  }
+
+  const action = String(body?.action ?? base?.action ?? 'on');
+  if (!['on', 'off'].includes(action)) return { error: 'action must be on or off' };
+
+  return {
+    schedule: {
+      at,
+      days,
+      target: target.kind === 'cue'
+        ? { kind: 'cue', id: target.id }
+        : { kind: 'device', record_id: Number(target.record_id) },
+      action,
+      enabled: body?.enabled === undefined ? (base?.enabled ?? true) : !!body.enabled,
+    },
+  };
+}
+
+app.get('/api/schedules', (req, res) => res.json({ ok: true, schedules: scheduleList() }));
+
+app.post('/api/schedules', (req, res) => {
+  const { error, schedule } = readSchedule(req.body || {}, null);
+  if (error) return res.status(400).json({ ok: false, error });
+  const sch = { id: 'sch_' + Math.random().toString(36).slice(2, 8), ...schedule, fired_on: null };
+  schedules.push(sch);
+  saveSchedules();
+  pushSoon();
+  res.json({ ok: true, schedule: { ...sch, says: scheduleSays(sch) } });
+});
+
+app.patch('/api/schedules/:id', (req, res) => {
+  const sch = schedules.find(s => s.id === req.params.id);
+  if (!sch) return res.status(404).json({ ok: false, error: 'No such schedule' });
+  const { error, schedule } = readSchedule(req.body || {}, sch);
+  if (error) return res.status(400).json({ ok: false, error });
+  /* Changing when it runs clears the fired-guard, or moving a schedule later
+     the same day would leave it unable to run until tomorrow. */
+  const moved = schedule.at !== sch.at;
+  Object.assign(sch, schedule);
+  if (moved) sch.fired_on = null;
+  delete sch.last_error;
+  saveSchedules();
+  pushSoon();
+  res.json({ ok: true, schedule: { ...sch, says: scheduleSays(sch) } });
+});
+
+app.delete('/api/schedules/:id', (req, res) => {
+  const i = schedules.findIndex(s => s.id === req.params.id);
+  if (i < 0) return res.status(404).json({ ok: false, error: 'No such schedule' });
+  const [gone] = schedules.splice(i, 1);
+  saveSchedules();
+  pushSoon();
+  res.json({ ok: true, removed: gone.id });
+});
+
+/** Run one now, without waiting for its time — the way you check you meant it. */
+app.post('/api/schedules/:id/run', async (req, res) => {
+  const sch = schedules.find(s => s.id === req.params.id);
+  if (!sch) return res.status(404).json({ ok: false, error: 'No such schedule' });
+  try {
+    await runSchedule(sch);
+    res.json({ ok: true, spoken: `Ran ${scheduleSays(sch)}` });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/api/scenes/:id/apply', async (req, res) => {
   const scene = scenes.find(sc => sc.id === req.params.id);
   if (!scene) return res.status(404).json({ ok: false, error: 'No such scene' });
@@ -2266,12 +2495,20 @@ app.listen(PORT, () => {
   loadScenes();
   loadSettings();
   loadState();
+  loadSchedules();
   readHubState().then((s) =>
     console.log(s.ok ? 'Live device status read from hub' : `Using snapshot status (${s.error})`));
 
   // One reader for the whole house, however many browsers are open. Keeps the
   // cache fresh enough that a page load never waits on the hub.
   setInterval(() => { if (!reading) readHubState(); }, REFRESH_MS);
+
+  /* Every 20s is enough for minute precision and cheap enough to ignore. The
+     tick is what replaces the hub's own scheduler, which is dead server-side —
+     and it only works at all because this process now lives on the hub, the one
+     machine in the house that is always awake. */
+  scheduleTimer = setInterval(() => { tickSchedules().catch(() => {}); }, 20000);
+  tickSchedules().catch(() => {});
 });
 
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
@@ -3729,6 +3966,76 @@ const HTML = /* html */ `<!doctype html>
   .sheet-back:hover { color: var(--ink); background: rgba(255,213,160,.06); }
   .sheet-back:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .sheet-back svg { width: 13px; height: 13px; }
+  /* ── schedules ───────────────────────────────────────────────────────
+     A schedule row leads with the time, because that is what you scan for.
+     What it does sits under it in the same voice a cue note uses. */
+  .sched {
+    position: relative; display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: 0 12px; width: 100%; text-align: left;
+    padding: 11px 12px; margin-bottom: 7px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 13px;
+    background: var(--paper); color: inherit; font: inherit;
+    transition: border-color .18s, background .18s, transform .18s;
+  }
+  .sched:hover { border-color: var(--line-up); background: var(--paper-2); }
+  .sched:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
+  .sched-when { font-family: var(--mono); font-size: 15px; color: var(--ink); letter-spacing: -.01em; }
+  .sched-what { grid-column: 2; font-size: 12.5px; color: var(--ink);
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sched-days { grid-column: 2; font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--faint); margin-top: 2px; }
+  /* The dot is the only thing saying whether this will happen at all, so it is
+     a switch you can press rather than a light you can only read. */
+  .sched-on {
+    grid-row: 1 / 3; grid-column: 3; width: 30px; height: 30px; flex: none;
+    border-radius: 50%; border: 1px solid var(--line); background: var(--paper-2);
+    cursor: pointer; display: grid; place-items: center; padding: 0;
+  }
+  .sched-on i { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+  .sched.live .sched-on { border-color: color-mix(in oklab, var(--warm) 60%, var(--line)); }
+  .sched.live .sched-on i { background: var(--warm); box-shadow: 0 0 8px var(--warm); }
+  .sched.gone { border-style: dashed; }
+  .sched.gone .sched-what { color: var(--clay); }
+  .sched-empty { font-size: 12.5px; color: var(--faint); padding: 4px 2px 10px; }
+
+  .sched-field { padding: 14px 0 4px; border-bottom: 1px solid var(--edge); }
+  .sched-field:last-child { border-bottom: 0; }
+  .sched-lab { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+               text-transform: uppercase; color: var(--faint); margin-bottom: 9px; }
+  .sched-time {
+    font-family: var(--mono); font-size: 30px; letter-spacing: -.01em;
+    color: var(--ink); background: none; border: 0; padding: 0; margin-bottom: 8px;
+    appearance: none; -webkit-appearance: none;
+  }
+  .sched-time:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; border-radius: 6px; }
+  .days { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .day {
+    width: 38px; height: 38px; border-radius: 50%; cursor: pointer; padding: 0;
+    border: 1px solid var(--line); background: var(--paper); color: var(--soft);
+    font-family: var(--mono); font-size: 11px; letter-spacing: .02em;
+    transition: background .18s, color .18s, border-color .18s;
+  }
+  .day[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--base, #fdfaf5); }
+  .day:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  /* [hidden] is display:none from the UA sheet, and any display of our own
+     beats it — so a row told to hide stayed on screen. */
+  .daypresets, .seg-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
+  .daypresets[hidden], .seg-row[hidden] { display: none; }
+  /* A segmented control has to say which segment is chosen. .seg had a hover
+     and a focus ring and nothing at all for selected, so the pair read as two
+     equal buttons and the answer was invisible. */
+  .seg[aria-pressed="true"] {
+    background: var(--ink); border-color: var(--ink);
+    color: var(--base, #fdfaf5); font-weight: 500;
+  }
+  .seg[aria-pressed="true"]:hover { background: #443b34; border-color: #443b34; color: var(--base, #fdfaf5); }
+  .sched-pick {
+    width: 100%; margin-bottom: 10px; padding: 10px 12px; cursor: pointer;
+    font: inherit; font-size: 13.5px; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 11px; background: var(--paper);
+  }
+  .sched-pick:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+
   .sheet-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 24px 20px;
                 border-top: 1px solid var(--edge); }
   .sheet-btn {
@@ -4271,10 +4578,18 @@ const HTML = /* html */ `<!doctype html>
     /* What a room is doing belongs above its board: it is the first thing
        worth knowing when you walk in, not a footnote under fourteen cards. */
     #secroom  { order: -1; }
+    #secsched { order: 5; margin-top: 4px; }
     #sectimer { order: 6; }
     #secsync  { order: 7; }
     #sechouse { order: 8; margin-top: 4px; }
     #secrooms .legend, #seccues .legend { display: none; }
+
+    /* Schedules stay a list rather than becoming a sideways rail. A row is a
+       time, a sentence, the days it runs and a switch — squeezed into a chip
+       none of that survives, and it is not something you fire in passing the
+       way you fire a cue. It sits under the house, where you go looking for it
+       rather than meeting it on the way to the lights. */
+    #secsched > div:not(.legend) { display: block; overflow: visible; }
 
     /* A cue on a phone is a chip: the name is the whole target. The reading and
        the colour swatch are detail for a screen with room to spare. The name
@@ -4339,12 +4654,15 @@ const HTML = /* html */ `<!doctype html>
        of named cues the plus needs no sentence. The label stays in the
        accessibility tree — font-size does not remove it — so it is still
        announced as "Create a cue". */
-    .newcue {
+    /* Scoped to the cue rail. The schedules list is not a rail — a lone plus
+       floating under it says nothing about what it adds. */
+    #seccues .newcue {
       flex: 0 0 auto; width: auto; margin-top: 0; padding: 0;
       min-width: 40px; height: 38px; border-radius: 999px;
       font-size: 0; display: grid; place-items: center;
     }
-    .newcue::before { content: '+'; font-size: 19px; line-height: 1; }
+    #seccues .newcue::before { content: '+'; font-size: 19px; line-height: 1; }
+    #secsched .newcue { width: 100%; margin-top: 2px; padding: 11px 13px; font-size: 13px; }
 
     /* ── the field, on a phone ───────────────────────────────────────────
        Find was a dead button here. The status line replaced the masthead and
@@ -4579,6 +4897,11 @@ const HTML = /* html */ `<!doctype html>
         <div id="cues"></div>
         <button class="newcue" id="newcue" type="button">+ Create a cue</button>
       </div>
+      <div class="index-sec" id="secsched">
+        <div class="legend">Schedules</div>
+        <div id="schedlist"></div>
+        <button class="newcue" id="newsched" type="button">+ Add a schedule</button>
+      </div>
       <div class="index-sec" id="sectimer">
         <div class="legend">Sleep</div>
         <p class="roomnote" id="timerstate">No timer running</p>
@@ -4715,6 +5038,56 @@ const HTML = /* html */ `<!doctype html>
   </div>
 </div>
 
+<!-- ── a schedule, opened up ─────────────────────────────────────────────
+     Its own sheet rather than a mode of the cue one: a cue is a list of
+     circuits and a schedule is a time, a set of days and one thing to do, and
+     folding them together would make both harder to read. Same furniture
+     though — head, body, foot — so it behaves like everything else here. -->
+<div class="scrim" id="schedscrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="schedtitle">
+    <div class="sheet-head" id="schedhead">
+      <div class="sheet-eyebrow">Schedule</div>
+      <p class="sheet-name" id="schedtitle">New schedule</p>
+      <p class="sheet-facts" id="schedsays"></p>
+    </div>
+    <div class="sheet-body">
+      <div class="sched-field">
+        <label class="sched-lab" for="schedat">At</label>
+        <input class="sched-time" id="schedat" type="time" step="60" value="07:30">
+      </div>
+
+      <div class="sched-field">
+        <span class="sched-lab">On these days</span>
+        <div class="days" id="scheddays"></div>
+        <div class="daypresets">
+          <button class="seg" type="button" data-preset="every">Every day</button>
+          <button class="seg" type="button" data-preset="week">Weekdays</button>
+          <button class="seg" type="button" data-preset="end">Weekend</button>
+        </div>
+      </div>
+
+      <div class="sched-field">
+        <span class="sched-lab">What it does</span>
+        <div class="seg-row" id="schedkind">
+          <button class="seg" type="button" data-kind="cue">Run a cue</button>
+          <button class="seg" type="button" data-kind="device">Switch a circuit</button>
+        </div>
+        <select class="sched-pick" id="schedtarget" aria-label="What to schedule"></select>
+        <div class="seg-row" id="schedaction" hidden>
+          <button class="seg" type="button" data-action="on">On</button>
+          <button class="seg" type="button" data-action="off">Off</button>
+        </div>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="sheet-btn go" id="schedsave" type="button">Save</button>
+      <button class="sheet-btn" id="schedrun" type="button">Run it now</button>
+      <button class="sheet-btn" id="schedcancel" type="button">Close</button>
+      <button class="sheet-btn danger" id="scheddelete" type="button" hidden>Delete</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── the search surface, on a phone ────────────────────────────────────
      Search is a mode, not a bar. A field floating over a live board leaves
      everything ambiguous: what is behind it still scrolls and still takes
@@ -4768,7 +5141,7 @@ const kindOf = (d) =>
   (d.app_type === 'TV' || d.app_type === 'PRJ') ? 'screen' :
   d.is_fan ? 'fan' : 'light';
 
-const state = { devices: [], view: 'house', room: null, q: '', sync: null };
+const state = { devices: [], view: 'house', room: null, q: '', sync: null, schedules: [] };
 const el = (s) => document.querySelector(s);
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 const rooms = () => [...new Set(state.devices.map(d => d.room))];
@@ -4858,10 +5231,12 @@ async function load() {
   state.devices = snap.devices.sort((a, b) =>
     KIND_ORDER.indexOf(kindOf(a)) - KIND_ORDER.indexOf(kindOf(b)) || natural(a.name, b.name));
   state.sync = snap;
+  state.schedules = snap.schedules || [];
   drawIndex();
   drawField();
   readout();
   loadCues();
+  drawSchedules();
 }
 
 // A circuit the user is touching owns its own state until the hub answers.
@@ -4896,6 +5271,13 @@ const markCommanded = (id) => commandedAt.set(id, Date.now());
 // and moves the screen to match it.
 function applySnapshot(snap) {
   state.sync = snap;
+  /* One list for the house: whoever edited it, every other browser redraws off
+     the same frame the devices arrive in. Compared before redrawing so a push
+     that carries no schedule change does not rebuild the list under a finger. */
+  if (snap.schedules && JSON.stringify(snap.schedules) !== JSON.stringify(state.schedules)) {
+    state.schedules = snap.schedules;
+    drawSchedules();
+  }
   if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
     // On first load the CSS already points at the right picture, but nothing
     // has measured it yet, so the dimming still has to be worked out.
@@ -6417,6 +6799,294 @@ function cueNote(cue) {
   const what = on ? on + ' on' + (off ? ', ' + off + ' off' : '') : 'all ' + off + ' off';
   return what + ' · ' + place;
 }
+
+/* ─────────────────────────────────────────────────────────── schedules
+ *
+ * One list for the whole house. Nothing here is per-browser: the server holds
+ * it, every change goes back over the same endpoints, and the snapshot pushes
+ * the result to whoever else is looking.
+ */
+
+const DAY_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DAY_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/* Which days, said the way a person would: the two everyday cases get their
+   own words because "Mon, Tue, Wed, Thu, Fri" is a list you have to parse. */
+function daysWord(days) {
+  const d = [...(days || [])].sort();
+  if (d.length === 7) return 'Every day';
+  if (d.length === 5 && d.join() === '1,2,3,4,5') return 'Weekdays';
+  if (d.length === 2 && d.join() === '0,6') return 'Weekends';
+  if (!d.length) return 'No days — never runs';
+  return d.map(i => DAY_FULL[i].slice(0, 3)).join(' · ');
+}
+
+/* 07:30 in the clock the house keeps. Kept as typed rather than reformatted —
+   the field is a real time input and the server stores exactly this. */
+const schedTime = (at) => at;
+
+function drawSchedules() {
+  const host = el('#schedlist');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!state.schedules.length) {
+    const p = document.createElement('p');
+    p.className = 'sched-empty';
+    p.textContent = 'Nothing scheduled. The house does what you tell it, when you tell it.';
+    host.appendChild(p);
+    return;
+  }
+  const order = [...state.schedules].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  for (const sch of order) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'sched' + (sch.enabled ? ' live' : '') + (sch.target_missing ? ' gone' : '');
+    row.onclick = (e) => { if (!e.target.closest('.sched-on')) openSchedSheet(sch); };
+
+    const when = document.createElement('span');
+    when.className = 'sched-when';
+    when.textContent = schedTime(sch.at);
+
+    const what = document.createElement('span');
+    what.className = 'sched-what';
+    what.textContent = schedWhat(sch);
+
+    const days = document.createElement('span');
+    days.className = 'sched-days';
+    days.textContent = daysWord(sch.days) + (sch.enabled ? '' : ' · paused');
+
+    /* The dot is a switch, not a lamp: pausing a schedule is the thing you do
+       most often and it should not cost opening the sheet. */
+    const dot = document.createElement('span');
+    dot.className = 'sched-on';
+    dot.setAttribute('role', 'button');
+    dot.tabIndex = 0;
+    dot.setAttribute('aria-pressed', String(!!sch.enabled));
+    dot.setAttribute('aria-label', (sch.enabled ? 'Pause' : 'Resume') + ' this schedule');
+    dot.innerHTML = '<i></i>';
+    const flip = async (ev) => {
+      ev.stopPropagation();
+      await saveSchedule(sch.id, { enabled: !sch.enabled });
+    };
+    dot.onclick = flip;
+    dot.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); flip(ev); } };
+
+    row.append(when, what, days, dot);
+    host.appendChild(row);
+  }
+}
+
+/** What a schedule does, in the page's own words rather than the server's. */
+function schedWhat(sch) {
+  if (sch.target_missing) return 'What this pointed at is gone';
+  if (sch.target?.kind === 'cue') {
+    const cue = cues.find(c => c.id === sch.target.id);
+    return 'Run ' + (cue ? cue.name : sch.target.id);
+  }
+  const d = state.devices.find(x => x.record_id === Number(sch.target?.record_id));
+  const where = d ? pretty(d.name) + ' · ' + title(d.room) : 'a circuit';
+  return (sch.action === 'off' ? 'Switch off ' : 'Switch on ') + where;
+}
+
+/* ── the schedule sheet ───────────────────────────────────────────────── */
+
+let schedDraft = null;          // the schedule being edited, or a new one
+let schedEditing = null;        // its id, or null when it is new
+
+function blankSchedule() {
+  return { at: '07:30', days: [1, 2, 3, 4, 5], target: null, action: 'on', enabled: true };
+}
+
+function openSchedSheet(sch) {
+  schedEditing = sch ? sch.id : null;
+  schedDraft = sch
+    ? { at: sch.at, days: [...(sch.days || [])], target: { ...sch.target }, action: sch.action, enabled: sch.enabled }
+    : blankSchedule();
+  el('#schedtitle').textContent = sch ? 'Edit schedule' : 'New schedule';
+  el('#scheddelete').hidden = !sch;
+  el('#schedrun').hidden = !sch;
+  el('#schedscrim').hidden = false;
+  drawSchedSheet();
+}
+
+function closeSchedSheet() {
+  hideScrim(el('#schedscrim'), () => { schedDraft = null; schedEditing = null; });
+}
+
+/** Fills the sheet from the draft. Called on open and after every change. */
+function drawSchedSheet() {
+  if (!schedDraft) return;
+  el('#schedat').value = schedDraft.at;
+
+  const days = el('#scheddays');
+  days.innerHTML = '';
+  for (let i = 0; i < 7; i++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'day';
+    b.textContent = DAY_SHORT[i];
+    b.setAttribute('aria-label', DAY_FULL[i]);
+    b.setAttribute('aria-pressed', String(schedDraft.days.includes(i)));
+    b.onclick = () => {
+      schedDraft.days = schedDraft.days.includes(i)
+        ? schedDraft.days.filter(x => x !== i) : [...schedDraft.days, i].sort();
+      drawSchedSheet();
+    };
+    days.appendChild(b);
+  }
+
+  const kind = schedDraft.target?.kind || 'cue';
+  for (const b of el('#schedkind').querySelectorAll('.seg')) {
+    b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
+    b.classList.toggle('on', b.dataset.kind === kind);
+  }
+
+  /* A cue already says on or off per circuit, so asking again would be a
+     question with no meaning. Only a bare circuit needs the answer. */
+  el('#schedaction').hidden = kind !== 'device';
+  for (const b of el('#schedaction').querySelectorAll('.seg')) {
+    const isOn = b.dataset.action === (schedDraft.action || 'on');
+    b.setAttribute('aria-pressed', String(isOn));
+    b.classList.toggle('on', isOn);
+  }
+
+  const pick = el('#schedtarget');
+  pick.innerHTML = '';
+  if (kind === 'cue') {
+    if (!cues.length) {
+      pick.appendChild(new Option('No cues yet — make one first', ''));
+    }
+    for (const c of cues) {
+      const o = new Option(c.name, c.id);
+      o.selected = schedDraft.target?.id === c.id;
+      pick.appendChild(o);
+    }
+  } else {
+    const byRoom = {};
+    for (const d of state.devices) (byRoom[d.room] = byRoom[d.room] || []).push(d);
+    for (const room of Object.keys(byRoom).sort()) {
+      const g = document.createElement('optgroup');
+      g.label = title(room);
+      for (const d of byRoom[room].slice().sort((a, b) => natural(a.name, b.name))) {
+        const o = new Option(pretty(d.name), String(d.record_id));
+        o.selected = Number(schedDraft.target?.record_id) === d.record_id;
+        g.appendChild(o);
+      }
+      pick.appendChild(g);
+    }
+  }
+  syncSchedTarget();
+  el('#schedsays').textContent = schedPreview();
+}
+
+/** Reads the picker back into the draft, so the draft is always the truth. */
+function syncSchedTarget() {
+  const pick = el('#schedtarget');
+  const kind = schedDraft.target?.kind || 'cue';
+  const v = pick.value;
+  if (!v) { schedDraft.target = null; return; }
+  schedDraft.target = kind === 'cue' ? { kind: 'cue', id: v } : { kind: 'device', record_id: Number(v) };
+}
+
+/** The sentence under the title, so you can read back what you just built. */
+function schedPreview() {
+  if (!schedDraft.target) return 'Pick something for it to do.';
+  if (!schedDraft.days.length) return 'Pick at least one day, or it will never run.';
+  const what = schedDraft.target.kind === 'cue'
+    ? 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue')
+    : (schedDraft.action === 'off' ? 'switch off ' : 'switch on ') +
+      (() => { const d = state.devices.find(x => x.record_id === Number(schedDraft.target.record_id));
+               return d ? pretty(d.name) + ' in ' + title(d.room) : 'a circuit'; })();
+  return 'At ' + schedDraft.at + ', ' + what + '. ' + daysWord(schedDraft.days) + '.';
+}
+
+/** Create or update, then let the pushed snapshot redraw every open browser. */
+async function saveSchedule(id, patch) {
+  const url = id ? '/api/schedules/' + id : '/api/schedules';
+  const res = await fetch(url, {
+    method: id ? 'PATCH' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.ok) { note(body.error || 'That schedule did not save'); return null; }
+  /* The SSE frame will bring this round to every other browser; this one does
+     not wait for it, so the list under your hand redraws at once. */
+  const list = await fetch('/api/schedules').then(r => r.json()).catch(() => null);
+  if (list?.ok) { state.schedules = list.schedules; drawSchedules(); }
+  return body.schedule;
+}
+
+el('#newsched').onclick = () => openSchedSheet(null);
+el('#schedcancel').onclick = closeSchedSheet;
+el('#schedscrim').addEventListener('click', (e) => { if (e.target === el('#schedscrim')) closeSchedSheet(); });
+
+el('#schedat').oninput = () => {
+  if (!schedDraft) return;
+  schedDraft.at = el('#schedat').value;
+  el('#schedsays').textContent = schedPreview();
+};
+el('#schedtarget').onchange = () => {
+  if (!schedDraft) return;
+  syncSchedTarget();
+  el('#schedsays').textContent = schedPreview();
+};
+
+for (const b of el('#schedkind').querySelectorAll('.seg')) {
+  b.onclick = () => {
+    if ((schedDraft.target?.kind || 'cue') === b.dataset.kind) return;
+    schedDraft.target = b.dataset.kind === 'cue' ? { kind: 'cue', id: null } : { kind: 'device', record_id: null };
+    drawSchedSheet();
+  };
+}
+for (const b of el('#schedaction').querySelectorAll('.seg')) {
+  b.onclick = () => { schedDraft.action = b.dataset.action; drawSchedSheet(); };
+}
+for (const b of el('.daypresets').querySelectorAll('.seg')) {
+  b.onclick = () => {
+    schedDraft.days = b.dataset.preset === 'every' ? [0, 1, 2, 3, 4, 5, 6]
+      : b.dataset.preset === 'week' ? [1, 2, 3, 4, 5] : [0, 6];
+    drawSchedSheet();
+  };
+}
+
+el('#schedsave').onclick = async () => {
+  if (!schedDraft.target || (!schedDraft.target.id && !schedDraft.target.record_id)) {
+    return note('Pick what this schedule should do.');
+  }
+  if (!schedDraft.days.length) return note('Pick at least one day.');
+  const saved = await saveSchedule(schedEditing, {
+    at: schedDraft.at, days: schedDraft.days, target: schedDraft.target,
+    action: schedDraft.action, enabled: schedDraft.enabled,
+  });
+  if (saved) { closeSchedSheet(); note('Saved · ' + saved.says); }
+};
+
+el('#schedrun').onclick = async () => {
+  if (!schedEditing) return;
+  const res = await fetch('/api/schedules/' + schedEditing + '/run', { method: 'POST' });
+  const body = await res.json().catch(() => ({}));
+  note(body.ok ? body.spoken : (body.error || 'That did not run'));
+};
+
+/* Delete arms first. A schedule is a sentence someone wrote; losing it to a
+   mis-tap is worse than the extra press, and this is the same two-step the cue
+   sheet already uses. */
+el('#scheddelete').onclick = async (e) => {
+  const b = e.currentTarget;
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed');
+    b.textContent = 'Delete for good?';
+    setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Delete'; }, 4000);
+    return;
+  }
+  await fetch('/api/schedules/' + schedEditing, { method: 'DELETE' });
+  const list = await fetch('/api/schedules').then(r => r.json()).catch(() => null);
+  if (list?.ok) { state.schedules = list.schedules; drawSchedules(); }
+  b.classList.remove('armed');
+  b.textContent = 'Delete';
+  closeSchedSheet();
+};
 
 /* ───────────────────────── the sheet: a cue opened up and edited */
 
