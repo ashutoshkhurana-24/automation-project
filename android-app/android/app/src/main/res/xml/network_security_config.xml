@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The hub speaks plain HTTP on the LAN and always will: it is a box in a flat
+  with no certificate and no name to put one on. Android 9 and later refuse
+  cleartext by default, so without this the app loads nothing at all.
+
+  Permitted for the hub's address only, rather than by flipping
+  usesCleartextTraffic on the whole application — everything else this app
+  might ever touch stays held to HTTPS.
+
+  If the dashboard is reached over Tailscale instead, add that hostname here
+  as a second <domain>.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.1.3</domain>
+    </domain-config>
+</network-security-config>

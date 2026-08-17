@@ -3726,13 +3726,26 @@ const HTML = /* html */ `<!doctype html>
       content: ''; position: absolute; inset: 0; z-index: 3;
       border-radius: inherit; padding: 2px; pointer-events: none;
       background: var(--rim);
-      backdrop-filter: brightness(1.5) saturate(1.8);
-      -webkit-backdrop-filter: brightness(1.5) saturate(1.8);
       -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
       mask-composite: exclude;
       transition: background .45s ease, opacity .45s ease;
+    }
+    /* The brightened edge is asked for separately, and only where the
+       unprefixed mask-composite is genuinely supported.
+       This ring carries a backdrop-filter, so it is only safe while the mask
+       actually cuts the middle out — if it does not, brightness(1.5) lands on
+       the whole card rather than its edge. Android's WebView 113 reports no
+       support for mask-composite: exclude and takes the webkit path, and
+       there the boost blew every lit card to rgb(255,255,0). The gradient rim
+       above still draws for it; only the extra sparkle is withheld. */
+    @supports (mask-composite: exclude) {
+      .tile::after, .cue::after, .tab::after, .sheet::after,
+      .timerpop::after, .quick button::after, .key::after {
+        backdrop-filter: brightness(1.5) saturate(1.8);
+        -webkit-backdrop-filter: brightness(1.5) saturate(1.8);
+      }
     }
     /* Only what is lit or chosen catches the light along its edge — in the
        reference exactly one row has a rim and the rest have none. Here that
@@ -3818,11 +3831,19 @@ const HTML = /* html */ `<!doctype html>
     /* The stops move with the level, but the *first* one does not: a circuit
        that is on is unmistakably warm at its leading edge whatever it is set
        to, and the level decides how far that warmth carries across the face. */
+    /* Mixed in sRGB, not oklab, and only because of transparent. All these
+       stops want is the tint at an alpha; but transparent is rgba(0,0,0,0),
+       so an oklab mix walks the colour toward black as the alpha falls and
+       engines disagree about the premultiplication. Chrome on a desktop gets
+       away with it. Android's WebView 113 does not: the fill came out blown to
+       pure yellow, rgb(255,255,0), on every lit card — measured off the device.
+       sRGB is the well-behaved space for a fade to nothing, and against a
+       solid card the difference is invisible where both work. */
     background: linear-gradient(104deg,
-      color-mix(in oklab, var(--tint) 100%, transparent) 0%,
-      color-mix(in oklab, var(--tint) 86%, transparent) calc(18% + var(--fill) * 40%),
-      color-mix(in oklab, var(--tint) 52%, transparent) calc(40% + var(--fill) * 42%),
-      color-mix(in oklab, var(--tint) 18%, transparent) calc(68% + var(--fill) * 32%));
+      color-mix(in srgb, var(--tint) 100%, transparent) 0%,
+      color-mix(in srgb, var(--tint) 86%, transparent) calc(18% + var(--fill) * 40%),
+      color-mix(in srgb, var(--tint) 52%, transparent) calc(40% + var(--fill) * 42%),
+      color-mix(in srgb, var(--tint) 18%, transparent) calc(68% + var(--fill) * 32%));
     transition: background .55s cubic-bezier(.3,.8,.3,1);
   }
   .tile:not(.on) .tile-fill { background: none; }

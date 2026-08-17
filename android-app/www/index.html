@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The House</title>
+<style>
+  /* Deliberately plain, and deliberately in the app's own colours: this is the
+     one screen that renders when the hub cannot be reached, so it must not
+     itself depend on anything the hub serves — no fonts, no images, no CSS. */
+  :root { --paper:#fdfaf5; --ink:#2b2622; --soft:#6b635a; --faint:#9a9187; --line:#e3dbd0; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100dvh; display: grid; place-items: center;
+    padding: 28px; background: #f4efe6; color: var(--ink);
+    font: 400 15px/1.5 ui-sans-serif, -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    max-width: 380px; width: 100%; padding: 26px 24px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 18px;
+  }
+  h1 { margin: 0 0 10px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  p { margin: 0 0 14px; color: var(--soft); }
+  ul { margin: 0 0 18px; padding-left: 18px; color: var(--soft); }
+  li { margin-bottom: 5px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+    background: #f4efe6; padding: 1px 5px; border-radius: 4px; color: var(--ink);
+  }
+  button {
+    width: 100%; padding: 13px; border-radius: 12px; cursor: pointer;
+    background: var(--ink); border: 1px solid var(--ink); color: var(--paper);
+    font: 500 15px/1 inherit;
+  }
+  .note { margin: 14px 0 0; font-size: 12px; color: var(--faint); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Can't reach the house</h1>
+    <p>The dashboard runs on the hub, and this phone can't see it right now.</p>
+    <ul>
+      <li>Is the phone on the home Wi-Fi?</li>
+      <li>Is the hub at <code>192.168.1.3</code> awake?</li>
+    </ul>
+    <button onclick="location.replace('http://192.168.1.3:3000/')">Try again</button>
+    <p class="note">Nothing is stored in this app — it is a window onto the hub,
+      so the lights are untouched either way.</p>
+  </div>
+</body>
+</html>

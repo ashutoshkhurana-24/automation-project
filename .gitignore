@@ -27,3 +27,14 @@ data/icon-*.png
 
 # runtime state — your schedules
 schedules.json
+
+# the Android shell: the project is source, its build output is not
+android-app/node_modules/
+android-app/android/build/
+android-app/android/app/build/
+android-app/android/.gradle/
+android-app/android/local.properties
+android-app/android/capacitor-cordova-android-plugins/
+
+# the built APK — rebuild with android-app/
+the-house.apk

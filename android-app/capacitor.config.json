@@ -1,0 +1,14 @@
+{
+  "appId": "com.ashutosh.thehouse",
+  "appName": "The House",
+  "webDir": "www",
+  "server": {
+    "url": "http://192.168.1.3:3000",
+    "cleartext": true,
+    "errorPath": "offline.html"
+  },
+  "android": {
+    "backgroundColor": "#12151aff",
+    "allowMixedContent": true
+  }
+}
