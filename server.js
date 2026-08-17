@@ -4108,6 +4108,11 @@ const HTML = /* html */ `<!doctype html>
     font: 400 12.5px/1.3 var(--sans);
     transition: border-color .18s, background .18s;
   }
+  /* [hidden] is display:none from the UA sheet and any display of ours beats
+     it — the same trap the segmented rows hit. Without this the strip stayed
+     as a 32px empty band whenever nothing was scheduled, which is exactly the
+     furniture it was written to avoid. */
+  .whatsnext[hidden] { display: none !important; }
   .whatsnext:hover { border-color: var(--line-up); background: var(--paper-2); }
   .whatsnext:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .wn-lab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
@@ -4556,6 +4561,10 @@ const HTML = /* html */ `<!doctype html>
     #secsched { display: none; }
     .plans-btn { display: inline-flex; }
     .whatsnext { display: flex; }
+    /* The air under the bar sits on the board rather than on either of the two
+       things above it, so the gap is the same whether or not there is anything
+       next — otherwise it changes depth every time a schedule finishes. */
+    .board { margin-top: 14px; }
 
     /* Everything under the cues was bare type on a photograph — a legend and a
        sentence with nothing behind them, which on a bright picture is not
