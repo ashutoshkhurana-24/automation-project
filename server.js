@@ -3291,10 +3291,16 @@ const HTML = /* html */ `<!doctype html>
   .strip {
     position: relative; height: 46px; border-radius: 11px; overflow: hidden;
     border: 1px solid var(--line); background: var(--paper-2); cursor: pointer;
+    /* The strip is dragged by hand, not by the range input inside it, so the
+       browser must not spend the first few frames deciding whether the finger
+       meant to scroll. Vertical panning still belongs to the page — a board
+       of strips you cannot scroll past is worse than a slider that needs a
+       deliberate sideways start. */
+    touch-action: pan-y;
   }
   .strip + .strip { margin-top: 9px; }
   .strip-fill { position: absolute; inset: 0 auto 0 0; width: var(--at, 0%);
-                background: var(--tint, var(--warm));
+                background: var(--tint, var(--warm)); pointer-events: none;
                 transition: width .3s, background .4s, opacity .3s; }
   /* A dark lamp's warmth strip still shows the colour it is set to — that is
      what you are choosing while it is off — but at full strength a bank of
@@ -3322,8 +3328,12 @@ const HTML = /* html */ `<!doctype html>
      clips its overflow to keep the fill inside those rounded ends — a knob at
      0% or 100% would be sliced in half by the very corner that makes the
      control look like a control. */
+  /* It sits above the input on z-index 2, which is exactly where a thumb aims —
+     and with pointer events left on it, it swallowed every drag that began on
+     the handle. The slider never moved and the gesture fell through to the
+     board behind. Nothing on a strip is a target; the strip itself is. */
   .strip-hand {
-    position: absolute; top: 50%; z-index: 2;
+    position: absolute; top: 50%; z-index: 2; pointer-events: none;
     left: clamp(13px, var(--at, 0%), calc(100% - 13px));
     width: 24px; height: 24px; margin-left: -12px; transform: translateY(-50%);
     border-radius: 50%; background: #fdfaf5;
@@ -3332,8 +3342,12 @@ const HTML = /* html */ `<!doctype html>
     transition: transform .16s cubic-bezier(.22,.94,.3,1), border-color .2s;
   }
   .tile:not(.on) .strip-hand { border-color: color-mix(in oklab, var(--soft) 70%, transparent); }
+  /* The range input stays for the keyboard and for screen readers, and it is
+     still what holds the value — but it is not what the finger drives. Two
+     drag implementations on one control fight each other, and the native one
+     is the one that cannot be made to feel like anything. */
   .strip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0;
-                 margin: 0; cursor: pointer; }
+                 margin: 0; cursor: pointer; pointer-events: none; }
 
   /* the header, on paper */
   .plate {
@@ -3547,6 +3561,10 @@ const HTML = /* html */ `<!doctype html>
   button.glance { display: none; }
 
   @media (max-width: 860px) {
+    :root {
+      --lens: blur(14px) saturate(135%) brightness(1.05);
+      --lens-up: blur(16px) saturate(140%) brightness(1.08);
+    }
     /* On the house: the held control, a way in to search, and the timer sheet
        for a scoped one. In a room: that room's switch and the three durations
        you would actually pick, because a sleep timer is a bedroom thing and
@@ -3741,10 +3759,12 @@ const HTML = /* html */ `<!doctype html>
        there the boost blew every lit card to rgb(255,255,0). The gradient rim
        above still draws for it; only the extra sparkle is withheld. */
     @supports (mask-composite: exclude) {
-      .tile::after, .cue::after, .tab::after, .sheet::after,
-      .timerpop::after, .quick button::after, .key::after {
-        backdrop-filter: brightness(1.5) saturate(1.8);
-        -webkit-backdrop-filter: brightness(1.5) saturate(1.8);
+      @media (min-width: 861px) {
+        .tile::after, .cue::after, .tab::after, .sheet::after,
+        .timerpop::after, .quick button::after, .key::after {
+          backdrop-filter: brightness(1.5) saturate(1.8);
+          -webkit-backdrop-filter: brightness(1.5) saturate(1.8);
+        }
       }
     }
     /* Only what is lit or chosen catches the light along its edge — in the
@@ -4990,27 +5010,37 @@ const HTML = /* html */ `<!doctype html>
     .tiles .tile.cobmember {
       grid-column: span 1; height: 132px; min-height: 0;
     }
+    /* Wide enough to clear the rails. It was 74px against 86px of rail, so the
+       first rail was laid straight over the reading — which is why "ON · 70%"
+       looked greyed out and broken in half: it was being read through a
+       translucent slider. */
     .tiles .tile.cobmember .tile-body {
-      position: absolute; inset: 0; padding: 13px 74px 13px 13px;
+      position: absolute; inset: 0; padding: 13px 82px 13px 13px;
     }
     /* The rails have to widen with the handle: a 23px knob inside a 27px rail
        was clipped on both sides and back to being hard to catch, which is the
-       whole reason the handle grew. */
+       whole reason the handle grew. The pair sits tighter against the edge
+       instead, so the width they cost comes out of the gap and not out of the
+       words. */
     .tiles .tile.cobmember .controls {
-      position: absolute; top: 14px; bottom: 14px; right: 10px; left: auto;
-      width: 76px; display: block; padding: 0; margin: 0;
+      position: absolute; top: 14px; bottom: 14px; right: 6px; left: auto;
+      width: 72px; display: block; padding: 0; margin: 0;
       --vrail: 104px;                     /* the tile's height, less the insets */
     }
     .tiles .tile.cobmember .strip {
       position: absolute; top: 0; left: 0; margin: 0;
       width: var(--vrail); height: 34px; border-radius: 11px;
       transform-origin: 0 0; transform: rotate(-90deg) translateX(-100%);
+      /* A rail's travel runs up the screen, which is also the direction the
+         page scrolls — so unlike a flat strip it cannot hand vertical panning
+         back to the board, or every drag would scroll instead of dim. */
+      touch-action: none;
     }
-    .tiles .tile.cobmember .strip:nth-of-type(2) { left: 42px; }
+    .tiles .tile.cobmember .strip:nth-of-type(2) { left: 38px; }
     /* Living's COBs dim but do not tune, so they get one rail — which then has
        to sit where the second one would, against the right edge, or the card
        reads as a control with a piece missing. */
-    .tiles .tile.cobmember .strip:only-of-type { left: 42px; }
+    .tiles .tile.cobmember .strip:only-of-type { left: 38px; }
     /* The key cannot stay in the top-right corner — the rails are there now.
        It goes to the foot of the left column, under the reading. */
     .tiles .tile.cobmember .ring {
@@ -5027,6 +5057,16 @@ const HTML = /* html */ `<!doctype html>
        warmth rail, so a bank of five unlit COBs was a wall of amber — the one
        signal that is supposed to mean something is burning. */
     .tiles .tile.cobmember.on .warmstrip .strip-fill { opacity: .82; }
+
+    /* Black on the COB cards, not the warm near-ink the rest of the page uses.
+       These are the two smallest, busiest faces on a phone — a ceiling card
+       carrying a number and two labelled strips, and a member card reading
+       through its own lamp colour — and at that size #2b2622 read as grey.
+       Nothing is lost by it: whether a COB is lit is already said by the pane,
+       the rim, the halo and the key. */
+    .tiles .tile.gang, .tiles .tile.cobmember {
+      --ink: #000; --soft: #000; --faint: #000;
+    }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
@@ -5062,10 +5102,15 @@ const HTML = /* html */ `<!doctype html>
      Last in the sheet on purpose: every pane declares its own backdrop-filter,
      so this has to come after all of them to win. Chrome resolves url() inside
      a backdrop-filter and bends the picture through the edge of each pane;
-     Safari cannot, throws this declaration away, and keeps the plain lens. */
-  .tile, .cue, .tab, .plate, .sheet, .timerpop, .saycard,
-  .quick button, .nudge, .back, .cut, .rail {
-    backdrop-filter: url("#lens") var(--lens);
+     Safari cannot, throws this declaration away, and keeps the plain lens.
+     Mobile devices (touch screens and phones) skip the SVG displacement map
+     because evaluating feDisplacementMap across dozens of cards causes severe
+     GPU and software rasterization lag in Android WebView. */
+  @media (min-width: 861px) and (hover: hover) {
+    .tile, .cue, .tab, .plate, .sheet, .timerpop, .saycard,
+    .quick button, .nudge, .back, .cut, .rail {
+      backdrop-filter: url("#lens") var(--lens);
+    }
   }
 </style>
 </head>
@@ -8910,50 +8955,13 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 setInterval(loadAuto, 60000);
 loadAuto();
 
-/* ── swipe between rooms ───────────────────────────────────────────────────
-   One-handed, the rail is a reach. A horizontal drag across the board moves to
-   the next room, the way pages turn. Anything that is itself a horizontal
-   control — a brightness or colour slider above all — is left alone, or every
-   attempt to dim a lamp would fling you into the next room instead. */
-(function wireSwipe() {
-  const board = el('#stack');
-  if (!board) return;
-  const order = () => ['house', ...rooms()];
-  let x0 = 0, y0 = 0, live = false;
+/* A sideways swipe used to turn from room to room here. It was removed: a
+   board is mostly sliders, and however carefully the gesture excluded them it
+   kept claiming drags that were meant for a lamp — which is a much worse
+   failure than a missing shortcut, because it moves you somewhere you did not
+   ask to go while a light is half set. The say-card's columns and the back
+   button are how you move between rooms. */
 
-  board.addEventListener('touchstart', (e) => {
-    if (e.touches.length !== 1) { live = false; return; }
-    // never steal a gesture that belongs to a control
-    if (e.target.closest('input, .slider, .seg, .pull, .key, .warmth')) { live = false; return; }
-    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; live = true;
-  }, { passive: true });
-
-  board.addEventListener('touchend', (e) => {
-    if (!live) return;
-    live = false;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - x0, dy = t.clientY - y0;
-    // decisively sideways, or it was a scroll that happened to drift
-    if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.8) return;
-    const list = order();
-    const at = state.q ? 0 : list.indexOf(state.view === 'room' ? state.room : 'house');
-    if (at < 0) return;
-    const next = list[at + (dx < 0 ? 1 : -1)];
-    if (!next) return;
-    if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); }
-    tick_haptic(6);
-    next === 'house' ? go('house') : go('room', next);
-  }, { passive: true });
-})();
-
-/* ── a strip knows when it is being held ───────────────────────────────────
-   The visible slider is the strip; the range input inside it is invisible, so
-   the input's own active state is not something CSS can reach from the strip
-   in every engine. One delegated pair of listeners marks the strip instead —
-   which drops the fill's 300ms width transition for the duration of the drag,
-   so the light tracks the finger instead of chasing it, and thickens the
-   handle so the grip is visible. Capturing, because the range input stops the
-   event from bubbling in some browsers. */
 /* ── a sheet you can throw back down ──────────────────────────────────────
    A panel that can only be dismissed by finding its Close button is a dialog;
    one that follows the thumb and can be flicked away is a sheet. Both the
@@ -9000,15 +9008,73 @@ loadAuto();
   document.addEventListener('pointercancel', letGo);
 })();
 
-const dropGrip = () => {
-  for (const s of document.querySelectorAll('.strip.dragging')) s.classList.remove('dragging');
-};
-document.addEventListener('pointerdown', (e) => {
-  const strip = e.target.closest && e.target.closest('.strip');
-  if (strip) strip.classList.add('dragging');
-}, true);
-document.addEventListener('pointerup', dropGrip, true);
-document.addEventListener('pointercancel', dropGrip, true);
+/* ── a strip is dragged by hand ────────────────────────────────────────────
+   The visible slider is the strip; the range input inside it is invisible and
+   now takes no pointer events at all. It stays for the keyboard and for the
+   value, and every listener already hangs off its input/change events — so
+   this drives it by setting .value and dispatching those, and nothing
+   downstream knows the difference.
+
+   Doing it by hand rather than leaving it to the native range buys the three
+   things that were missing. The value follows the finger from the first frame,
+   because the pointer is captured on pointerdown and no gesture arbitration
+   happens afterwards. A drag that starts *on the handle* works, which it did
+   not — the handle sits above the input and was eating the very gesture it
+   invites. And a rail on a COB tile, being the same control rotated a quarter
+   turn, is read along its own axis instead of the screen's. */
+(function stripDrag() {
+  let grip = null;
+
+  const valueAt = (strip, e) => {
+    const r = strip.getBoundingClientRect();
+    // A rotated rail measures taller than it is wide. Its zero is at the foot,
+    // because on a vertical control up is more.
+    const f = r.height > r.width
+      ? (r.bottom - e.clientY) / r.height
+      : (e.clientX - r.left) / r.width;
+    return Math.round(Math.min(1, Math.max(0, f)) * 100);
+  };
+
+  const put = (e) => {
+    const v = valueAt(grip.strip, e);
+    if (Number(grip.input.value) === v) return;
+    grip.input.value = v;
+    grip.input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button > 0 || !e.target.closest) return;
+    const strip = e.target.closest('.strip');
+    if (!strip) return;
+    const input = strip.querySelector('input[type=range]');
+    if (!input) return;
+    grip = { strip, input, id: e.pointerId };
+    strip.classList.add('dragging');
+    try { strip.setPointerCapture(e.pointerId); } catch (err) { /* mouse, mostly */ }
+    // Focus is what tells every repaint to leave this control alone — the same
+    // signal a native range gave when it was the thing being touched.
+    input.focus({ preventScroll: true });
+    put(e);
+    e.preventDefault();
+  });
+
+  document.addEventListener('pointermove', (e) => {
+    if (!grip || e.pointerId !== grip.id) return;
+    put(e);
+    e.preventDefault();
+  });
+
+  const letGo = (e) => {
+    if (!grip || (e && e.pointerId !== grip.id)) return;
+    const g = grip;
+    grip = null;
+    g.strip.classList.remove('dragging');
+    // A released drag is the final word, the same as a keyboard press.
+    g.input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  document.addEventListener('pointerup', letGo);
+  document.addEventListener('pointercancel', letGo);
+})();
 
 // Keep up with the house: poll while the tab is in view, re-read on return.
 setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
