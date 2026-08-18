@@ -328,12 +328,22 @@ function scheduleTarget(sch) {
 function scheduleSays(sch) {
   const t = scheduleTarget(sch);
   const what = t ? t.label : 'something that no longer exists';
-  const verb = sch.target?.kind === 'cue' ? 'run' : (sch.action === 'off' ? 'switch off' : 'switch on');
+  const isCurtain = t?.entry?.record && ((t.entry.record.app_type || '') === 'C' || t.entry.is_curtain);
+  let verb = sch.target?.kind === 'cue' ? 'run'
+    : isCurtain ? ((sch.action === 'close' || sch.action === 'off') ? 'close' : 'open')
+    : (sch.action === 'off' ? 'switch off' : 'switch on');
+  let extra = '';
+  if (t?.kind === 'device' && !isCurtain && sch.action !== 'off' && sch.action !== 'close') {
+    const parts = [];
+    if (sch.level != null) parts.push(`${sch.level}%`);
+    if (sch.tune != null) parts.push(sch.tune < 12 ? 'daylight' : sch.tune < 26 ? 'cool' : sch.tune < 40 ? 'soft white' : sch.tune < 56 ? 'neutral' : sch.tune < 70 ? 'warm white' : sch.tune < 86 ? 'amber' : 'candle');
+    if (parts.length) extra = ` at ${parts.join(', ')}`;
+  }
   const days = (sch.days || []).length === 7 ? 'every day'
     : (sch.days || []).length ? 'on ' + sch.days.map(d => DAY_NAMES[d]).join(', ')
       : 'never — no days chosen';
-  const after = sch.off_after ? `, then off after ${offAfterWord(sch.off_after)}` : '';
-  return `${sch.at} · ${verb} ${what}, ${days}${after}`;
+  const after = sch.off_after ? `, then ${isCurtain ? 'close' : 'off'} after ${offAfterWord(sch.off_after)}` : '';
+  return `${sch.at} · ${verb} ${what}${extra}, ${days}${after}`;
 }
 
 /** 90 reads as an hour and a half, not as ninety. */
@@ -355,7 +365,19 @@ async function runSchedule(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return fireCue(t.scene);
-  return setRecords([t.entry.record], { on: sch.action !== 'off' });
+  if (t.kind === 'device') {
+    const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
+    if (isCurtain) {
+      const verb = (sch.action === 'close' || sch.action === 'off') ? 'curtain_opr_c' : 'curtain_opr_o';
+      return sendToHub(t.entry.record.record_id, {}, verb);
+    }
+    const isOff = sch.action === 'off' || sch.action === 'close';
+    return setRecords([t.entry.record], {
+      on: !isOff,
+      level: isOff ? 0 : (sch.level != null ? sch.level : 100),
+      tune: isOff ? null : (sch.tune != null ? sch.tune : null),
+    });
+  }
 }
 
 /* Put out whatever this schedule lit, once its time is up.
@@ -368,8 +390,14 @@ async function runSchedule(sch) {
 async function runScheduleOff(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
-  if (t.kind === 'device') return setRecords([t.entry.record], { on: false });
-  return clearCue(t.scene);
+  if (t.kind === 'cue') return clearCue(t.scene);
+  if (t.kind === 'device') {
+    const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
+    if (isCurtain) {
+      return sendToHub(t.entry.record.record_id, {}, 'curtain_opr_c');
+    }
+    return setRecords([t.entry.record], { on: false });
+  }
 }
 
 /** The records a cue actually lights — the ones it names at a level above zero. */
@@ -1684,16 +1712,33 @@ function readSchedule(body, base) {
   if (!days.length) return { error: 'a schedule with no days would never run — pick at least one' };
 
   const target = body?.target ?? base?.target;
+  let devEntry = null;
   if (target?.kind === 'cue') {
     if (!scenes.some(sc => sc.id === target.id)) return { error: `no cue with id ${target.id}` };
   } else if (target?.kind === 'device') {
-    if (!devices.has(Number(target.record_id))) return { error: `no device with record_id ${target.record_id}` };
+    devEntry = devices.get(Number(target.record_id));
+    if (!devEntry) return { error: `no device with record_id ${target.record_id}` };
   } else {
     return { error: 'target must be {kind:"cue",id} or {kind:"device",record_id}' };
   }
 
-  const action = String(body?.action ?? base?.action ?? 'on');
-  if (!['on', 'off'].includes(action)) return { error: 'action must be on or off' };
+  const isCurtain = !!(devEntry && ((devEntry.record.app_type || '') === 'C' || devEntry.is_curtain));
+  let action = String(body?.action ?? base?.action ?? (isCurtain ? 'open' : 'on'));
+  if (isCurtain) {
+    if (action === 'on') action = 'open';
+    if (action === 'off') action = 'close';
+    if (!['open', 'close'].includes(action)) return { error: 'action must be open or close for curtains' };
+  } else {
+    if (action === 'open') action = 'on';
+    if (action === 'close') action = 'off';
+    if (!['on', 'off'].includes(action)) return { error: 'action must be on or off' };
+  }
+
+  const isOff = action === 'off' || action === 'close';
+  const rawLevel = body?.level !== undefined ? body.level : base?.level;
+  const rawTune = body?.tune !== undefined ? body.tune : base?.tune;
+  const level = !isOff && rawLevel !== undefined && rawLevel !== null ? pct(rawLevel) : null;
+  const tune = !isOff && rawTune !== undefined && rawTune !== null ? pct(rawTune) : null;
 
   /* How long after firing to put it out again. Null is the normal case — most
      schedules are meant to leave the house as they found it and stay. */
@@ -1707,7 +1752,7 @@ function readSchedule(body, base) {
     off_after = Math.round(off_after);
   }
   /* Switching something off and then switching it off again is not a thing. */
-  if (off_after && target.kind === 'device' && action === 'off') {
+  if (off_after && target.kind === 'device' && isOff) {
     return { error: 'a schedule that switches something off cannot also switch it off later' };
   }
 
@@ -1725,6 +1770,8 @@ function readSchedule(body, base) {
         ? { kind: 'cue', id: target.id }
         : { kind: 'device', record_id: Number(target.record_id) },
       action,
+      level,
+      tune,
       off_after,
       enabled: body?.enabled === undefined ? (base?.enabled ?? true) : !!body.enabled,
     },
@@ -5412,6 +5459,7 @@ const HTML = /* html */ `<!doctype html>
           <button class="seg" type="button" data-action="on">On</button>
           <button class="seg" type="button" data-action="off">Off</button>
         </div>
+        <div class="sched-controls" id="schedcontrols" hidden></div>
       </div>
 
       <div class="sched-field" id="schedafterfield">
@@ -7254,7 +7302,19 @@ function schedWhat(sch) {
   }
   const d = state.devices.find(x => x.record_id === Number(sch.target?.record_id));
   const where = d ? pretty(d.name) + ' · ' + title(d.room) : 'a circuit';
-  return (sch.action === 'off' ? 'Switch off ' : 'Switch on ') + where;
+  if (d?.is_curtain) {
+    return (sch.action === 'close' || sch.action === 'off' ? 'Close ' : 'Open ') + where;
+  }
+  const isOff = sch.action === 'off' || sch.action === 'close';
+  let verb = isOff ? 'Switch off ' : 'Switch on ';
+  let extra = '';
+  if (!isOff && d) {
+    const parts = [];
+    if (d.is_dimmable && sch.level != null) parts.push(sch.level + '%');
+    if (d.is_tunable && sch.tune != null) parts.push(warmthWord(sch.tune));
+    if (parts.length) extra = ' (' + parts.join(', ') + ')';
+  }
+  return verb + where + extra;
 }
 
 /* When a schedule will next come round, as a Date — or null if it never will.
@@ -7310,14 +7370,15 @@ let schedDraft = null;          // the schedule being edited, or a new one
 let schedEditing = null;        // its id, or null when it is new
 
 function blankSchedule() {
-  return { name: '', at: '07:30', days: [1, 2, 3, 4, 5], target: null, action: 'on', off_after: null, enabled: true };
+  return { name: '', at: '07:30', days: [1, 2, 3, 4, 5], target: null, action: 'on', level: null, tune: null, off_after: null, enabled: true };
 }
 
 function openSchedSheet(sch) {
   schedEditing = sch ? sch.id : null;
   schedDraft = sch
     ? { name: sch.name || '', at: sch.at, days: [...(sch.days || [])], target: { ...sch.target },
-        action: sch.action, off_after: sch.off_after || null, enabled: sch.enabled }
+        action: sch.action, level: sch.level != null ? sch.level : null, tune: sch.tune != null ? sch.tune : null,
+        off_after: sch.off_after || null, enabled: sch.enabled }
     : blankSchedule();
   el('#schedeyebrow').textContent = sch ? 'Schedule' : 'New schedule';
   el('#schedname').value = schedDraft.name;
@@ -7329,6 +7390,30 @@ function openSchedSheet(sch) {
 
 function closeSchedSheet() {
   hideScrim(el('#schedscrim'), () => { schedDraft = null; schedEditing = null; });
+}
+
+function schedSlider(label, key, draft, d, word, warm) {
+  const row = document.createElement('label');
+  row.className = 'step-slider' + (warm ? ' warm' : '');
+  row.style.marginTop = '10px';
+  const name = document.createElement('span');
+  name.textContent = label;
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = '0';
+  input.max = '100';
+  input.value = String(draft[key] != null ? draft[key] : (key === 'tune' ? 80 : 100));
+  const val = document.createElement('b');
+  val.textContent = word ? word(Number(input.value)) : input.value + '%';
+
+  input.oninput = () => {
+    const v = Number(input.value);
+    draft[key] = v;
+    val.textContent = word ? word(v) : v + '%';
+    el('#schedsays').textContent = schedPreview();
+  };
+  row.append(name, input, val);
+  return row;
 }
 
 /** Fills the sheet from the draft. Called on open and after every change. */
@@ -7359,15 +7444,6 @@ function drawSchedSheet() {
     b.classList.toggle('on', b.dataset.kind === kind);
   }
 
-  /* A cue already says on or off per circuit, so asking again would be a
-     question with no meaning. Only a bare circuit needs the answer. */
-  el('#schedaction').hidden = kind !== 'device';
-  for (const b of el('#schedaction').querySelectorAll('.seg')) {
-    const isOn = b.dataset.action === (schedDraft.action || 'on');
-    b.setAttribute('aria-pressed', String(isOn));
-    b.classList.toggle('on', isOn);
-  }
-
   const pick = el('#schedtarget');
   pick.innerHTML = '';
   if (kind === 'cue') {
@@ -7395,11 +7471,62 @@ function drawSchedSheet() {
   }
   syncSchedTarget();
 
-  /* Switching a circuit off and then off again is not a thing, so the question
-     is not asked of a schedule that already switches something off. */
-  const canAuto = !(kind === 'device' && schedDraft.action === 'off');
+  const targetDev = kind === 'device' && schedDraft.target?.record_id
+    ? state.devices.find(x => x.record_id === Number(schedDraft.target.record_id)) : null;
+  const isCurtain = !!targetDev?.is_curtain;
+
+  /* Action buttons: Open/Close for curtains, On/Off for circuits */
+  el('#schedaction').hidden = kind !== 'device';
+  const actBtns = el('#schedaction').querySelectorAll('.seg');
+  if (actBtns.length >= 2) {
+    if (isCurtain) {
+      actBtns[0].textContent = 'Open';
+      actBtns[0].dataset.action = 'open';
+      actBtns[1].textContent = 'Close';
+      actBtns[1].dataset.action = 'close';
+    } else {
+      actBtns[0].textContent = 'On';
+      actBtns[0].dataset.action = 'on';
+      actBtns[1].textContent = 'Off';
+      actBtns[1].dataset.action = 'off';
+    }
+    const currentAction = schedDraft.action || (isCurtain ? 'open' : 'on');
+    const isAct0 = currentAction === (isCurtain ? 'open' : 'on');
+    const isAct1 = currentAction === (isCurtain ? 'close' : 'off');
+    actBtns[0].setAttribute('aria-pressed', String(isAct0));
+    actBtns[0].classList.toggle('on', isAct0);
+    actBtns[1].setAttribute('aria-pressed', String(isAct1));
+    actBtns[1].classList.toggle('on', isAct1);
+  }
+
+  /* Brightness and warmth controls for dimmable / tunable circuits */
+  const controls = el('#schedcontrols');
+  if (controls) {
+    controls.innerHTML = '';
+    const isLit = schedDraft.action === 'on' || schedDraft.action === 'open';
+    const showControls = kind === 'device' && targetDev && !isCurtain && isLit && (targetDev.is_dimmable || targetDev.is_tunable);
+    controls.hidden = !showControls;
+    if (showControls) {
+      if (targetDev.is_dimmable) {
+        if (schedDraft.level == null) schedDraft.level = targetDev.level > 0 ? targetDev.level : 100;
+        controls.appendChild(schedSlider('Brightness', 'level', schedDraft, targetDev, (v) => v + '%'));
+      }
+      if (targetDev.is_tunable) {
+        if (schedDraft.tune == null) schedDraft.tune = targetDev.tune != null ? targetDev.tune : 80;
+        controls.appendChild(schedSlider('Warmth', 'tune', schedDraft, targetDev, warmthWord, true));
+      }
+    }
+  }
+
+  /* Auto-off / Auto-close */
+  const isOff = schedDraft.action === 'off' || schedDraft.action === 'close';
+  const canAuto = !(kind === 'device' && isOff);
   el('#schedafterfield').hidden = !canAuto;
   if (!canAuto) schedDraft.off_after = null;
+  const afterLab = el('#schedafterfield .sched-lab');
+  if (afterLab) afterLab.textContent = isCurtain ? 'Then close it again' : 'Then switch it off again';
+  const afterFirstSeg = el('#schedafter .seg');
+  if (afterFirstSeg) afterFirstSeg.textContent = isCurtain ? 'Leave it open' : 'Leave it on';
   for (const b of el('#schedafter').querySelectorAll('.seg')) {
     const mine = (b.dataset.after ? Number(b.dataset.after) : null) === (schedDraft.off_after || null);
     b.setAttribute('aria-pressed', String(mine));
@@ -7415,19 +7542,49 @@ function syncSchedTarget() {
   const v = pick.value;
   if (!v) { schedDraft.target = null; return; }
   schedDraft.target = kind === 'cue' ? { kind: 'cue', id: v } : { kind: 'device', record_id: Number(v) };
+  if (kind === 'device') {
+    const d = state.devices.find(x => x.record_id === Number(v));
+    if (d?.is_curtain) {
+      if (schedDraft.action === 'off' || schedDraft.action === 'close') schedDraft.action = 'close';
+      else schedDraft.action = 'open';
+      delete schedDraft.level;
+      delete schedDraft.tune;
+    } else {
+      if (schedDraft.action === 'close' || schedDraft.action === 'off') schedDraft.action = 'off';
+      else schedDraft.action = 'on';
+      if (d?.is_dimmable && schedDraft.level == null) schedDraft.level = d.level > 0 ? d.level : 100;
+      if (d?.is_tunable && schedDraft.tune == null) schedDraft.tune = d.tune != null ? d.tune : 80;
+    }
+  }
 }
 
 /** The sentence under the title, so you can read back what you just built. */
 function schedPreview() {
   if (!schedDraft.target) return 'Pick something for it to do.';
   if (!schedDraft.days.length) return 'Pick at least one day, or it will never run.';
-  const what = schedDraft.target.kind === 'cue'
-    ? 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue')
-    : (schedDraft.action === 'off' ? 'switch off ' : 'switch on ') +
-      (() => { const d = state.devices.find(x => x.record_id === Number(schedDraft.target.record_id));
-               return d ? pretty(d.name) + ' in ' + title(d.room) : 'a circuit'; })();
+  const d = schedDraft.target.kind === 'device'
+    ? state.devices.find(x => x.record_id === Number(schedDraft.target.record_id)) : null;
+  let what = '';
+  if (schedDraft.target.kind === 'cue') {
+    what = 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue');
+  } else if (d?.is_curtain) {
+    const verb = (schedDraft.action === 'close' || schedDraft.action === 'off') ? 'close ' : 'open ';
+    what = verb + pretty(d.name) + ' in ' + title(d.room);
+  } else {
+    const isOff = schedDraft.action === 'off' || schedDraft.action === 'close';
+    const verb = isOff ? 'switch off ' : 'switch on ';
+    let extra = '';
+    if (!isOff && d) {
+      const parts = [];
+      if (d.is_dimmable && schedDraft.level != null) parts.push(schedDraft.level + '%');
+      if (d.is_tunable && schedDraft.tune != null) parts.push(warmthWord(schedDraft.tune));
+      if (parts.length) extra = ' at ' + parts.join(', ');
+    }
+    what = verb + (d ? pretty(d.name) + ' in ' + title(d.room) : 'a circuit') + extra;
+  }
+  const isCurtain = !!d?.is_curtain;
   const after = schedDraft.off_after
-    ? ' Then off again after ' + offAfterWord(schedDraft.off_after) + '.' : '';
+    ? ' Then ' + (isCurtain ? 'close' : 'off') + ' again after ' + offAfterWord(schedDraft.off_after) + '.' : '';
   return 'At ' + schedDraft.at + ', ' + what + '. ' + daysWord(schedDraft.days) + '.' + after;
 }
 
@@ -7460,7 +7617,7 @@ el('#schedat').oninput = () => {
 el('#schedtarget').onchange = () => {
   if (!schedDraft) return;
   syncSchedTarget();
-  el('#schedsays').textContent = schedPreview();
+  drawSchedSheet();
 };
 
 for (const b of el('#schedkind').querySelectorAll('.seg')) {
@@ -7522,9 +7679,14 @@ el('#schedsave').onclick = async () => {
     return note('Pick what this schedule should do.');
   }
   if (!schedDraft.days.length) return note('Pick at least one day.');
+  const isOff = schedDraft.action === 'off' || schedDraft.action === 'close';
   const saved = await saveSchedule(schedEditing, {
     name: schedDraft.name, at: schedDraft.at, days: schedDraft.days, target: schedDraft.target,
-    action: schedDraft.action, off_after: schedDraft.off_after, enabled: schedDraft.enabled,
+    action: schedDraft.action,
+    level: isOff ? null : (schedDraft.level != null ? Number(schedDraft.level) : null),
+    tune: isOff ? null : (schedDraft.tune != null ? Number(schedDraft.tune) : null),
+    off_after: schedDraft.off_after,
+    enabled: schedDraft.enabled,
   });
   if (saved) { closeSchedSheet(); note('Saved · ' + saved.says); }
 };
