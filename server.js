@@ -4755,10 +4755,6 @@ const HTML = /* html */ `<!doctype html>
     .tile.hero-room .big { font-size: clamp(24px, 2.6vw, 32px); }
   }
 
-  /* Small COB member cards read through their own lamp colour, so black is
-     more legible than the warm near-ink the rest of the page uses. */
-  .tiles .tile.cobmember { --ink: #000; --soft: #000; --faint: #000; }
-
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
     /* A board sliding in from 26px to the right must not widen the document
