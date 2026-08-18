@@ -4756,14 +4756,8 @@ const HTML = /* html */ `<!doctype html>
   }
 
   /* Small COB member cards read through their own lamp colour, so black is
-     more legible than the warm near-ink the rest of the page uses. Also pin
-     the tint-mixed lit-state colours (sub, read, state) to pure #000 so the
-     amber fill doesn't darken them toward brown. */
+     more legible than the warm near-ink the rest of the page uses. */
   .tiles .tile.cobmember { --ink: #000; --soft: #000; --faint: #000; }
-  .tiles .tile.cobmember.on .sub,
-  .tiles .tile.cobmember.on .tile-read,
-  .tiles .tile.cobmember.on .state,
-  .tiles .tile.cobmember.on .big.dark { color: #000; }
 
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
@@ -5116,16 +5110,14 @@ const HTML = /* html */ `<!doctype html>
     .tiles .tile.cobmember.on .warmstrip .strip-fill { opacity: .82; }
 
     /* Black on the COB cards, not the warm near-ink the rest of the page uses.
-       The tile-fill floods a lit card with amber, so we also pin the tint-mixed
-       sub/read lines to pure black — otherwise color-mix(ink 76%, amber-tint)
-       produces a dark amber-brown that reads poorly at this size. */
+       These are the two smallest, busiest faces on a phone — a ceiling card
+       carrying a number and two labelled strips, and a member card reading
+       through its own lamp colour — and at that size #2b2622 read as grey.
+       Nothing is lost by it: whether a COB is lit is already said by the pane,
+       the rim, the halo and the key. */
     .tiles .tile.gang, .tiles .tile.cobmember {
       --ink: #000; --soft: #000; --faint: #000;
     }
-    .tiles .tile.cobmember.on .sub,
-    .tiles .tile.cobmember.on .tile-read,
-    .tiles .tile.cobmember.on .state,
-    .tiles .tile.cobmember.on .big.dark { color: #000; }
 
     /* the field is now just more page, not a scrolling window */
     .field { display: block; }
