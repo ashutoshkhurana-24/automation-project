@@ -4755,6 +4755,12 @@ const HTML = /* html */ `<!doctype html>
     .tile.hero-room .big { font-size: clamp(24px, 2.6vw, 32px); }
   }
 
+  /* The mobile block already forces --ink/soft/faint to #000 on cobmember,
+     but that rule lives inside max-width:860px so it doesn't reach desktop.
+     The gang (big COB) card looks fine without it; the small member cards
+     don't, so scope the override to cobmember only, globally. */
+  .tiles .tile.cobmember { --ink: #000; --soft: #000; --faint: #000; }
+
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
     /* A board sliding in from 26px to the right must not widen the document
