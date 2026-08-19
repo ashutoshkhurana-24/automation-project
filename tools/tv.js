@@ -8,6 +8,7 @@
 //   node tools/tv.js <ip> vol 12 | mute on|off
 //   node tools/tv.js <ip> inputs | input HDMI_1
 //   node tools/tv.js <ip> apps   | launch netflix
+//   node tools/tv.js <ip> youtube <url or id>   open that video in the app
 //   node tools/tv.js <ip> off
 //   node tools/tv.js wake <mac> [broadcast]   the only way to switch one on
 //
@@ -110,6 +111,7 @@ async function state(tv) {
         break;
       }
       case 'launch': console.log(await tv.launch(arg)); break;
+      case 'youtube': console.log(await tv.youtube(arg)); break;
       case 'off':    console.log(await tv.off()); break;
       default: die('unknown command: ' + cmd);
     }

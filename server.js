@@ -859,7 +859,7 @@ function pushSoon() {
 
    Addresses are not identity: these are on DHCP and moved twice in one evening,
    so a set is found by MAC — last known address first, then SSDP. */
-const { WebosTV, wake: wakeMac, discover: discoverTvs } = require('./tools/webos');
+const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId } = require('./tools/webos');
 
 const TVS = [
   { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
@@ -1020,6 +1020,24 @@ class TvLink {
     return { ok: true, spoken: this.said() + ' at volume ' + n };
   }
 
+  /* "Put this on the television" has to mean it whatever the set is doing, so a
+     sleeping one is woken and waited for rather than refused. The wake itself
+     is a broadcast with no reply, so the wait is for the socket to come up —
+     measured at around nine seconds from cold. */
+  async playYoutube(video) {
+    const id = youtubeId(video);
+    if (!id) throw new Error('not a YouTube link or id');
+    if (!this.tv) {
+      await this.setPower(true);
+      for (let i = 0; i < 20 && !this.tv; i++) await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!this.tv) throw new Error('the television did not wake in time');
+    await this.tv.youtube(id);
+    this.app = 'youtube.leanback.v4';
+    pushSoon();
+    return { ok: true, spoken: 'playing that on the ' + this.said(), video: id };
+  }
+
   async setMute(on) {
     if (!this.tv) throw new Error('the television is not reachable');
     this.commandedAt = Date.now();
@@ -1047,6 +1065,7 @@ app.post('/api/tv/:id', async (req, res) => {
   if (!t) return res.status(404).json({ ok: false, error: 'no such television' });
   const b = req.body || {};
   try {
+    if (b.youtube != null) return res.json(await t.playYoutube(b.youtube));
     if (b.on != null) return res.json(await t.setPower(!!b.on));
     if (b.mute != null) return res.json(await t.setMute(b.mute));
     if (b.volume != null) return res.json(await t.setVolume(Number(b.volume)));

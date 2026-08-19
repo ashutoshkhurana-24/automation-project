@@ -271,9 +271,33 @@ class WebosTV {
   apps()               { return this.request('ssap://com.webos.applicationManager/listLaunchPoints'); }
   launch(id)           { return this.request('ssap://system.launcher/launch', { id }); }
   toast(message)       { return this.request('ssap://system.notifications/createToast', { message }); }
+
+  /* Open a particular video in the YouTube app.
+   *
+   * `contentId` on the launch is what does it — confirmed by eye on the Ashu
+   * Room set, which opened the video itself rather than the app's home screen.
+   * Do **not** reach for `ssap://system.launcher/open` with a watch URL: it is
+   * accepted, it returns true, and it opens the television's *web browser*
+   * (foreground app becomes com.webos.app.browser), which is a much worse way
+   * to watch anything. Measured alongside this one. */
+  youtube(video) {
+    const id = youtubeId(video);
+    if (!id) throw new Error('not a YouTube link or id: ' + video);
+    return this.request('ssap://system.launcher/launch',
+      { id: 'youtube.leanback.v4', contentId: id });
+  }
   play()               { return this.request('ssap://media.controls/play'); }
   pause()              { return this.request('ssap://media.controls/pause'); }
   swInfo()             { return this.request('ssap://com.webos.service.update/getCurrentSWInformation'); }
+}
+
+/* Anything a person is likely to paste. A bare id is passed straight through,
+   so a caller that already has one does not have to know the URL shapes. */
+function youtubeId(v) {
+  const s = String(v || '').trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  const m = /(?:youtu\.be\/|[?&]v=|\/embed\/|\/shorts\/|\/live\/)([A-Za-z0-9_-]{11})/.exec(s);
+  return m ? m[1] : null;
 }
 
 // On is not SSAP. A magic packet is six 0xFF bytes then the MAC sixteen times,
@@ -345,4 +369,4 @@ function discover(ms) {
   });
 }
 
-module.exports = { WebosTV, wake, readKeys, macFor, discover, KEYS };
+module.exports = { WebosTV, wake, readKeys, macFor, discover, youtubeId, KEYS };
