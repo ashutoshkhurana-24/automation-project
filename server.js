@@ -137,7 +137,7 @@ function decodeLevel(v) {
 }
 
 function deviceList() {
-  return [...devices.values()].map(({ room, record }) => ({
+  return tvDeviceList().concat([...devices.values()].map(({ room, record }) => ({
     record_id: record.record_id,
     name: String(record.device_name || '').trim(),
     room: roomKey(room),
@@ -161,8 +161,17 @@ function deviceList() {
     status: decodeLevel(record.device_status) > 0,
     level: decodeLevel(record.device_status),
     tune: decodeLevel(record.device_status_tunable),
-  }));
+  })));
 }
+
+/* Defined below, with the televisions themselves — this is only here so that
+   deviceList() can be read in one piece. Before they are wired up it answers
+   with nothing, which is what a dashboard with no televisions should show. */
+function tvDeviceList() { return TV_READY ? tvList() : []; }
+// var, so it hoists as undefined rather than sitting in the temporal dead zone
+// a const would — deviceList() must be safe to call before the televisions are
+// wired up, and reading a const too early throws rather than answering falsy.
+var TV_READY = false;
 
 // -------------------------------------------------------------------------- scenes
 
@@ -803,6 +812,7 @@ function stateSignature() {
   /* The schedule list is part of what the page draws, so a change to it has to
      count as a change — otherwise editing one on a phone pushes nothing and the
      laptop keeps showing yesterday's list until something else moves. */
+  parts.push('tv:' + tvSignature());
   parts.push('sch:' + schedules.map(s =>
     `${s.id}${s.name || ''}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}` +
     `${s.off_after || 0}${s.target?.id ?? s.target?.record_id}`).join(','));
@@ -829,6 +839,210 @@ function pushSoon() {
   if (pushTimer || !sseClients.size) return;
   pushTimer = setTimeout(() => { pushTimer = null; pushSnapshot(); }, 250);
 }
+
+/* ── the televisions ───────────────────────────────────────────────────────
+   Not hub devices. The hub knows one screen (record 512, an IR projector) and
+   nothing about these, so they are spoken to directly over SSAP — LG's own
+   WebSocket protocol — by tools/webos.js.
+
+   The important difference from everything else on this board is that a
+   television *answers*. SSAP has real subscriptions, so volume, power and the
+   running app arrive as pushes whenever they change, including from somebody's
+   remote. So there is no polling here: one long-lived socket per set, and a
+   push straight out to the browsers. It is the only device class where what
+   the dashboard shows is a reading rather than a belief.
+
+   Off is genuinely dark — a sleeping set answers nothing and closes both
+   ports — which is why a dropped connection is reported as "off" rather than
+   as an error. On is a Wake-on-LAN broadcast, since there is nobody listening
+   to ask. Both were proven end to end on the Ashu Room set.
+
+   Addresses are not identity: these are on DHCP and moved twice in one evening,
+   so a set is found by MAC — last known address first, then SSDP. */
+const { WebosTV, wake: wakeMac, discover: discoverTvs } = require('./tools/webos');
+
+const TVS = [
+  { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
+];
+const TV_RETRY_MS = 20000;
+
+class TvLink {
+  constructor(spec) {
+    Object.assign(this, spec);
+    // Held in memory only. It could be persisted, but loadSettings() rebuilds
+    // settings from a whitelist so it would be silently dropped — and a lease
+    // that has moved while we were stopped is exactly the stale value worth
+    // not keeping. Rediscovery costs one SSDP sweep.
+    this.ip = null;
+    this.tv = null;
+    this.online = false;
+    this.power = false;
+    this.volume = 0;
+    this.muted = false;
+    this.app = '';
+    this.commandedAt = 0;
+    this.wakingUntil = 0;
+    // Bumped by every power command. A wake schedules several reconnect
+    // attempts over the next twenty seconds, and without this an "off" issued
+    // in between is undone by one of them arriving late and finding the set
+    // still shutting down — the tile flicks back on for a few seconds before
+    // correcting itself. Same shape as the intent tokens the lights use.
+    this.gen = 0;
+    this.busy = false;
+  }
+
+  // Named the way somebody would say it out loud, for the /do and Siri replies.
+  said() { return (this.room.replace(/ ROOM$/i, '') + ' ' + this.name).toLowerCase(); }
+
+  // What the board draws. A set we cannot reach is off, not broken.
+  snapshot() {
+    return {
+      record_id: this.id, name: this.name, room: roomKey(this.room),
+      app_type: 'TV', device_type: 'SSAP', device_id: this.mac, channel_id: '',
+      is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
+      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_tv: true, tv_app: this.app, tv_volume: this.volume, tv_muted: this.muted,
+      /* Waking is the one moment this device class cannot report itself: the
+         magic packet goes to a set with nothing listening, and the socket does
+         not come up for another ten seconds or so. Reporting OFF through that
+         window made the tile snap back to off with the television visibly
+         coming on in front of you. So a wake we sent counts as on until it
+         either answers or the window lapses — at which point it reverts to off,
+         which is then the truth. It is the only belief on this tile, and it
+         expires. */
+      status: this.online ? this.power : Date.now() < this.wakingUntil,
+      level: 0, tune: 0,
+    };
+  }
+
+  async find() {
+    if (this.ip) return this.ip;
+    const seen = await discoverTvs(5000).catch(() => []);
+    const hit = seen.find((t) => !t.natted && t.macs.includes(this.mac));
+    if (hit) this.ip = hit.ip;
+    return this.ip;
+  }
+
+  async open() {
+    if (this.tv || this.busy) return;
+    this.busy = true;
+    try {
+      const ip = await this.find();
+      if (!ip) return;
+      const tv = new WebosTV(ip, { mac: this.mac });
+      await tv.connect(12000);
+      this.tv = tv;
+      this.online = true;
+      tv.ws.on('close', () => this.dropped());
+      tv.ws.on('error', () => this.dropped());
+      // One subscription per thing the tile shows. Each fires immediately with
+      // the current value, so there is no separate read to reconcile.
+      tv.subscribe('ssap://com.webos.service.tvpower/power/getPowerState', (p) => {
+        this.power = (p.state || '').toLowerCase() === 'active';
+        pushSoon();
+      });
+      tv.subscribe('ssap://audio/getVolume', (p) => {
+        const v = p.volumeStatus || p;
+        if (typeof v.volume === 'number') this.volume = v.volume;
+        if (typeof v.muteStatus === 'boolean') this.muted = v.muteStatus;
+        else if (typeof v.mute === 'boolean') this.muted = v.mute;
+        pushSoon();
+      });
+      tv.subscribe('ssap://com.webos.applicationManager/getForegroundAppInfo', (p) => {
+        this.app = p.appId || '';
+        pushSoon();
+      });
+      this.power = true;                    // it answered, so it is awake
+      this.wakingUntil = 0;                 // no need to believe anything now
+      pushSoon();
+    } catch (e) {
+      // An address that no longer works is worth forgetting, so the next
+      // attempt rediscovers rather than retrying a stale lease forever.
+      if (/ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|timed out|not answer/i.test(e.message)) this.ip = null;
+      this.dropped();
+    } finally { this.busy = false; }
+  }
+
+  dropped() {
+    if (this.tv) { try { this.tv.close(); } catch (e) {} }
+    this.tv = null;
+    if (this.online || this.power) pushSoon();
+    this.online = false;
+    this.power = false;
+    this.app = '';
+  }
+
+  async setPower(on) {
+    this.commandedAt = Date.now();
+    const gen = ++this.gen;
+    if (on) {
+      // Nothing is listening on a sleeping set, so this is a broadcast and
+      // there is no reply to wait for. It answered within five seconds when
+      // measured; the subscription reports the truth when it lands.
+      await wakeMac(this.mac);
+      this.power = true;
+      this.wakingUntil = Date.now() + 25000;
+      pushSoon();
+      // Measured at five seconds to answer ping, but the set needs longer
+      // before it will take a socket. Try a few times rather than pick one
+      // number and be wrong in whichever direction.
+      for (const at of [3000, 6000, 9000, 13000, 18000]) {
+        setTimeout(() => { if (gen === this.gen && !this.tv) this.open(); }, at);
+      }
+      return { ok: true, spoken: this.said() + ' waking up' };
+    }
+    if (!this.tv) throw new Error('the television is not reachable');
+    await this.tv.off();
+    this.wakingUntil = 0;
+    this.dropped();
+    return { ok: true, spoken: this.said() + ' off' };
+  }
+
+  async setVolume(v) {
+    if (!this.tv) throw new Error('the television is not reachable');
+    this.commandedAt = Date.now();
+    const n = Math.max(0, Math.min(100, Math.round(v)));
+    await this.tv.setVolume(n);
+    this.volume = n;
+    pushSoon();
+    return { ok: true, spoken: this.said() + ' at volume ' + n };
+  }
+
+  async setMute(on) {
+    if (!this.tv) throw new Error('the television is not reachable');
+    this.commandedAt = Date.now();
+    await this.tv.setMute(!!on);
+    this.muted = !!on;
+    pushSoon();
+    return { ok: true, spoken: this.said() + (on ? ' muted' : ' unmuted') };
+  }
+}
+
+const tvs = new Map(TVS.map((t) => [t.id, new TvLink(t)]));
+const tvList = () => [...tvs.values()].map((t) => t.snapshot());
+const tvSignature = () => [...tvs.values()]
+  .map((t) => `${t.id}:${t.online ? 1 : 0}${t.power ? 1 : 0}:${t.volume}:${t.muted ? 1 : 0}:${t.app}`)
+  .join('|');
+
+// One reconnect loop for all of them. A set that is off simply fails to
+// connect, which is the correct answer and costs one attempt every 20s.
+setInterval(() => { for (const t of tvs.values()) if (!t.tv) t.open(); }, TV_RETRY_MS);
+TV_READY = true;
+for (const t of tvs.values()) t.open();
+
+app.post('/api/tv/:id', async (req, res) => {
+  const t = tvs.get(req.params.id);
+  if (!t) return res.status(404).json({ ok: false, error: 'no such television' });
+  const b = req.body || {};
+  try {
+    if (b.on != null) return res.json(await t.setPower(!!b.on));
+    if (b.mute != null) return res.json(await t.setMute(b.mute));
+    if (b.volume != null) return res.json(await t.setVolume(Number(b.volume)));
+    return res.status(400).json({ ok: false, error: 'nothing asked for' });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
 
 app.get('/api/stream', (req, res) => {
   res.writeHead(200, {
@@ -6443,11 +6657,15 @@ function circuitTile(d, compact) {
   // Width follows what the circuit can actually do: two sliders need room, a
   // plain switch does not.
   const roomy = d.is_tunable || d.is_ac || d.is_curtain;
+  // A television carries one strip, so it wants the same room a dimmable lamp
+  // does — the layout keys off .dims for that, and volume is close enough in
+  // shape to brightness that reusing it beats a parallel set of rules.
+  const strips = d.is_dimmable || d.is_tv;
   // The compact flag has to be on before the first paint: the reading depends
   // on it, and adding the class afterwards left the card showing the long form
   // until something happened to redraw it.
-  tile.className = 'tile enter ' + kind + (d.is_dimmable ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
-    + (roomy ? ' wide' : '') + (d.is_dimmable && !d.is_tunable ? ' tall' : '')
+  tile.className = 'tile enter ' + kind + (strips ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
+    + (roomy ? ' wide' : '') + (strips && !d.is_tunable ? ' tall' : '')
     + (compact ? ' cobmember' : '');
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
@@ -6478,11 +6696,15 @@ function circuitTile(d, compact) {
     tile.appendChild(ring);
   }
 
-  if (d.is_dimmable || d.is_tunable) {
+  if (d.is_dimmable || d.is_tunable || d.is_tv) {
     const controls = document.createElement('div');
     controls.className = 'controls';
     if (d.is_dimmable) controls.appendChild(slider(d, 'level'));
     if (d.is_tunable) controls.appendChild(slider(d, 'tune'));
+    // Volume is the one thing you reach for on a television that is already on,
+    // and it rides the same strip as everything else — paintTile reads d[key],
+    // so tv_volume needs no special case there.
+    if (d.is_tv) controls.appendChild(slider(d, 'tv_volume'));
     tile.appendChild(controls);
   }
 
@@ -6504,12 +6726,17 @@ function circuitTile(d, compact) {
 /* A strip rather than a track. The colour one carries its value in the label,
    since warmth has no unit anybody reads off a scale. */
 function stripLabel(d, key) {
+  if (key === 'tv_volume') return d.tv_muted ? 'MUTED' : 'VOLUME';
   return key === 'level' ? 'BRIGHTNESS' : warmthLabel(d.tune);
 }
 
 function slider(d, key) {
   const wrap = document.createElement('label');
-  wrap.className = 'strip ' + (key === 'level' ? 'dimstrip' : 'warmstrip');
+  // Split on 'tune', not on 'level'. Written the other way round it made every
+  // strip that was not brightness a *warmth* strip — which gave a television's
+  // volume the cool-to-warm gradient and stood it down to .38 whenever the set
+  // was off, both of which mean something quite different.
+  wrap.className = 'strip ' + (key === 'tune' ? 'warmstrip' : 'dimstrip');
   wrap.innerHTML = '<span class="strip-fill"></span><span class="strip-hand"></span>' +
                    '<span class="strip-label"></span>';
   wrap.querySelector('.strip-label').textContent = stripLabel(d, key);
@@ -6517,7 +6744,7 @@ function slider(d, key) {
 
   const input = document.createElement('input');
   input.type = 'range';
-  input.className = key === 'level' ? 'slider dim' : 'slider warm';
+  input.className = key === 'tune' ? 'slider warm' : 'slider dim';
   input.min = 0; input.max = 100; input.step = 1;
   input.value = d[key];
   input.dataset.key = key;
@@ -6685,7 +6912,9 @@ function gangSlider(tile, key) {
    the face is 74px narrower to make room for them — so the full reading wraps
    to four lines and buries the name. The card says the short version and lets
    the rails say the rest. */
-const shortState = (d) => !d.status ? 'OFF' : d.is_dimmable ? 'ON · ' + d.level + '%' : 'ON';
+const shortState = (d) => !d.status ? 'OFF'
+  : d.is_tv ? 'ON · VOL ' + d.tv_volume
+  : d.is_dimmable ? 'ON · ' + d.level + '%' : 'ON';
 
 function paintTile(tile, d) {
   if (!tile) return;
@@ -6739,6 +6968,12 @@ function stateWord(d) {
   // hub cannot hear would be the dashboard inventing a fact.
   if (d.is_ac) return (d.status ? 'HUB SENT ON' : 'HUB SENT OFF');
   if (!d.status) return 'OFF';
+  /* A television is the one thing here that genuinely answers, so its reading
+     is plain fact and needs no hedge: it says what is playing and how loud.
+     Off is equally certain — a sleeping set closes its ports, so silence means
+     off rather than "we do not know". */
+  if (d.is_tv) return 'ON' + (d.tv_app ? ' · ' + appWord(d.tv_app) : '')
+                           + ' · ' + (d.tv_muted ? 'MUTED' : 'VOL ' + d.tv_volume);
   // Everything that is genuinely on says so first, in the same word, whatever
   // it is. A fan used to say TURNING and a lamp used to say 40% — both true,
   // neither of them the thing you are scanning the board for, which is simply
@@ -6746,6 +6981,23 @@ function stateWord(d) {
   if (d.is_fan) return 'ON';
   if (d.is_dimmable) return 'ON · ' + d.level + '%' + (d.is_tunable ? ' · ' + warmthWord(d.tune).toUpperCase() : '');
   return 'ON';
+}
+
+/* webOS app ids are reverse-DNS and unreadable on a tile — youtube.leanback.v4
+   and com.webos.app.livetv are the two this house sees most. The common ones
+   get a name; anything else is trimmed to its last meaningful word rather than
+   listed here, because the list would never be complete. */
+const APP_WORDS = {
+  'youtube.leanback.v4': 'YOUTUBE', 'netflix': 'NETFLIX', 'amazon': 'PRIME VIDEO',
+  'com.webos.app.livetv': 'LIVE TV', 'com.webos.app.hdmi1': 'HDMI 1',
+  'com.webos.app.hdmi2': 'HDMI 2', 'com.webos.app.hdmi3': 'HDMI 3',
+  'com.webos.app.home': 'HOME', 'com.disney.disneyplus-prod': 'DISNEY+',
+  'com.webos.app.browser': 'BROWSER', 'spotify-beehive': 'SPOTIFY',
+};
+function appWord(id) {
+  if (APP_WORDS[id]) return APP_WORDS[id];
+  const bits = String(id).split('.').filter(b => b && !/^(com|net|org|app|v\d+|webos|prod)$/i.test(b));
+  return (bits[bits.length - 1] || id).toUpperCase().slice(0, 12);
 }
 
 function readWord(d) {
@@ -6791,9 +7043,17 @@ async function setDevice(d, next) {
 
   try {
     // An IR air conditioner needs the command string, not a bare record.
+    // Three different things behind one key. An IR air conditioner needs a
+    // command string rather than a record; a television is not a hub device at
+    // all and is reached over its own protocol, where "on" is a broadcast to a
+    // set that is asleep and cannot be asked anything.
     const res = d.is_ac
       ? await fetch('/api/ac', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ record_id: d.record_id, power: next }) })
+      : d.is_tv
+      ? await fetch('/api/tv/' + encodeURIComponent(d.record_id), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on: next }) })
       : await fetch('/api/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ record_id: d.record_id, status: next }) });
     const body = await res.json().catch(() => ({}));
@@ -6859,10 +7119,13 @@ function queueSlider(d, key, now) {
 
 async function sendSlider(d, key) {
   try {
-    const res = await fetch(key === 'level' ? '/api/level' : '/api/tune', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ record_id: d.record_id, [key]: d[key] }),
-    });
+    const res = key === 'tv_volume'
+      ? await fetch('/api/tv/' + encodeURIComponent(d.record_id), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ volume: d.tv_volume }) })
+      : await fetch(key === 'level' ? '/api/level' : '/api/tune', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ record_id: d.record_id, [key]: d[key] }) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.ok) throw new Error(body.error || 'Hub did not respond');
   } catch (err) {
@@ -8296,8 +8559,13 @@ async function switchOffMany(devs, saying) {
   tick();
   note(saying);
 
+  // Three kinds of thing again. The hub circuits go down one shared socket,
+  // because opening one per command is what this hub drops; an air conditioner
+  // needs its command string; and a television is not a hub device at all, so
+  // its id would simply not be found in the record map.
   const acs = devs.filter(d => d.is_ac);
-  const rest = devs.filter(d => !d.is_ac);
+  const televisions = devs.filter(d => d.is_tv);
+  const rest = devs.filter(d => !d.is_ac && !d.is_tv);
   try {
     const calls = [];
     if (rest.length) calls.push(fetch('/api/group', {
@@ -8307,6 +8575,10 @@ async function switchOffMany(devs, saying) {
     for (const ac of acs) calls.push(fetch('/api/ac', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ record_id: ac.record_id, power: false }),
+    }));
+    for (const tv of televisions) calls.push(fetch('/api/tv/' + encodeURIComponent(tv.record_id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on: false }),
     }));
     const res = await Promise.all(calls);
     if (res.some(r => !r.ok)) throw new Error('The hub refused part of that');

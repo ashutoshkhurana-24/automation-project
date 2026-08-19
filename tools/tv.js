@@ -14,57 +14,10 @@
 // Everything but `discover` and `wake` needs a pairing key, which the first
 // `pair` stores in data/tv-keys.json and every later run reuses.
 
-const dgram = require('dgram');
-const { WebosTV, wake, readKeys } = require('./webos');
+const { WebosTV, wake, readKeys, discover } = require('./webos');
 
 const argv = process.argv.slice(2);
 const die = (m) => { console.error(m); process.exit(1); };
-
-/* Discovery is SSDP, and worth doing by M-SEARCH rather than by scanning: the
-   reply carries the model, the friendly name and — in the DIAL record — the
-   MAC, which is the one thing needed to switch the set back on and the one
-   thing an IP scan cannot tell you. */
-function discover(ms) {
-  return new Promise((resolve) => {
-    // Grouped by the address the reply came from, because that is the only
-    // thing we could actually connect to. A television emits several SSDP
-    // records and only some carry the MAC, so the MAC is collected across all
-    // of them rather than used as the key.
-    const byIp = new Map();
-    const s = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    s.on('message', (m, r) => {
-      const t = m.toString();
-      if (!/lge|webos/i.test(t)) return;
-      const tv = byIp.get(r.address) || { ip: r.address, macs: new Set() };
-      const name = /^DLNADeviceName\.lge\.com:\s*(.+)$/mi.exec(t);
-      const link = /^LGLINK-NAME\s*:\s*(.+)$/mi.exec(t);
-      const mac = /^WAKEUP:\s*MAC=([0-9a-f:]+)/mi.exec(t);
-      if (name && !tv.name) tv.name = decodeURIComponent(name[1].trim());
-      if (link && !tv.model) tv.model = link[1].trim();
-      if (mac) tv.macs.add(mac[1].trim().toLowerCase());
-      byIp.set(r.address, tv);
-    });
-    s.bind(() => {
-      const ask = (st) => s.send(Buffer.from(
-        'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 2\r\nST: '
-        + st + '\r\n\r\n'), 1900, '239.255.255.250');
-      ask('urn:lge:device:tv:1');
-      ask('urn:dial-multiscreen-org:service:dial:1');
-      ask('ssdp:all');
-    });
-    setTimeout(() => {
-      s.close();
-      resolve([...byIp.values()].map((t) => ({
-        ip: t.ip, name: t.name, model: t.model,
-        macs: [...t.macs],
-        // More than one television answering from a single address means a
-        // router replied for them: they are behind a NAT and nothing at that
-        // address is a set we can talk to.
-        natted: t.macs.size > 1,
-      })));
-    }, ms || 5000);
-  });
-}
 
 const val = (p, ...keys) => { for (const k of keys) if (p && p[k] != null) return p[k]; return undefined; };
 
