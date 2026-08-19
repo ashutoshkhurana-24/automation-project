@@ -3338,12 +3338,10 @@ const HTML = /* html */ `<!doctype html>
   .strip {
     position: relative; height: 46px; border-radius: 11px; overflow: hidden;
     border: 1px solid var(--line); background: var(--paper-2); cursor: pointer;
-    /* The strip is dragged by hand, not by the range input inside it, so the
-       browser must not spend the first few frames deciding whether the finger
-       meant to scroll. Vertical panning still belongs to the page — a board
-       of strips you cannot scroll past is worse than a slider that needs a
-       deliberate sideways start. */
-    touch-action: pan-y;
+    /* touch-action is set to none further down, with the rest of the feel
+       rules — the browser must not spend the first frames of a drag deciding
+       whether the finger meant to scroll. Do not set it here as well: a
+       pan-y written at this point is simply overwritten and looks live. */
   }
   .strip + .strip { margin-top: 9px; }
   .strip-fill { position: absolute; inset: 0 auto 0 0; width: var(--at, 0%);
@@ -3704,8 +3702,17 @@ const HTML = /* html */ `<!doctype html>
        space that was reserved for them is a hole. A tunable lamp reserved 70px
        and then put its strips below that, which is why one COB was taller than
        the card that drives all five. */
-    .tiles .tile.dims .tile-body, .tiles .tile.tunes .tile-body,
-    .tiles .tile.dims.tunes .tile-body {
+    /* Never a COB member. That card pins its body absolutely so the reading
+       sits beside two rails rather than above them — and this rule, carrying
+       one class more, quietly won. Two things broke silently: a static body
+       has no z-index, so it dropped *underneath* the lit tile's own fill and
+       every word was read through an amber gradient (which is what "the text
+       on the COBs isn't black" actually was); and it lost its absolute box,
+       so 82px of rail clearance came out of a 135px card and left 40px for
+       "ON · 70%" to wrap inside. */
+    .tiles .tile.dims:not(.cobmember) .tile-body,
+    .tiles .tile.tunes:not(.cobmember) .tile-body,
+    .tiles .tile.dims.tunes:not(.cobmember) .tile-body {
       position: static; padding-bottom: 0;
     }
     .tiles .tile.dims .controls, .tiles .tile.tunes .controls {
@@ -5084,10 +5091,6 @@ const HTML = /* html */ `<!doctype html>
       position: absolute; top: 0; left: 0; margin: 0;
       width: var(--vrail); height: 34px; border-radius: 11px;
       transform-origin: 0 0; transform: rotate(-90deg) translateX(-100%);
-      /* A rail's travel runs up the screen, which is also the direction the
-         page scrolls — so unlike a flat strip it cannot hand vertical panning
-         back to the board, or every drag would scroll instead of dim. */
-      touch-action: none;
     }
     .tiles .tile.cobmember .strip:nth-of-type(2) { left: 38px; }
     /* Living's COBs dim but do not tune, so they get one rail — which then has
