@@ -26,19 +26,23 @@ const die = (m) => { console.error(m); process.exit(1); };
    thing an IP scan cannot tell you. */
 function discover(ms) {
   return new Promise((resolve) => {
-    const found = new Map();
+    // Grouped by the address the reply came from, because that is the only
+    // thing we could actually connect to. A television emits several SSDP
+    // records and only some carry the MAC, so the MAC is collected across all
+    // of them rather than used as the key.
+    const byIp = new Map();
     const s = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     s.on('message', (m, r) => {
       const t = m.toString();
       if (!/lge|webos/i.test(t)) return;
-      const tv = found.get(r.address) || { ip: r.address };
+      const tv = byIp.get(r.address) || { ip: r.address, macs: new Set() };
       const name = /^DLNADeviceName\.lge\.com:\s*(.+)$/mi.exec(t);
       const link = /^LGLINK-NAME\s*:\s*(.+)$/mi.exec(t);
       const mac = /^WAKEUP:\s*MAC=([0-9a-f:]+)/mi.exec(t);
-      if (name) tv.name = decodeURIComponent(name[1].trim());
+      if (name && !tv.name) tv.name = decodeURIComponent(name[1].trim());
       if (link && !tv.model) tv.model = link[1].trim();
-      if (mac) tv.mac = mac[1].trim();
-      found.set(r.address, tv);
+      if (mac) tv.macs.add(mac[1].trim().toLowerCase());
+      byIp.set(r.address, tv);
     });
     s.bind(() => {
       const ask = (st) => s.send(Buffer.from(
@@ -48,7 +52,17 @@ function discover(ms) {
       ask('urn:dial-multiscreen-org:service:dial:1');
       ask('ssdp:all');
     });
-    setTimeout(() => { s.close(); resolve([...found.values()]); }, ms || 5000);
+    setTimeout(() => {
+      s.close();
+      resolve([...byIp.values()].map((t) => ({
+        ip: t.ip, name: t.name, model: t.model,
+        macs: [...t.macs],
+        // More than one television answering from a single address means a
+        // router replied for them: they are behind a NAT and nothing at that
+        // address is a set we can talk to.
+        natted: t.macs.size > 1,
+      })));
+    }, ms || 5000);
   });
 }
 
@@ -75,7 +89,12 @@ async function state(tv) {
     for (const t of list) {
       console.log(t.ip.padEnd(16) + (t.name || t.model || 'LG webOS TV'));
       if (t.model && t.model !== t.name) console.log('  model'.padEnd(18) + t.model);
-      if (t.mac) console.log('  mac'.padEnd(18) + t.mac + '   (wake with: node tools/tv.js wake ' + t.mac + ')');
+      for (const m of t.macs) console.log('  mac'.padEnd(18) + m + '   (wake with: node tools/tv.js wake ' + m + ')');
+      if (t.natted) {
+        console.log('  ! ' + t.macs.length + ' televisions answered from this one address, so it is a router');
+        console.log('    doing NAT — they are on the far side of it and cannot be reached from here.');
+        continue;
+      }
       console.log('  paired'.padEnd(18) + (keys[t.ip] ? 'yes' : 'no — run: node tools/tv.js ' + t.ip + ' pair'));
     }
     return;
