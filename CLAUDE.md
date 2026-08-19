@@ -310,7 +310,11 @@ The client is `tools/webos.js` (library) with `tools/tv.js` as its command line.
 
 Coincidence worth knowing so it does not confuse a log: **the TVs' SSAP port is 3000, the same number the dashboard listens on.** Different hosts, no conflict.
 
-**Still to do:** Wake-on-LAN has not been tested. Testing it means switching a television off and waking it, and the flat network only arrived after 1am — see the rule about bedrooms not being test rigs. It also needs "Mobile TV On" enabled on each set.
+**The full power cycle is proven from the hub (2026-08-20, on the Ashu Room set with the user watching).** `off` over SSAP, then a magic packet to bring it back: it answered ping **within five seconds** and reported `state: Active` with its volume preserved. So on and off both work, on one flat network, with no help from anything but `ws` and a UDP socket.
+
+**A sleeping television is genuinely dark, and that is a feature.** After `turnOff` it stops answering ping and both SSAP ports close — the network chip really is off, which is why Wake-on-LAN is the only way back. It also means **"does not answer" is a trustworthy reading of "off"**, unlike every IR device in this house: a television that is on always answers, so the dashboard can infer the off state from a failed connection rather than having to believe what it last sent. Do not treat an unreachable set as an error to retry.
+
+Worth knowing when it comes back: it boots into whatever it opens by default — `com.webos.app.livetv` here — not into the app that was running when it was switched off. Waking a set does not restore what was on it.
 
 ### The house network, and the boundary that hid the televisions (2026-08-20)
 
