@@ -888,6 +888,7 @@ class TvLink {
     // still shutting down — the tile flicks back on for a few seconds before
     // correcting itself. Same shape as the intent tokens the lights use.
     this.gen = 0;
+    this.misses = 0;
     this.busy = false;
   }
 
@@ -954,11 +955,22 @@ class TvLink {
       });
       this.power = true;                    // it answered, so it is awake
       this.wakingUntil = 0;                 // no need to believe anything now
+      this.misses = 0;
       pushSoon();
     } catch (e) {
-      // An address that no longer works is worth forgetting, so the next
-      // attempt rediscovers rather than retrying a stale lease forever.
-      if (/ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|timed out|not answer/i.test(e.message)) this.ip = null;
+      /* Off comes in two shapes, and only one of them looks like it.
+         A cold set answers nothing at all — no ping, both ports shut. A set in
+         standby with its network chip awake *accepts* TCP on 3000 and 3001 and
+         then never completes the WebSocket handshake, which is what this
+         television does after a turnOff it was woken into. Both are off, and
+         both land here, which is why a failure to connect is reported as off
+         rather than as an error.
+
+         The address is only forgotten after several failures in a row. Nulling
+         it on the first one meant a five-second SSDP sweep every retry for as
+         long as the set was off, when the lease was perfectly good and the set
+         simply was not listening. */
+      if (++this.misses >= 3) { this.ip = null; this.misses = 0; }
       this.dropped();
     } finally { this.busy = false; }
   }
