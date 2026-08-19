@@ -285,6 +285,31 @@ State as of this session:
 
 Security notes (LAN-only, but real): the hub's HTTP API is unauthenticated, FTP (vsftpd) is open on 21, and Django debug mode leaks stack traces to anything on the Wi-Fi.
 
+## The televisions (LG webOS, SSAP — client written and proven 2026-08-20)
+
+Two **LG webOS QNED82BXA** sets, both reachable on the LAN and both controllable. They are *not* on the vendor hub — the hub knows exactly one screen, record 512 `PROJECTOR`, `device_type: IR`. So these are the first devices the dashboard would speak to directly.
+
+| | IP | MAC | Name |
+|---|---|---|---|
+| TV 1 | `192.168.0.131` | `d0:cd:bf:a0:fc:cb` | Ashu's Room |
+| TV 2 | `192.168.0.153` | `60:95:f8:1d:11:da` | (unnamed) |
+
+The client is `tools/webos.js` (library) with `tools/tv.js` as its command line. It needs nothing beyond the bundled `ws`.
+
+**A television answers, which nothing else in this house does.** SSAP has real subscriptions — volume, mute, power state, current input, current app all push when they change, *however* they were changed. Proven end to end: subscribed, set volume 14→15→14, and every change came back as a push. This is the first device class here whose reading is a reading and not a belief — unlike the IR air conditioners and unlike `device_status_tunable`. Do not poll it.
+
+**Three things that had to be found by experiment. Each one presents as something other than what it is:**
+
+- **A 2024-era set speaks only `wss` on 3001 and resets a plain `ws` on 3000** — with no HTTP status, so it arrives as a bare `ECONNRESET` and reads like a network fault. Older sets are the other way round, so the client tries secure first and falls back. The certificate is self-signed by the television and cannot be verified; `rejectUnauthorized: false` is not laziness, there is nothing to verify against.
+- **LG has blacklisted the public "LG Remote App" certificate** that every open-source client sends: `403 Pairing rejected: blacklisted certificate detected`. It has *not* started requiring a valid one — sending the same manifest with the `signatures` block simply **left out** is accepted and raises the prompt. Four manifest shapes were tried; canonical refused, unsigned passed. **There is no signature in `MANIFEST` on purpose — do not helpfully add one back.**
+- **Pairing is a person.** The first connection puts a dialog on the screen and waits for someone to press Accept; the set then returns a client-key good forever, stored in `data/tv-keys.json` (git-ignored — it is a credential, and per-install). The manifest's permission lists are deliberately wider than what is used today, because the set grants exactly what was asked for *at pairing time* and widening it later means making a person accept a second time. `swInfo()` is the one call outside that grant and answers `401`; it is left out of `state()` rather than paid for with a re-pair.
+
+**On is not SSAP.** The network chip dies with the screen, so nothing is listening. Off is `ssap://system/turnOff`; on is a Wake-on-LAN magic packet to the MAC — both sets advertise `WAKEUP: MAC=...;Timeout=60` in their DIAL reply, which is LG saying it supports this, though it still needs "Mobile TV On" enabled on the set.
+
+**The blocker is the network, not the televisions.** They are on `192.168.0.0/24`; the dashboard runs on the OptiPlex at `192.168.1.3`, an isolated `192.168.1.0/24` behind the router at `192.168.1.1`. From the hub every TV port is unreachable and even `192.168.0.1` will not ping, while the hub still has working internet — so it is one-way: a machine on `192.168.0.x` reaches the hub, the hub reaches nothing back. Until that is fixed the client only runs from the Mac. Note a magic packet is a **broadcast** and will not cross subnets whatever routing is arranged for TCP, so putting both on one segment solves power-on and control together. The hub does run Tailscale (`100.83.127.114`) but advertises no routes and has `RouteAll: false`, so the tailnet is not a path today either.
+
+Coincidence worth knowing so it does not confuse a log: **the TVs' SSAP port is 3000, the same number the dashboard listens on.** Different hosts, no conflict.
+
 ## Curtains (solved 2026-08-13)
 
 **A curtain is the one device class that ignores `device_status` entirely — the hub reads the verb out of `opr_param`.** Sending a curtain record with `device_status` set does nothing at all, silently, which is why curtains never worked. From the vendor's own source on the box (`/home/abneo/abneo_controller/BMS_host/`), `operations.py` dispatches `device_type == 'RL'` + `app_type == 'C'` to `curtain_opr.curtain_relay_opr(record, opr_param)`, and that function acts on exactly four strings:

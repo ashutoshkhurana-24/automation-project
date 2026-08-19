@@ -1,0 +1,254 @@
+// An SSAP client for LG webOS televisions.
+//
+// SSAP is LG's own WebSocket protocol — the one the Magic Remote app speaks —
+// and it lives on ws://<tv>:3000 (wss on 3001). That makes it the same shape as
+// the hub protocol this project already speaks, so it needs nothing beyond the
+// `ws` that is already bundled. That matters: the box has no reliable internet,
+// which is why every other awkward thing here (the icon, the lens map) is
+// hand-rolled rather than installed.
+//
+// Three things about these televisions that shape the whole design:
+//
+//   * A TV answers.  Unlike the IR air conditioners and unlike colour on the
+//     COBs, SSAP has real subscriptions — volume, mute, power state, current
+//     input and current app all push when they change, however they were
+//     changed.  Someone using the remote is *visible*.  This is the first
+//     device class in the house whose reading is a reading rather than a
+//     belief, and the code should not throw that away by polling.
+//
+//   * You cannot switch one on over SSAP.  The network chip dies with the
+//     screen, so there is nobody listening.  On is a Wake-on-LAN magic packet
+//     to the TV's MAC; off is SSAP.  Both of this house's sets advertise
+//     `WAKEUP: MAC=...;Timeout=60` in their DIAL reply, which is LG saying it
+//     supports this — but it still needs "Mobile TV On" enabled on the set,
+//     and a magic packet is a broadcast, so it does not cross subnets.
+//
+//   * They are fussy about transport.  A 2024-era set (QNED82BXA here) speaks
+//     only wss on 3001 and resets a plain ws on 3000 without an HTTP status —
+//     so the failure arrives as a bare ECONNRESET and reads like a network
+//     fault rather than a refusal.  Older sets are the other way round.  The
+//     certificate is self-signed by the television, so it cannot be verified.
+//
+//   * Pairing is a prompt on the screen.  The first connection puts a dialog in
+//     front of whoever is watching and waits, sometimes a full minute, for
+//     someone to press Accept on the remote.  The TV then hands back a
+//     client-key which is good forever.  Store it; never make a person do that
+//     twice.  Keys live in data/tv-keys.json, git-ignored, one per TV.
+//
+// Used as a library by the dashboard, and as a command line by tools/tv.js.
+
+const fs = require('fs');
+const path = require('path');
+const dgram = require('dgram');
+const WebSocket = require('ws');
+
+const KEYS = path.join(__dirname, '..', 'data', 'tv-keys.json');
+
+// The manifest we register with, and the one thing here that had to be found by
+// experiment rather than copied.
+//
+// Every open-source client sends the public "LG Remote App" manifest carrying
+// LG's own test-signing certificate. This firmware refuses it outright:
+//
+//     403 Pairing rejected: blacklisted certificate detected
+//
+// LG has blocked that signature. What it has *not* done is require a valid one:
+// sending the same manifest with the `signatures` block simply left out is
+// accepted and puts the pairing prompt on the screen. Measured on the
+// QNED82BXA, four manifest shapes tried — the canonical one is refused, the
+// unsigned one passes. So there is no signature here on purpose; do not
+// helpfully add one back.
+//
+// Do not trim the permission lists to what we happen to use today either. The
+// set grants exactly what is asked for at pairing time, and adding one later
+// means putting the dialog back on the screen for a person to accept twice.
+const MANIFEST = {
+  manifestVersion: 1,
+  appVersion: '1.1',
+  signed: {
+    created: '20140509',
+    appId: 'com.lge.test',
+    vendorId: 'com.lge',
+    localizedAppNames: { '': 'LG Remote App', 'ko-KR': '리모컨 앱', 'zxx-XX': 'ЛГ Rэмotэ AПП' },
+    localizedVendorNames: { '': 'LG Electronics' },
+    permissions: [
+      'TEST_SECURE', 'CONTROL_INPUT_TEXT', 'CONTROL_MOUSE_AND_KEYBOARD',
+      'READ_INSTALLED_APPS', 'READ_LGE_SDX', 'READ_NOTIFICATIONS', 'SEARCH',
+      'WRITE_SETTINGS', 'WRITE_NOTIFICATION_ALERT', 'CONTROL_POWER',
+      'READ_CURRENT_CHANNEL', 'READ_RUNNING_APPS', 'READ_UPDATE_INFO',
+      'UPDATE_FROM_REMOTE_APP', 'READ_LGE_TV_INPUT_EVENTS', 'READ_TV_CURRENT_TIME',
+    ],
+    serial: '2f930e2d2cfe083771f68e4fe7bb07',
+  },
+  permissions: [
+    'LAUNCH', 'LAUNCH_WEBAPP', 'APP_TO_APP', 'CLOSE', 'TEST_OPEN', 'TEST_PROTECTED',
+    'CONTROL_AUDIO', 'CONTROL_DISPLAY', 'CONTROL_INPUT_JOYSTICK',
+    'CONTROL_INPUT_MEDIA_RECORDING', 'CONTROL_INPUT_MEDIA_PLAYBACK',
+    'CONTROL_INPUT_TV', 'CONTROL_POWER', 'READ_APP_STATUS', 'READ_CURRENT_CHANNEL',
+    'READ_INPUT_DEVICE_LIST', 'READ_NETWORK_STATE', 'READ_RUNNING_APPS',
+    'READ_TV_CHANNEL_LIST', 'WRITE_NOTIFICATION_TOAST', 'READ_POWER_STATE',
+    'READ_COUNTRY_INFO',
+  ],
+};
+
+const readKeys = () => {
+  try { return JSON.parse(fs.readFileSync(KEYS, 'utf8')); } catch (e) { return {}; }
+};
+const writeKey = (ip, key) => {
+  const all = readKeys();
+  all[ip] = key;
+  fs.writeFileSync(KEYS, JSON.stringify(all, null, 2) + '\n');
+};
+
+class WebosTV {
+  constructor(ip, opts) {
+    this.ip = ip;
+    this.opts = opts || {};
+    this.ws = null;
+    this.seq = 0;
+    this.waiting = new Map();          // id -> {resolve, reject, keep}
+    this.key = this.opts.key || readKeys()[ip] || null;
+  }
+
+  // Resolves once the set has accepted us. If there is no stored key this puts
+  // a dialog on the screen and waits for a person, which is why the timeout is
+  // generous and separate from the connect timeout.
+  // Newer sets speak only wss on 3001 and reset a plain ws on 3000 — measured
+  // on the QNED82BXA, which drops the connection without an HTTP status, so it
+  // surfaces as a bare ECONNRESET and looks like a network fault rather than a
+  // refusal. Older ones only speak the plain one. Try secure, then fall back.
+  // The certificate is self-signed by the television, so it cannot be verified
+  // and there is nothing to verify it against.
+  async connect(pairTimeoutMs) {
+    const wait = pairTimeoutMs || (this.key ? 12000 : 75000);
+    try {
+      return await this.dial('wss://' + this.ip + ':3001', { rejectUnauthorized: false }, wait);
+    } catch (e) {
+      if (this.paired || this.ws && this.ws.readyState === WebSocket.OPEN) throw e;
+      return this.dial('ws://' + this.ip + ':3000', {}, wait);
+    }
+  }
+
+  dial(url, extra, wait) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url, Object.assign({ handshakeTimeout: 6000 }, extra));
+      this.ws = ws;
+
+      const fail = (e) => { clearTimeout(timer); try { ws.terminate(); } catch (x) {} reject(e); };
+      ws.on('unexpected-response', (rq, r) => fail(new Error(url + ' answered HTTP ' + r.statusCode)));
+      const timer = setTimeout(() => fail(new Error(
+        this.key ? 'the TV did not answer our key in time'
+                 : 'nobody accepted the pairing prompt on the TV')), wait);
+
+      ws.on('error', fail);
+      ws.on('close', () => {
+        for (const w of this.waiting.values()) w.reject(new Error('socket closed'));
+        this.waiting.clear();
+      });
+
+      ws.on('open', () => {
+        const payload = Object.assign(
+          { forcePairing: false, pairingType: 'PROMPT', manifest: MANIFEST },
+          this.key ? { 'client-key': this.key } : {});
+        ws.send(JSON.stringify({ type: 'register', id: 'register_0', payload }));
+      });
+
+      ws.on('message', (raw) => {
+        let m;
+        try { m = JSON.parse(raw); } catch (e) { return; }
+
+        if (m.id === 'register_0') {
+          // The set answers a register twice: once to say the prompt is up,
+          // then again — possibly a minute later — once someone accepts.
+          if (m.type === 'registered') {
+            clearTimeout(timer);
+            const k = m.payload && m.payload['client-key'];
+            if (k && k !== this.key) { this.key = k; writeKey(this.ip, k); this.paired = true; }
+            return resolve(this);
+          }
+          if (m.type === 'error') return fail(new Error(m.error || 'registration refused'));
+          return;                                       // "PROMPT is showing"
+        }
+
+        const w = this.waiting.get(m.id);
+        if (!w) return;
+        if (m.type === 'error') {
+          this.waiting.delete(m.id);
+          return w.reject(new Error(m.error || 'request failed'));
+        }
+        if (w.keep) return w.resolve(m.payload);        // a subscription frame
+        this.waiting.delete(m.id);
+        w.resolve(m.payload);
+      });
+    });
+  }
+
+  send(type, uri, payload) {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return reject(new Error('not connected'));
+      const id = String(++this.seq);
+      this.waiting.set(id, { resolve, reject, keep: type === 'subscribe' });
+      this.ws.send(JSON.stringify({ id, type, uri, payload: payload || {} }));
+      if (type !== 'subscribe') {
+        setTimeout(() => {
+          if (this.waiting.has(id)) { this.waiting.delete(id); reject(new Error('timed out: ' + uri)); }
+        }, 8000);
+      }
+    });
+  }
+
+  request(uri, payload) { return this.send('request', uri, payload); }
+
+  // The handler is called with every push, including the first one, so a caller
+  // never has to read once and subscribe separately and reconcile the two.
+  subscribe(uri, handler) {
+    const id = String(++this.seq);
+    this.waiting.set(id, { resolve: handler, reject: () => {}, keep: true });
+    this.ws.send(JSON.stringify({ id, type: 'subscribe', uri, payload: {} }));
+    return id;
+  }
+
+  close() { try { this.ws && this.ws.close(); } catch (e) {} }
+
+  /* ── the things the dashboard would actually call ──────────────────── */
+
+  off()                { return this.request('ssap://system/turnOff'); }
+  getVolume()          { return this.request('ssap://audio/getVolume'); }
+  setVolume(v)         { return this.request('ssap://audio/setVolume', { volume: Math.max(0, Math.min(100, Math.round(v))) }); }
+  setMute(on)          { return this.request('ssap://audio/setMute', { mute: !!on }); }
+  powerState()         { return this.request('ssap://com.webos.service.tvpower/power/getPowerState'); }
+  foreground()         { return this.request('ssap://com.webos.applicationManager/getForegroundAppInfo'); }
+  inputs()             { return this.request('ssap://tv/getExternalInputList'); }
+  switchInput(id)      { return this.request('ssap://tv/switchInput', { inputId: id }); }
+  apps()               { return this.request('ssap://com.webos.applicationManager/listLaunchPoints'); }
+  launch(id)           { return this.request('ssap://system.launcher/launch', { id }); }
+  toast(message)       { return this.request('ssap://system.notifications/createToast', { message }); }
+  play()               { return this.request('ssap://media.controls/play'); }
+  pause()              { return this.request('ssap://media.controls/pause'); }
+  swInfo()             { return this.request('ssap://com.webos.service.update/getCurrentSWInformation'); }
+}
+
+// On is not SSAP. A magic packet is six 0xFF bytes then the MAC sixteen times,
+// sent to the broadcast address — which is precisely why it will not reach a
+// television on another subnet, whatever routing is in place for TCP.
+function wake(mac, broadcast) {
+  return new Promise((resolve, reject) => {
+    const bytes = mac.replace(/[^0-9a-f]/gi, '');
+    if (bytes.length !== 12) return reject(new Error('not a MAC address: ' + mac));
+    const addr = Buffer.from(bytes, 'hex');
+    const pkt = Buffer.concat([Buffer.alloc(6, 0xff), Buffer.concat(new Array(16).fill(addr))]);
+    const s = dgram.createSocket('udp4');
+    s.once('error', (e) => { s.close(); reject(e); });
+    s.bind(() => {
+      s.setBroadcast(true);
+      // Port 9 is the conventional one; LG also listens on 7. Send both rather
+      // than find out at 11pm that the set wanted the other.
+      let left = 2;
+      const done = () => { if (--left === 0) { s.close(); resolve(); } };
+      s.send(pkt, 9, broadcast || '255.255.255.255', done);
+      s.send(pkt, 7, broadcast || '255.255.255.255', done);
+    });
+  });
+}
+
+module.exports = { WebosTV, wake, readKeys, KEYS };

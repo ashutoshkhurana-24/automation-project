@@ -38,3 +38,6 @@ android-app/android/capacitor-cordova-android-plugins/
 
 # the built APK — rebuild with android-app/
 the-house.apk
+
+# Pairing keys for the televisions: per-install, and a credential.
+data/tv-keys.json
