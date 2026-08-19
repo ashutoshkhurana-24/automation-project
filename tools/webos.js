@@ -40,6 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const { execFile } = require('child_process');
 const WebSocket = require('ws');
 
 const KEYS = path.join(__dirname, '..', 'data', 'tv-keys.json');
@@ -91,14 +92,37 @@ const MANIFEST = {
   ],
 };
 
+/* Keys are filed under the television's MAC, not its address.
+ *
+ * They were filed under the address first, and DHCP moved every set in this
+ * house twice in one evening — so a key earned by making somebody walk to the
+ * television and press Accept was quietly orphaned by a lease renewal. The MAC
+ * is the only identifier a television keeps. The address is looked up in the
+ * ARP table, which is free and already populated by anything that has just
+ * talked to the set; a machine that cannot resolve it falls back to filing
+ * under the address, which is no worse than before. */
 const readKeys = () => {
   try { return JSON.parse(fs.readFileSync(KEYS, 'utf8')); } catch (e) { return {}; }
 };
-const writeKey = (ip, key) => {
-  const all = readKeys();
-  all[ip] = key;
-  fs.writeFileSync(KEYS, JSON.stringify(all, null, 2) + '\n');
-};
+const writeKeys = (all) => fs.writeFileSync(KEYS, JSON.stringify(all, null, 2) + '\n');
+
+const MAC_RE = /([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})/i;
+const norm = (m) => m.toLowerCase().split(':').map((b) => b.padStart(2, '0')).join(':');
+
+function macFor(ip) {
+  return new Promise((resolve) => {
+    // `ip neigh` on the hub, `arp -n` on a Mac. Whichever is missing simply
+    // errors and we fall through to the other.
+    execFile('ip', ['neigh', 'show', ip], (e, out) => {
+      const m = !e && out && MAC_RE.exec(out);
+      if (m) return resolve(norm(m[1]));
+      execFile('arp', ['-n', ip], (e2, out2) => {
+        const m2 = !e2 && out2 && MAC_RE.exec(out2);
+        resolve(m2 ? norm(m2[1]) : null);
+      });
+    });
+  });
+}
 
 class WebosTV {
   constructor(ip, opts) {
@@ -107,7 +131,30 @@ class WebosTV {
     this.ws = null;
     this.seq = 0;
     this.waiting = new Map();          // id -> {resolve, reject, keep}
-    this.key = this.opts.key || readKeys()[ip] || null;
+    this.mac = this.opts.mac || null;
+    this.key = this.opts.key || null;
+  }
+
+  // Find this set's key: by MAC where we can resolve one, and — for a store
+  // written before keys were filed that way — under the address, which is then
+  // migrated so it survives the next lease.
+  async loadKey() {
+    if (this.key) return this.key;
+    const all = readKeys();
+    if (!this.mac) this.mac = await macFor(this.ip);
+    if (this.mac && all[this.mac]) return (this.key = all[this.mac]);
+    if (all[this.ip]) {
+      this.key = all[this.ip];
+      if (this.mac) { all[this.mac] = this.key; delete all[this.ip]; writeKeys(all); }
+      return this.key;
+    }
+    return null;
+  }
+
+  saveKey(key) {
+    const all = readKeys();
+    all[this.mac || this.ip] = key;
+    writeKeys(all);
   }
 
   // Resolves once the set has accepted us. If there is no stored key this puts
@@ -120,6 +167,7 @@ class WebosTV {
   // The certificate is self-signed by the television, so it cannot be verified
   // and there is nothing to verify it against.
   async connect(pairTimeoutMs) {
+    await this.loadKey();
     const wait = pairTimeoutMs || (this.key ? 12000 : 75000);
     try {
       return await this.dial('wss://' + this.ip + ':3001', { rejectUnauthorized: false }, wait);
@@ -163,7 +211,7 @@ class WebosTV {
           if (m.type === 'registered') {
             clearTimeout(timer);
             const k = m.payload && m.payload['client-key'];
-            if (k && k !== this.key) { this.key = k; writeKey(this.ip, k); this.paired = true; }
+            if (k && k !== this.key) { this.key = k; this.saveKey(k); this.paired = true; }
             return resolve(this);
           }
           if (m.type === 'error') return fail(new Error(m.error || 'registration refused'));
@@ -251,4 +299,4 @@ function wake(mac, broadcast) {
   });
 }
 
-module.exports = { WebosTV, wake, readKeys, KEYS };
+module.exports = { WebosTV, wake, readKeys, macFor, KEYS };

@@ -289,10 +289,12 @@ Security notes (LAN-only, but real): the hub's HTTP API is unauthenticated, FTP 
 
 Two **LG webOS QNED82BXA** sets, both reachable on the LAN and both controllable. They are *not* on the vendor hub — the hub knows exactly one screen, record 512 `PROJECTOR`, `device_type: IR`. So these are the first devices the dashboard would speak to directly.
 
-| | IP | MAC | Name |
+| | MAC | Name | Address when last seen |
 |---|---|---|---|
-| TV 1 | `192.168.0.131` | `d0:cd:bf:a0:fc:cb` | Ashu's Room |
-| TV 2 | `192.168.0.153` | `60:95:f8:1d:11:da` | (unnamed) |
+| TV 1 | `d0:cd:bf:a0:fc:cb` | Ashu's Room | `192.168.1.8` |
+| TV 2 | `60:95:f8:1d:11:da` | (unnamed) | `192.168.1.18` |
+
+**The MAC is the identity; the address is not.** Both sets are on DHCP and both moved subnets during the network work below — so `data/tv-keys.json` files pairing keys **under the MAC**, resolved from the ARP table. It was keyed by address first, and a lease renewal silently orphaned a key that had cost somebody a walk to the television to press Accept.
 
 The client is `tools/webos.js` (library) with `tools/tv.js` as its command line. It needs nothing beyond the bundled `ws`.
 
@@ -306,9 +308,31 @@ The client is `tools/webos.js` (library) with `tools/tv.js` as its command line.
 
 **On is not SSAP.** The network chip dies with the screen, so nothing is listening. Off is `ssap://system/turnOff`; on is a Wake-on-LAN magic packet to the MAC — both sets advertise `WAKEUP: MAC=...;Timeout=60` in their DIAL reply, which is LG saying it supports this, though it still needs "Mobile TV On" enabled on the set.
 
-**The blocker is the network, not the televisions.** They are on `192.168.0.0/24`; the dashboard runs on the OptiPlex at `192.168.1.3`, an isolated `192.168.1.0/24` behind the router at `192.168.1.1`. From the hub every TV port is unreachable and even `192.168.0.1` will not ping, while the hub still has working internet — so it is one-way: a machine on `192.168.0.x` reaches the hub, the hub reaches nothing back. Until that is fixed the client only runs from the Mac. Note a magic packet is a **broadcast** and will not cross subnets whatever routing is arranged for TCP, so putting both on one segment solves power-on and control together. The hub does run Tailscale (`100.83.127.114`) but advertises no routes and has `RouteAll: false`, so the tailnet is not a path today either.
-
 Coincidence worth knowing so it does not confuse a log: **the TVs' SSAP port is 3000, the same number the dashboard listens on.** Different hosts, no conflict.
+
+**Still to do:** Wake-on-LAN has not been tested. Testing it means switching a television off and waking it, and the flat network only arrived after 1am — see the rule about bedrooms not being test rigs. It also needs "Mobile TV On" enabled on each set.
+
+### The house network, and the boundary that hid the televisions (2026-08-20)
+
+Worth keeping because it cost an evening and every symptom pointed somewhere else. The house had **two networks**, and the hub was on the far side of a NAT from everything else:
+
+```
+internet ── Airtel AOT5222ZY 192.168.1.1 ──┬── OptiPlex hub 192.168.1.3
+                                           └── TP-Link Archer C80
+                                                 WAN 192.168.1.31
+                                                 LAN 192.168.0.1 ──┬── Mac, phones
+                                                                   └── both televisions
+```
+
+The Archer was in **Router mode**, NATing `192.168.0.0/24` out of its WAN. So the hub could not reach the televisions and never could — **you cannot route into a NAT from outside**, and no static route on the hub can change that. Three false trails, all worth recognising again:
+
+- *It looks like a missing route.* The hub had internet and the Mac reached the hub, so only one direction was broken. Adding `192.168.0.0/24 via 192.168.1.31` changed nothing, because that address is the Archer's **WAN port**, which drops everything inbound.
+- *The MACs give it away.* `192.168.0.1` is `e4:fa:c4:97:7a:df` and `192.168.1.31` is `…:e0` — consecutive, so one device with two interfaces. That is a router straddling both, not two boxes.
+- *The decisive evidence was accidental*, and now the tool reports it deliberately: SSDP discovery run from the hub had **both televisions answering from the single address `192.168.1.31`**, which only happens through NAT. `ipconfig getpacket` on the Mac then confirmed the Archer was leasing addresses and naming itself router and DNS — which an access point does not do.
+
+**Resolved by putting the Archer into Access Point mode**, giving one flat `192.168.1.0/24`. AP mode keeps its Wi-Fi — same SSID, same coverage — it only stops it routing, so nothing else in the house noticed beyond taking a new address. Before doing it, `192.168.1.3` was reserved for the hub's MAC `f8:bc:12:a8:5f:8a` on the Airtel router (**Network Setting → LAN → Static DHCP, maximum 8 entries**), because that address is a DHCP lease and everything — every phone's vendor app, the doorbell tablet, Shortcuts, the dashboard — is pinned to it.
+
+Two things this leaves worth knowing: the tailnet was never a path (the hub runs Tailscale at `100.83.127.114` but advertises no routes and has `RouteAll: false`), and reserving the two televisions on that router would be sensible if their addresses moving ever becomes a nuisance — though keying by MAC already makes it harmless.
 
 ## Curtains (solved 2026-08-13)
 
