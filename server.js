@@ -10554,11 +10554,31 @@ function fitTiles() {
      A room's own board is left alone: fourteen circuits will never fit, and
      squeezing them to nothing to pretend otherwise would be worse. */
   if (state.view !== 'house' || state.q) return;
-  // Bounded by the floor, not by a step count: at 8px a go, ten passes only
-  // ever moved 80px, so a board starting at the 182px ceiling stopped at 102
-  // and never reached the floor it was allowed.
-  for (let i = 0; i < 60 && tiles.scrollHeight > tiles.clientHeight + 2 && h > 78; i++) {
-    h = Math.max(78, h - 8);
+  /* Bisected, not stepped. Every probe here writes --tile-h and then reads
+     scrollHeight, and that read forces a synchronous layout of the whole board
+     — so the old 8px walk from the 182px ceiling to the 78px floor cost
+     thirteen full layouts of seven glass cards, on every navigation, and the
+     device that runs this loop is by definition the wide one: a panel on a
+     wall. Halving the range instead answers in five, and lands on the same
+     height, because the fit is monotonic in h — a shorter tile never makes a
+     taller board.
+     Still bounded by the floor rather than by a step count: an earlier version
+     was capped at ten 8px steps and so stopped at 102px, never reaching the
+     78px it was allowed. */
+  const fits = (px) => {
+    root.style.setProperty('--tile-h', px + 'px');
+    return tiles.scrollHeight <= tiles.clientHeight + 2;
+  };
+  if (!fits(h)) {
+    // lo is the tallest height known to fit (the floor, to begin with); hi is
+    // known not to. The answer is the tallest that fits, so a fitting probe
+    // raises the floor rather than lowering the ceiling.
+    let lo = 78, hi = h;
+    while (hi - lo > 4) {
+      const mid = Math.round((lo + hi) / 2);
+      if (fits(mid)) lo = mid; else hi = mid;
+    }
+    h = lo;
     root.style.setProperty('--tile-h', h + 'px');
   }
   // Below this a room card cannot hold a name, a number and a tally, so it
@@ -10948,74 +10968,68 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) sync
 
 /* ── plain and fast ──────────────────────────────────────────────────────
  *
- * The panel on the wall is vendor-locked: no adb, no console, no way to stand
- * a profiler next to it. So the page has to work out for itself that it is on
- * hardware which cannot afford the glass, and take the glass off.
+ * Which devices cannot afford the material, decided by what kind of device it
+ * is rather than by timing it.
  *
- * Two signals, cheap one first. navigator.deviceMemory is exactly the question
- * asked — a wall panel reports 1 or 2GB and a phone reports 4 or more — and it
- * costs nothing. If that is inconclusive the board is timed as it deals itself
- * in, which is the one moment the device is genuinely busy: an idle page runs
- * at 60fps on anything, so measuring a still screen would prove nothing.
+ * The first attempt timed the frames and got it wrong on the one device it was
+ * written for. It sampled after load() resolved — a finished, static board —
+ * and an idle page runs at 60fps on anything, so it read 16.7ms and declared a
+ * tablet that visibly drags to be fast. Worse, it stored that verdict, so the
+ * mistake was permanent. Hence the key below is version 2: the old answer has
+ * to be ignored on every device that already recorded one.
  *
- * The verdict is remembered either way, so a slow device starts plain on the
- * next load rather than showing the expensive version first and flinching, and
- * a fast one never pays for the probe again. A person can override it from
- * Settings in both directions, which on a locked tablet is the only control
- * that can reach it — and ?lite=1 / ?lite=0 does the same from the address bar.
+ * A media query is the honest signal here. No pointer *and* a wide screen is a
+ * panel bolted to a wall — a phone has no pointer but is narrow, and anything
+ * with a mouse has a real GPU. That is the exact combination this file already
+ * relies on to withhold the refraction and the rim filter, so plain mode now
+ * agrees with the rest of the sheet instead of guessing. Low reported memory
+ * turns it on too, which catches a weak phone as well.
+ *
+ * Only a person's choice is remembered. An automatic verdict is recomputed
+ * every load, so it costs nothing to be wrong and nothing has to be cleared to
+ * change our mind — and Settings, or ?lite=1 / ?lite=0, overrides it either
+ * way, which on a locked tablet is the only control that can reach it.
  */
-const LITE_KEY = 'neo-lite';
-const liteStore = {
-  get() { try { return localStorage.getItem(LITE_KEY); } catch { return null; } },
-  set(v) { try { localStorage.setItem(LITE_KEY, v); } catch { /* private mode */ } },
-};
+const LITE_KEY = 'neo-lite2';
+const PANEL_Q = '(hover: none) and (min-width: 861px)';
+
+function autoLite() {
+  try { if (window.matchMedia(PANEL_Q).matches) return 'panel'; } catch { /* old engine */ }
+  const mem = navigator.deviceMemory;               // GiB, quantised by the browser
+  if (typeof mem === 'number' && mem <= 2) return 'memory';
+  return null;
+}
 
 function setLite(on, why) {
   document.documentElement.classList.toggle('lite', on);
-  liteStore.set(on ? '1' : '0');
+  if (why === 'asked') { try { localStorage.setItem(LITE_KEY, on ? '1' : '0'); } catch { /* private */ } }
   const b = el('#setlite');
-  if (b) {
-    b.classList.toggle('on', on);
-    b.setAttribute('aria-pressed', String(on));
-    const v = el('#setliteval');
-    if (v) v.textContent = on ? (why === 'measured' ? 'on, this device is slow' : 'on') : '';
+  if (!b) return;
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  const v = el('#setliteval');
+  if (v) {
+    v.textContent = !on ? ''
+      : why === 'panel' ? 'on, this looks like a wall panel'
+      : why === 'memory' ? 'on, this device is short of memory'
+      : 'on';
   }
 }
-
-let liteProbe = false;
 
 (function decideLite() {
   const asked = new URLSearchParams(location.search).get('lite');
   if (asked !== null) return setLite(asked !== '0', 'asked');
-  const stored = liteStore.get();
-  if (stored !== null) return setLite(stored === '1', 'remembered');
-  // Under 3GB is a panel, not a phone. Chrome rounds this to 0.25/0.5/1/2/4/8.
-  const mem = navigator.deviceMemory;
-  if (typeof mem === 'number' && mem <= 2) return setLite(true, 'measured');
-  liteProbe = true;                       // no verdict yet — time the first board
+  let stored = null;
+  try { stored = localStorage.getItem(LITE_KEY); } catch { /* private */ }
+  if (stored !== null) return setLite(stored === '1', 'asked');
+  const why = autoLite();
+  setLite(!!why, why);
 })();
-
-/* Timed while the board arrives, not while it sits still. A median frame worse
-   than 32ms is a device dropping every other frame at 60Hz, which is the point
-   at which the material is costing more than it is worth. */
-function probeLite() {
-  if (!liteProbe) return;
-  liteProbe = false;
-  const dt = [];
-  let last = performance.now(), n = 0;
-  const tick = (now) => {
-    dt.push(now - last); last = now;
-    if (++n < 26) return requestAnimationFrame(tick);
-    const s = dt.slice(6).sort((a, b) => a - b);
-    setLite(s[Math.floor(s.length / 2)] > 32, 'measured');
-  };
-  requestAnimationFrame(tick);
-}
 
 el('#setlite').onclick = () =>
   setLite(!document.documentElement.classList.contains('lite'), 'asked');
 
-load().then(probeLite, probeLite);
+load();
 </script>
 </body>
 </html>`;
