@@ -991,6 +991,14 @@ const TVS = [
      **Ethernet** — the MAC we drive it by is its own wiredInfo address — which
      is what makes its power-on reliable, the same as Ashu's. */
   { id: 'tv-master', name: 'TV', room: 'MASTER ROOM', mac: 'd0:cd:bf:91:00:26' },
+  /* This is the MAC that was unaccounted for through the whole television
+     saga — filed here as "TV 2, unnamed, 192.168.1.18" and guessed at twice.
+     Switched on it named itself, at that same address, which is the only method
+     that has ever worked. On **Wi-Fi**: the address we drive it by is its own
+     wifiInfo, so its power-on is the unreliable half. Its idle wired interface
+     is D0:CD:BF:A0:FC:D7 — worth having, because keys are filed by MAC, so
+     running it a cable would orphan this pairing and cost a walk to the set. */
+  { id: 'tv-harshit', name: 'TV', room: 'HARSHIT ROOM', mac: '60:95:f8:1d:11:da' },
 ];
 const YT_APP = 'youtube.leanback.v4';
 
