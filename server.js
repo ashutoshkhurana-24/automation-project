@@ -3819,6 +3819,21 @@ const HTML = /* html */ `<!doctype html>
     --edge:      rgba(255,255,255,.09);
     --edge-up:   rgba(255,255,255,.20);
     --lip:       rgba(255,255,255,.10);
+    /* The rim is a specular highlight, and on a dark pane it does not need
+       anything like the strength it needs on paper: .52 white read as a drawn
+       line around every card rather than as light catching an edge. */
+    --rim: linear-gradient(145deg,
+      rgba(255,255,255,.24) 0%,
+      rgba(255,255,255,.07) 20%,
+      rgba(255,255,255,.02) 46%,
+      rgba(255,255,255,.05) 72%,
+      rgba(255,255,255,.17) 100%);
+    --rim-lit: linear-gradient(145deg,
+      rgba(255,248,236,.44) 0%,
+      rgba(255,236,206,.13) 22%,
+      rgba(255,236,206,.03) 50%,
+      rgba(255,236,206,.10) 76%,
+      rgba(255,246,230,.32) 100%);
     /* Darkens the backdrop instead of lifting it — the one number in --lens
        that has to change direction, since white type sits on it now. */
     --lens:    blur(22px) saturate(132%) brightness(.58);
@@ -3840,6 +3855,25 @@ const HTML = /* html */ `<!doctype html>
      file has always said the signal is. */
   .dark .tile.on {
     background: color-mix(in oklab, var(--tint) calc(13% + var(--lit) * 15%), var(--base));
+    /* 92% of the tint is a bright wire drawn round the card once the surround is
+       dark — it read as a border rather than as an edge catching light. */
+    border-color: color-mix(in oklab, var(--tint) 34%, var(--line));
+    /* Two halos, not three, and a fraction of the strength. At .60 for the ring
+       and .74 for the near blur these were a solid amber outline plus a glow
+       thick enough to read as a separate object around the card — worst on a
+       phone, where a room row is the full width of the screen and the two
+       neighbours' halos meet. The glow is still the signal; it is just light
+       now rather than a ring. */
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--tint) calc(9% + var(--lit) * 11%), transparent),
+      0 10px 30px -14px color-mix(in oklab, var(--tint) calc(13% + var(--lit) * 15%), transparent),
+      var(--cast);
+  }
+  /* The white lip is a sheen on paper and a drawn line on dark glass. */
+  .dark .tile {
+    box-shadow: inset 1.4px 1.4px 0 -.4px rgba(255,255,255,.08),
+                inset -1px -1.4px 0 -.4px rgba(255,255,255,.035),
+                var(--cast);
   }
   /* And the fill is a glow rather than a wash. These stops run 100/86/52/18 on
      paper — light soaking into the card — which over a dark pane is a slab of
