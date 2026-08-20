@@ -280,7 +280,16 @@ class WebosTV {
     return id;
   }
 
-  close() { try { this.ws && this.ws.close(); } catch (e) {} }
+  /* Both sockets, not just the SSAP one. The remote's pointer socket is a
+     second connection the set hands out, and closing only the first left it
+     dangling on every reconnect — a television that goes off and on all day
+     would leak one file descriptor per cycle, which is the kind of thing that
+     takes a fortnight to become a crash. */
+  close() {
+    try { this._remote && this._remote.close(); } catch (e) {}
+    this._remote = null;
+    try { this.ws && this.ws.close(); } catch (e) {}
+  }
 
   /* ── the things the dashboard would actually call ──────────────────── */
 
