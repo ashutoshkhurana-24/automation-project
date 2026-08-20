@@ -909,8 +909,19 @@ const TV_APP_ORDER = [
 
 const TVS = [
   { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
+  /* Parent Room's set goes here once we know which MAC it is. There are two
+     unidentified QNED82BXAs on the LAN with near-consecutive MACs —
+     60:95:f8:1d:11:da and 60:95:f8:1d:08:ba — and nothing distinguishes them
+     while they are asleep, because a sleeping set answers neither ping nor
+     SSDP. Guessing is not free: the wrong mapping would put one room's
+     television on another room's tile, and "room off" would switch the wrong
+     screen off. Identify it while it is awake — discovery reports the DLNA
+     friendly name, which is how the Ashu Room set names itself — then add it
+     here and pair it. Nothing else about the protocol needs re-establishing;
+     they are the same model. */
 ];
 const TV_RETRY_MS = 20000;
+const TV_RETRY_MAX_MS = 160000;
 
 class TvLink {
   constructor(spec) {
@@ -935,7 +946,14 @@ class TvLink {
     // still shutting down — the tile flicks back on for a few seconds before
     // correcting itself. Same shape as the intent tokens the lights use.
     this.gen = 0;
-    this.misses = 0;
+    /* Consecutive failures, which do two things. They back the retry off, and
+       they eventually make it forget the address and rediscover.
+       Backing off matters now there is more than one set: a television that is
+       off never answers, and each attempt against one with no known address
+       costs a five-second SSDP sweep. At a flat twenty seconds, two sleeping
+       sets would put half of that on the wire all day for nothing. */
+    this.fails = 0;
+    this.nextTry = 0;
     this.busy = false;
   }
 
@@ -1006,7 +1024,8 @@ class TvLink {
       });
       this.power = true;                    // it answered, so it is awake
       this.wakingUntil = 0;                 // no need to believe anything now
-      this.misses = 0;
+      this.fails = 0;
+      this.nextTry = 0;
       // Read once per connection rather than subscribed: apps are installed
       // and removed by hand every few months, not while you are watching.
       tv.apps().then((r) => {
@@ -1044,7 +1063,12 @@ class TvLink {
          it on the first one meant a five-second SSDP sweep every retry for as
          long as the set was off, when the lease was perfectly good and the set
          simply was not listening. */
-      if (++this.misses >= 3) { this.ip = null; this.misses = 0; }
+      this.fails++;
+      // Three strikes before rediscovering: the lease is usually fine and the
+      // set simply is not listening.
+      if (this.fails % 3 === 0) this.ip = null;
+      this.nextTry = Date.now()
+        + Math.min(TV_RETRY_MS * Math.pow(2, Math.min(this.fails - 1, 3)), TV_RETRY_MAX_MS);
       this.dropped();
     } finally { this.busy = false; }
   }
@@ -1070,6 +1094,10 @@ class TvLink {
       // measured; the subscription reports the truth when it lands.
       await wakeMac(this.mac);
       this.power = true;
+      // Asked for by hand, so any backoff earned while it sat switched off is
+      // irrelevant — try hard for the next few seconds.
+      this.fails = 0;
+      this.nextTry = 0;
       this.wakingUntil = Date.now() + 25000;
       pushSoon();
       // Measured at five seconds to answer ping, but the set needs longer
@@ -1168,7 +1196,10 @@ const tvSignature = () => [...tvs.values()]
 
 // One reconnect loop for all of them. A set that is off simply fails to
 // connect, which is the correct answer and costs one attempt every 20s.
-setInterval(() => { for (const t of tvs.values()) if (!t.tv) t.open(); }, TV_RETRY_MS);
+setInterval(() => {
+  const now = Date.now();
+  for (const t of tvs.values()) if (!t.tv && now >= t.nextTry) t.open();
+}, TV_RETRY_MS);
 TV_READY = true;
 for (const t of tvs.values()) t.open();
 

@@ -49,7 +49,10 @@ async function state(tv) {
         console.log('    doing NAT — they are on the far side of it and cannot be reached from here.');
         continue;
       }
-      console.log('  paired'.padEnd(18) + (keys[t.ip] ? 'yes' : 'no — run: node tools/tv.js ' + t.ip + ' pair'));
+      // Filed by MAC, so looking one up by address always answered "no" — which
+      // is worse than useless on a set that is in fact paired.
+      const known = t.macs.some((m) => keys[m]) || keys[t.ip];
+      console.log('  paired'.padEnd(18) + (known ? 'yes' : 'no — run: node tools/tv.js ' + t.ip + ' pair'));
     }
     return;
   }
