@@ -1244,39 +1244,58 @@ for (const t of tvs.values()) t.open();
  * directly on either count. Cached by URL rather than by app id: the URL
  * carries a content hash, so a set that updates an app changes it and the
  * stale bytes fall out of use on their own. */
-const tvIcons = new Map();
+const tvIcons = new Map();          // icon url -> bytes, once fetched
+const tvIconWait = new Map();       // icon url -> the fetch already in flight
+/* One at a time, in a chain.
+ *
+ * A television will not serve two dozen HTTPS requests at once: asked for all
+ * 23 of its app icons together — which is exactly what a page opening the panel
+ * does — it answered 10 and refused 13, inside half a second. Not a timeout,
+ * a connection limit. The browser then hid those images and, because the chips
+ * are only rebuilt when the app list itself changes, they stayed hidden.
+ *
+ * So requests queue behind one another and identical ones share a single fetch.
+ * The cost is paid once: after that they come from the map above. */
+let iconQueue = Promise.resolve();
+
+function fetchIcon(url) {
+  if (tvIcons.has(url)) return Promise.resolve(tvIcons.get(url));
+  if (tvIconWait.has(url)) return tvIconWait.get(url);
+
+  const once = () => new Promise((resolve, reject) => {
+    const https = require('https');
+    const rq = https.get(url, { rejectUnauthorized: false, timeout: 8000 }, (rs) => {
+      if (rs.statusCode !== 200) { rs.resume(); return reject(new Error('HTTP ' + rs.statusCode)); }
+      const parts = [];
+      rs.on('data', (c) => parts.push(c));
+      rs.on('end', () => resolve(Buffer.concat(parts)));
+    });
+    rq.on('timeout', () => rq.destroy(new Error('timed out')));
+    rq.on('error', reject);
+  });
+
+  const p = iconQueue.then(once).then(
+    (buf) => { tvIcons.set(url, buf); tvIconWait.delete(url); return buf; },
+    (e) => { tvIconWait.delete(url); throw e; });
+  iconQueue = p.catch(() => {});      // the chain must survive a failure
+  tvIconWait.set(url, p);
+  return p;
+}
 
 app.get('/api/tv/:id/icon/:app', async (req, res) => {
   const t = tvs.get(req.params.id);
   const entry = t && t.apps.find((a) => a.id === req.params.app);
   if (!entry || !entry.icon) return res.status(404).end();
 
-  const hit = tvIcons.get(entry.icon);
-  const serve = (buf) => {
+  try {
+    const buf = await fetchIcon(entry.icon);
     res.set('Content-Type', /\.jpe?g$/i.test(entry.icon) ? 'image/jpeg' : 'image/png');
     // The bytes never change for a given URL, so this can be cached hard.
     res.set('Cache-Control', 'public, max-age=604800, immutable');
     res.end(buf);
-  };
-  if (hit) return serve(hit);
-
-  try {
-    const https = require('https');
-    const buf = await new Promise((resolve, reject) => {
-      const rq = https.get(entry.icon, { rejectUnauthorized: false, timeout: 6000 }, (rs) => {
-        if (rs.statusCode !== 200) { rs.resume(); return reject(new Error('HTTP ' + rs.statusCode)); }
-        const parts = [];
-        rs.on('data', (c) => parts.push(c));
-        rs.on('end', () => resolve(Buffer.concat(parts)));
-      });
-      rq.on('timeout', () => rq.destroy(new Error('timed out')));
-      rq.on('error', reject);
-    });
-    tvIcons.set(entry.icon, buf);
-    serve(buf);
   } catch (e) {
-    // A sleeping set serves nothing. The page hides the image and shows the
-    // app's name, which is why the name is always drawn as well.
+    // A sleeping set serves nothing. The page retries a couple of times and
+    // then falls back to the app's name, which is why the name is always drawn.
     res.status(502).end();
   }
 });
@@ -7779,7 +7798,15 @@ function drawTv() {
       img.alt = '';
       img.loading = 'lazy';
       img.src = '/api/tv/' + encodeURIComponent(d.record_id) + '/icon/' + encodeURIComponent(a.id);
-      img.onerror = () => img.classList.add('gone');
+      /* Retry before giving up. Hiding on the first error was wrong twice over:
+         a set can refuse a burst of requests, and the chips are only rebuilt
+         when the app list changes — so one transient failure hid that icon for
+         as long as the page stayed open. */
+      let tries = 0;
+      img.onerror = () => {
+        if (++tries > 3) { img.classList.add('gone'); return; }
+        setTimeout(() => { img.src = img.src.split('#')[0] + '#' + tries; }, tries * 700);
+      };
       const cap = document.createElement('span');
       cap.textContent = appLabel(a.title);
       b.append(img, cap);
