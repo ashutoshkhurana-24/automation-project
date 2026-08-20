@@ -360,8 +360,9 @@ Two **LG webOS QNED82BXA** sets, both reachable on the LAN and both controllable
 | TV 1 | `d0:cd:bf:a0:fc:cb` | Ashu's Room | `192.168.1.8` |
 | TV 2 | `60:95:f8:1d:11:da` | (unnamed) | `192.168.1.18` |
 | Living | `8c:77:79:5f:dc:64` | webOS TV QNED70BLA | `192.168.1.28` |
+| Master | `d0:cd:bf:91:00:26` | Master Room (QNED82BXA) | `192.168.1.30` |
 
-**The Living set is a QNED70BLA, not a QNED82BXA** (added 2026-08-20), and its MAC is outside the `60:95:f8` range the other two share — so **`60:95:f8:1d:11:da` is still unaccounted for**; it is not this set, as had been assumed. It announced itself over SSDP with its model number rather than a room name, so the only way to place it was to switch it on with somebody standing in front of it. Two things differ from the other two: it boots into `com.webos.app.home` where they boot into `com.webos.app.livetv`, so a "home screen" reading here is not a launch that failed; and LIVING has no hub screen record, so `shadowedByTv()` has nothing to hide.
+**The Living set is a QNED70BLA, not a QNED82BXA** (added 2026-08-20), and its MAC is outside the `60:95:f8` range the other two share — so **`60:95:f8:1d:11:da` is still unaccounted for**; it is not this set, as had been assumed. It announced itself over SSDP with its model number rather than a room name, so the only way to place it was to switch it on with somebody standing in front of it. LIVING has no hub screen record, so `shadowedByTv()` has nothing to hide. It was also first seen sitting on `com.webos.app.home` where Ashu and Parent were on `com.webos.app.livetv` — but the Master set (a QNED82BXA, the same model as Ashu) reported `home` too, so that is **just what a set happens to be showing**, not a property of the model. A `home` reading is not a launch that failed, on any of them.
 
 **Keys are per-install and the hub keeps its own file, so a set paired from the Mac has to have its key carried over** — and `data/tv-keys.json` must be *merged*, never blindly overwritten, because a key lost is a pairing prompt somebody has to walk to the television to accept. Check the shared entries match before copying.
 
@@ -425,6 +426,15 @@ The remote's own glyphs are hand-drawn inline SVG in `ICONS` — 24×24, `curren
 **`ssap://com.webos.media/getForegroundAppInfo` is the instrument that settled it, and it is the only honest one on this set.** Empty while an app sits on its own home screen; one entry with `playState` and a **`mediaId` that changes per video** once something is really playing. Everything before it depended on asking a person to look at the screen, which burned several rounds and produced one confidently wrong conclusion. `playYoutube()` reads it either side of the launch and returns **`confirmed`**, and the panel says so when a video does not start — because an accepted launch that shows a home screen used to look identical to one that worked.
 
 `POST /api/tv/:id {youtube}` takes a link in any of the usual shapes or a bare id, and **wakes a sleeping set and waits for it** before launching, because "put this on the television" has to mean it whatever the set is doing.
+
+**The MAC prefix says which interface it is, and therefore whether power-on will work.** Asking the Master set for its own interfaces settled what had only been inferred from prefixes before: its `wiredInfo` MAC is `D0:CD:BF:91:00:26` — the very address ARP knows it by, so it is on **Ethernet** — while its idle Wi-Fi radio is `8C:77:79:7C:7A:50`. So on this hardware:
+
+| prefix | interface | power-on |
+|---|---|---|
+| `d0:cd:bf` | wired | reliable — woke in under five seconds, twice |
+| `60:95:f8`, `8c:77:79` | Wi-Fi | Wake-on-Wireless, the unreliable half |
+
+Which places all four without further guessing: **Ashu and Master are wired**, **Parent and Living are on Wi-Fi** — and confirms the Living set is on Wi-Fi as a fact rather than as a hunch from its MAC being outside the other range. The still-unaccounted `60:95:f8:1d:11:da` sits in the Wi-Fi range, so it is some set's radio rather than a wired interface.
 
 **Control works over Wi-Fi; switching a set *on* effectively wants Ethernet.** `network()` asks the set which interfaces it has, and the MAC that matches what ARP knows is the live one. The Ashu Room set answers `wiredInfo: D0:CD:BF:A0:FC:CB` — the very MAC we drive it by — so **it is on Ethernet, and that is why its power-on is flawless**: wired Wake-on-LAN woke it in under five seconds, twice. Its idle Wi-Fi radio is `60:95:f8:1d:0e:c8`.
 

@@ -987,6 +987,10 @@ const TVS = [
      com.webos.app.livetv — so do not read "home screen" here as a set that has
      failed to launch something. */
   { id: 'tv-living', name: 'TV', room: 'LIVING', mac: '8c:77:79:5f:dc:64' },
+  /* Named itself "Master Room" over SSDP, so nothing had to be guessed. On
+     **Ethernet** — the MAC we drive it by is its own wiredInfo address — which
+     is what makes its power-on reliable, the same as Ashu's. */
+  { id: 'tv-master', name: 'TV', room: 'MASTER ROOM', mac: 'd0:cd:bf:91:00:26' },
 ];
 const YT_APP = 'youtube.leanback.v4';
 
