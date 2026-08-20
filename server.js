@@ -3595,7 +3595,12 @@ const HTML = /* html */ `<!doctype html>
      user-scalable in Safari but honours it once the page is installed to the
      Home Screen, and the gesturestart handler below covers the rest. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#f3ede3">
+<!-- Kept in step with the theme by applyTheme: this paints the browser's own
+     bar and the area behind the notch, and a cream strip above a dark board is
+     the one piece of chrome a stylesheet cannot reach. It cannot be a
+     prefers-color-scheme media attribute either, because the theme here follows
+     the hub's clock and not the system. -->
+<meta name="theme-color" id="themecolor" content="#f3ede3">
 <!-- Saved to a phone's home screen this opens without browser chrome, which is
      the only way the fixed, non-scrolling layout works properly on a phone. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3727,6 +3732,14 @@ const HTML = /* html */ `<!doctype html>
     --paper-solid:   #fdfaf5;
     --paper-2-solid: #f6efe3;
     --ground:        #d9d3c8;
+    /* The ink a COB card uses. It is black on paper rather than the warm near-
+       ink everything else uses, because a ceiling card and a member card are the
+       two smallest, busiest faces here and #2b2622 read as grey on them. It has
+       to be a token, not a literal in the rule, or a theme cannot change it —
+       and black on a dark amber pane is 1.87:1. */
+    --ink-cob:   #000;
+    --soft-cob:  #000;
+    --faint-cob: #000;
     --pane:      rgba(253,250,245,.86);
     --pane-up:   rgba(253,250,245,.96);
     --edge:      rgba(43,38,34,.09);
@@ -3813,6 +3826,13 @@ const HTML = /* html */ `<!doctype html>
 
     --clay:   #e0705a;
     --accent: #ff6f61;
+    /* A COB card is a dark pane after seven like every other tile, so it takes
+       the same ink as the rest of the board. Black here was the single worst
+       thing in dark mode: 1.87:1 on a strip label, 2.94 on the name, on the
+       most numerous card in the house. */
+    --ink-cob:   #ecebe8;
+    --soft-cob:  #9ba1a9;
+    --faint-cob: #7d848e;
 
     --pane:      rgba(24,27,32,.78);
     --pane-up:   rgba(32,36,42,.90);
@@ -3884,6 +3904,33 @@ const HTML = /* html */ `<!doctype html>
      The pane keeps its 13% — a card has to read as lit even at low brightness —
      so the glow is what gives, and 24% is the brightest it can be and still be
      readable. */
+  /* ── text on a lit card, after seven ──────────────────────────────────
+     Two places where a colour that reads perfectly on paper cannot simply be
+     inverted, both found by measuring the board rather than looking at it.
+
+     The strip's fill is the one element that is *brighter* in the dark theme —
+     it stands for light, so it stays a full-strength amber — and a near-white
+     label on it measures 1.76:1. It cannot go dark instead: the label sits at
+     the left of the strip and the fill grows from the left, so below about a
+     third it would be dark ink on the near-black track.
+     Dimming the fill alone does not work either, and the sweep says why: the
+     label needs the fill dark and the fill needs to be light enough to be told
+     from the track, and for the palest tints there is no value that does both —
+     candle-warm is 2.95:1 against the track at 44% and only 4.07:1 under the
+     label at 52%. So the two jobs are split. The body of the fill stays dim,
+     which is what the label sits on, and the **level is marked by a bar at the
+     fill's leading edge** at full strength — high contrast against the track,
+     and nothing has to be read on top of it. At 0% the fill has no width, so
+     the bar is absent, which is correct: nothing is set. */
+  .dark .strip-fill {
+    background: color-mix(in srgb, var(--tint, var(--warm)) 40%, transparent);
+    box-shadow: inset -2.5px 0 0 0 var(--tint, var(--warm));
+  }
+  /* And the wiring address keeps --faint, which is measured against the *unlit*
+     pane; on a lit one it is 1.89:1. It is the quiet line on the card, so it
+     takes a dimmed ink rather than the full one. */
+  .dark .tile.on .idline { color: color-mix(in oklab, var(--ink) 62%, var(--tint)); }
+
   .dark .tile-fill {
     background: linear-gradient(104deg,
       color-mix(in srgb, var(--tint) 24%, transparent) 0%,
@@ -6276,11 +6323,12 @@ const HTML = /* html */ `<!doctype html>
     .tile.hero-room .big { font-size: clamp(24px, 2.6vw, 32px); }
   }
 
-  /* The mobile block already forces --ink/soft/faint to #000 on cobmember,
-     but that rule lives inside max-width:860px so it doesn't reach desktop.
-     The gang (big COB) card looks fine without it; the small member cards
-     don't, so scope the override to cobmember only, globally. */
-  .tiles .tile.cobmember { --ink: #000; --soft: #000; --faint: #000; }
+  /* The mobile block already overrides these on cobmember, but that rule lives
+     inside max-width:860px so it does not reach desktop. The gang (big COB)
+     card looks fine without it; the small member cards do not, so the override
+     is scoped to cobmember only, globally. The values come from the theme —
+     black on paper, the board's own ink after seven. */
+  .tiles .tile.cobmember { --ink: var(--ink-cob); --soft: var(--soft-cob); --faint: var(--faint-cob); }
 
   @media (max-width: 860px) {
     html, body { height: auto; overflow: visible; overscroll-behavior: auto; }
@@ -6657,7 +6705,7 @@ const HTML = /* html */ `<!doctype html>
        Nothing is lost by it: whether a COB is lit is already said by the pane,
        the rim, the halo and the key. */
     .tiles .tile.gang, .tiles .tile.cobmember {
-      --ink: #000; --soft: #000; --faint: #000;
+      --ink: var(--ink-cob); --soft: var(--soft-cob); --faint: var(--faint-cob);
     }
 
     /* the field is now just more page, not a scrolling window */
@@ -11805,6 +11853,8 @@ function applyTheme() {
   const dark = chosen ? chosen === 'dark' : houseIsDark();
   const was = document.documentElement.classList.contains('dark');
   document.documentElement.classList.toggle('dark', dark);
+  const meta = el('#themecolor');
+  if (meta) meta.setAttribute('content', dark ? '#12151a' : '#f3ede3');
   // The backdrop wants a different brightness in each theme, and fitShot is the
   // only thing that knows how bright this particular photograph is.
   if (was !== dark && state.bgv) setShot(state.bgv);
