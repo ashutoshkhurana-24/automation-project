@@ -4469,8 +4469,15 @@ const HTML = /* html */ `<!doctype html>
        support for mask-composite: exclude and takes the webkit path, and
        there the boost blew every lit card to rgb(255,255,0). The gradient rim
        above still draws for it; only the extra sparkle is withheld. */
+    /* A hover query as well as the width, which the refraction below already
+       insists on for exactly this reason and this rule was missing. A wall
+       tablet in landscape is over 861px and has no pointer, so it was being
+       given a *second* backdrop-filter on every tile, cue, tab and sheet — the
+       most expensive thing on the page, twice, on the weakest hardware that
+       runs it. A mouse means a real GPU; a touch screen this wide means a
+       panel bolted to a wall. */
     @supports (mask-composite: exclude) {
-      @media (min-width: 861px) {
+      @media (min-width: 861px) and (hover: hover) {
         .tile::after, .cue::after, .tab::after, .sheet::after,
         .timerpop::after, .quick button::after, .key::after {
           backdrop-filter: brightness(1.5) saturate(1.8);
@@ -6133,6 +6140,59 @@ const HTML = /* html */ `<!doctype html>
     *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
   }
 
+  /* ── plain and fast ────────────────────────────────────────────────────
+     For hardware that cannot afford the material. The doorbell panel on the
+     wall is vendor-locked — no adb, no console, no way to measure it — so this
+     is what the page does when it works out for itself that it is on a device
+     like that, and what a person can force from Settings.
+     It is not a re-skin. Every colour, every reading and every control stays
+     exactly where it is; what goes is the compositing: the blur behind forty
+     panes, the second filter on each rim, the photograph and the filter over
+     it, the halos, and the animation. The claim of the design survives it —
+     a lit circuit still glows in its own colour temperature, because that is
+     a gradient in the pane and gradients are free.
+     The panes must go *opaque* as the blur comes off, or the contrast that was
+     being made inside each pane is simply lost — which is this file's oldest
+     rule about glass, applied in reverse. */
+  .lite body {
+    --lens: none;
+    --paper:   #fdfaf5;
+    --paper-2: #f6efe3;
+    --cast: 0 6px 14px -10px rgba(58,44,30,.34);
+  }
+  /* One flat colour, which is the cheapest background there is: no photograph
+     to decode at 3200px on a tablet with 1GB, no seven-layer gradient stack, no
+     full-screen filter recomputed as the board moves.
+     Not the painted fallback that shows when there is no picture — that was
+     built for the dark palette this design used to have, and against paper ink
+     it is unreadable: the hero sentence came out charcoal on charcoal. A pale
+     ground is what the ink was chosen for, and it keeps the rule that matters —
+     the chrome is neutral, so the only colour on the board is a lamp. */
+  .lite .photo {
+    background-image: none; background-color: #d9d3c8;
+    filter: none; transform: none;
+  }
+  .lite .photo::after { background: none; }
+  .lite .tile::after, .lite .cue::after, .lite .tab::after, .lite .sheet::after,
+  .lite .timerpop::after, .lite .quick button::after, .lite .key::after {
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  /* The five that name their own blur instead of taking --lens, so clearing the
+     token does not reach them. Found by asking the page which elements still
+     had a filter rather than by reading the sheet. */
+  .lite .scrim, .lite .popveil, .lite .seeklayer, .lite .bgshot .tag, .lite .index-sec {
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  /* Two halos per lit tile is what made a lamp read as a lamp, and it is also
+     a large blurred shadow recomputed whenever the level changes. The lit rim
+     and the fill carry it alone here. */
+  .lite .tile.on { box-shadow: none; }
+  .lite .tvpanel::before, .lite .tvpanel::after { animation: none; }
+  .lite *, .lite *::before, .lite *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .09s !important;
+  }
+
   /* ── refraction ────────────────────────────────────────────────────────
      Last in the sheet on purpose: every pane declares its own backdrop-filter,
      so this has to come after all of them to win. Chrome resolves url() inside
@@ -6283,6 +6343,11 @@ const HTML = /* html */ `<!doctype html>
         <button class="setting" id="setnudge" type="button" aria-pressed="true">
           <span class="dot"></span>
           <span>Tell me what's been left on</span>
+        </button>
+        <button class="setting" id="setlite" type="button" aria-pressed="false">
+          <span class="dot"></span>
+          <span>Plain and fast</span>
+          <span class="val" id="setliteval"></span>
         </button>
         <button class="setting" id="setbg" type="button">
           <span class="dot on"></span>
@@ -10796,7 +10861,76 @@ setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
 setInterval(readout, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 
-load();
+/* ── plain and fast ──────────────────────────────────────────────────────
+ *
+ * The panel on the wall is vendor-locked: no adb, no console, no way to stand
+ * a profiler next to it. So the page has to work out for itself that it is on
+ * hardware which cannot afford the glass, and take the glass off.
+ *
+ * Two signals, cheap one first. navigator.deviceMemory is exactly the question
+ * asked — a wall panel reports 1 or 2GB and a phone reports 4 or more — and it
+ * costs nothing. If that is inconclusive the board is timed as it deals itself
+ * in, which is the one moment the device is genuinely busy: an idle page runs
+ * at 60fps on anything, so measuring a still screen would prove nothing.
+ *
+ * The verdict is remembered either way, so a slow device starts plain on the
+ * next load rather than showing the expensive version first and flinching, and
+ * a fast one never pays for the probe again. A person can override it from
+ * Settings in both directions, which on a locked tablet is the only control
+ * that can reach it — and ?lite=1 / ?lite=0 does the same from the address bar.
+ */
+const LITE_KEY = 'neo-lite';
+const liteStore = {
+  get() { try { return localStorage.getItem(LITE_KEY); } catch { return null; } },
+  set(v) { try { localStorage.setItem(LITE_KEY, v); } catch { /* private mode */ } },
+};
+
+function setLite(on, why) {
+  document.documentElement.classList.toggle('lite', on);
+  liteStore.set(on ? '1' : '0');
+  const b = el('#setlite');
+  if (b) {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    const v = el('#setliteval');
+    if (v) v.textContent = on ? (why === 'measured' ? 'on, this device is slow' : 'on') : '';
+  }
+}
+
+let liteProbe = false;
+
+(function decideLite() {
+  const asked = new URLSearchParams(location.search).get('lite');
+  if (asked !== null) return setLite(asked !== '0', 'asked');
+  const stored = liteStore.get();
+  if (stored !== null) return setLite(stored === '1', 'remembered');
+  // Under 3GB is a panel, not a phone. Chrome rounds this to 0.25/0.5/1/2/4/8.
+  const mem = navigator.deviceMemory;
+  if (typeof mem === 'number' && mem <= 2) return setLite(true, 'measured');
+  liteProbe = true;                       // no verdict yet — time the first board
+})();
+
+/* Timed while the board arrives, not while it sits still. A median frame worse
+   than 32ms is a device dropping every other frame at 60Hz, which is the point
+   at which the material is costing more than it is worth. */
+function probeLite() {
+  if (!liteProbe) return;
+  liteProbe = false;
+  const dt = [];
+  let last = performance.now(), n = 0;
+  const tick = (now) => {
+    dt.push(now - last); last = now;
+    if (++n < 26) return requestAnimationFrame(tick);
+    const s = dt.slice(6).sort((a, b) => a - b);
+    setLite(s[Math.floor(s.length / 2)] > 32, 'measured');
+  };
+  requestAnimationFrame(tick);
+}
+
+el('#setlite').onclick = () =>
+  setLite(!document.documentElement.classList.contains('lite'), 'asked');
+
+load().then(probeLite, probeLite);
 </script>
 </body>
 </html>`;
