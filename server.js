@@ -348,7 +348,15 @@ function scheduleTarget(sch) {
     return scene ? { kind: 'cue', scene, label: scene.name } : null;
   }
   if (sch.target?.kind === 'device') {
-    const entry = devices.get(Number(sch.target.record_id));
+    /* A television is addressed by our own name for it, so it has to be looked
+       for before Number() turns 'tv-living' into NaN. */
+    const id = sch.target.record_id;
+    if (typeof id === 'string' && tvs.has(id)) {
+      const tv = tvs.get(id);
+      // Not through sentence(): it title-cases, and turned TV into Tv.
+      return { kind: 'device', tv, label: `${tv.name} · ${sentence(tv.room)}` };
+    }
+    const entry = devices.get(Number(id));
     return entry ? { kind: 'device', entry, label: `${sentence(entry.record.device_name)} · ${sentence(entry.room)}` } : null;
   }
   return null;
@@ -363,7 +371,22 @@ function scheduleSays(sch) {
     : isCurtain ? ((sch.action === 'close' || sch.action === 'off') ? 'close' : 'open')
     : (sch.action === 'off' ? 'switch off' : 'switch on');
   let extra = '';
-  if (t?.kind === 'device' && !isCurtain && sch.action !== 'off' && sch.action !== 'close') {
+  /* A screen says what it will be put on, and says out loud that it will not
+     take the room from anyone — the guard is not much use if the person setting
+     the schedule cannot tell it is there. */
+  if (t?.tv) {
+    /* Two clauses, because the two halves have different conditions and running
+       them together said the wrong thing: what goes on the screen only happens
+       if nobody is watching, while a message is delivered either way. */
+    const onScreen = [];
+    if (sch.action !== 'off' && sch.action !== 'close') {
+      if (sch.youtube) onScreen.push('a video');
+      else if (sch.tv_app) onScreen.push('an app');
+      if (sch.volume != null) onScreen.push(`volume ${sch.volume}`);
+    }
+    if (onScreen.length) extra = ` with ${onScreen.join(', ')}, if nobody is watching`;
+    if (sch.toast) extra += onScreen.length ? ' — and a message either way' : ' with a message';
+  } else if (t?.kind === 'device' && !isCurtain && sch.action !== 'off' && sch.action !== 'close') {
     const parts = [];
     if (sch.level != null) parts.push(`${sch.level}%`);
     if (sch.tune != null) parts.push(sch.tune < 12 ? 'daylight' : sch.tune < 26 ? 'cool' : sch.tune < 40 ? 'soft white' : sch.tune < 56 ? 'neutral' : sch.tune < 70 ? 'warm white' : sch.tune < 86 ? 'amber' : 'candle');
@@ -396,6 +419,16 @@ async function runSchedule(sch) {
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return fireCue(t.scene);
   if (t.kind === 'device') {
+    /* Through the same runner a cue uses, so the rule that a set already being
+       watched is left alone holds for a schedule too — which matters more here,
+       since nobody is standing at the dashboard when this fires. */
+    if (t.tv) {
+      return runTvStep({
+        record_id: t.tv.id,
+        on: !(sch.action === 'off' || sch.action === 'close'),
+        tv_app: sch.tv_app, youtube: sch.youtube, volume: sch.volume, toast: sch.toast,
+      });
+    }
     const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
     if (isCurtain) {
       const verb = (sch.action === 'close' || sch.action === 'off') ? 'curtain_opr_c' : 'curtain_opr_o';
@@ -422,6 +455,7 @@ async function runScheduleOff(sch) {
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return clearCue(t.scene);
   if (t.kind === 'device') {
+    if (t.tv) return runTvStep({ record_id: t.tv.id, on: false });
     const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
     if (isCurtain) {
       return sendToHub(t.entry.record.record_id, {}, 'curtain_opr_c');
@@ -2239,6 +2273,59 @@ async function sendSteps(list) {
   })));
 }
 
+/* ── a television in a cue ───────────────────────────────────────────────
+ *
+ * A step for a set is not the shape of a step for a lamp: there is no level and
+ * no colour, and what it may do depends on what the set is already doing.
+ *
+ * The rule, which is the whole point of it: **a television that is already on
+ * belongs to whoever is watching it.** A cue that would put a video, an app or
+ * a volume on the screen must not take the room away from them — so on a set
+ * that is already on, every one of those is skipped and only a message is
+ * delivered. A message is the one thing that can be said to somebody watching
+ * without interrupting them, which is exactly why it is the exception.
+ *
+ * Off is not guarded and never should be: a bedtime cue that cannot switch the
+ * television off is not a bedtime cue. The guard is against *hijacking*, not
+ * against being switched off.
+ *
+ * This is also why a television is never retried and never undone. `outstanding`
+ * only looks at hub records so it cannot see these steps, which is correct —
+ * resending a launch is precisely the hijack the rule exists to prevent.
+ */
+const isTvStep = (step) => typeof step.record_id === 'string' && tvs.has(step.record_id);
+
+async function runTvStep(step) {
+  const t = tvs.get(step.record_id);
+  if (!t) return { id: step.record_id, did: 'no such television' };
+
+  if (step.on === false) {
+    await t.setPower(false);
+    return { id: t.id, room: t.room, did: 'switched off' };
+  }
+
+  // Somebody is watching. Say the thing if there is a thing to say, and leave.
+  if (t.power) {
+    if (!step.toast) return { id: t.id, room: t.room, watching: true, did: 'left alone' };
+    await t.say(step.toast).catch(() => {});
+    return { id: t.id, room: t.room, watching: true, did: 'message only' };
+  }
+
+  // Off, so the cue owns the screen.
+  const did = [];
+  try {
+    if (step.youtube) { await t.playYoutube(step.youtube); did.push('a video'); }
+    else if (step.tv_app) { await t.launchApp(step.tv_app); did.push('an app'); }
+    else { await t.setPower(true); did.push('switched on'); }
+    // After the screen, so a set does not announce itself at the old volume.
+    if (step.volume != null) { await t.setVolume(Number(step.volume)); did.push('volume'); }
+    if (step.toast) { await t.say(step.toast).catch(() => {}); did.push('a message'); }
+  } catch (e) {
+    return { id: t.id, room: t.room, did: 'failed: ' + e.message, failed: true };
+  }
+  return { id: t.id, room: t.room, did: did.join(', ') };
+}
+
 /** The steps of a scene paired with what they resolve to, skipping unknowns. */
 const sceneTargets = (steps) =>
   steps.map((step) => ({ step, t: stepTarget(step) })).filter(({ t }) => t);
@@ -2258,15 +2345,24 @@ function outstanding(scene) {
 }
 
 async function applyScene(scene) {
+  /* Two different machines. The hub takes a batch down one socket and is read
+     back to see what landed; a television is its own host, answers for itself,
+     and is never retried. They are started together because neither waits on
+     the other — a set taking nine seconds to wake must not hold up the lamps. */
+  const tvSteps = scene.steps.filter(isTvStep);
+  const hubSteps = scene.steps.filter((st) => !isTvStep(st));
+  const screens = Promise.all(tvSteps.map((st) =>
+    runTvStep(st).catch((e) => ({ id: st.record_id, did: 'failed: ' + e.message, failed: true }))));
+
   let sent = 0;
-  try { sent = await sendSteps(sceneTargets(scene.steps)); }
+  try { sent = await sendSteps(sceneTargets(hubSteps)); }
   catch (err) { console.error(`scene ${scene.id} failed to send:`, err.message); }
 
   await sleep(SETTLE_MS);
   await readHubStateFresh();
 
   // One retry for whatever the hub did not take.
-  const missed = outstanding(scene);
+  const missed = outstanding({ steps: hubSteps });
   if (missed.length) {
     console.log(`scene ${scene.id}: retrying ${missed.length}`);
     try { await sendSteps(sceneTargets(missed)); }
@@ -2275,8 +2371,14 @@ async function applyScene(scene) {
     await readHubStateFresh();
   }
 
-  const still = outstanding(scene);
-  return { sent, total: scene.steps.length, set: scene.steps.length - still.length, missed: still.length };
+  const still = outstanding({ steps: hubSteps });
+  const tv = await screens;
+  return {
+    sent, total: scene.steps.length,
+    set: (hubSteps.length - still.length) + tv.filter((r) => !r.failed).length,
+    missed: still.length + tv.filter((r) => r.failed).length,
+    tv,
+  };
 }
 
 app.get('/api/scenes', (req, res) => res.json({ scenes: sceneList() }));
@@ -2300,6 +2402,11 @@ function captureBefore(steps) {
   const before = [];
   let skipped = 0;
   for (const step of steps) {
+    /* Televisions are left out for the same reason curtains are, one step
+       further on: we could record that a set was on, but not *what it was
+       showing*, and switching it back on to its default app is not putting it
+       back — it is a second interruption dressed as an undo. */
+    if (isTvStep(step)) { skipped++; continue; }
     const entry = devices.get(step.record_id);
     if (!entry) continue;
     if ((entry.record.app_type || '') === 'C') { skipped++; continue; }
@@ -2348,11 +2455,16 @@ function readSchedule(body, base) {
 
   const target = body?.target ?? base?.target;
   let devEntry = null;
+  let devTv = null;
   if (target?.kind === 'cue') {
     if (!scenes.some(sc => sc.id === target.id)) return { error: `no cue with id ${target.id}` };
   } else if (target?.kind === 'device') {
-    devEntry = devices.get(Number(target.record_id));
-    if (!devEntry) return { error: `no device with record_id ${target.record_id}` };
+    if (typeof target.record_id === 'string' && tvs.has(target.record_id)) {
+      devTv = tvs.get(target.record_id);
+    } else {
+      devEntry = devices.get(Number(target.record_id));
+      if (!devEntry) return { error: `no device with record_id ${target.record_id}` };
+    }
   } else {
     return { error: 'target must be {kind:"cue",id} or {kind:"device",record_id}' };
   }
@@ -2403,10 +2515,24 @@ function readSchedule(body, base) {
       days,
       target: target.kind === 'cue'
         ? { kind: 'cue', id: target.id }
-        : { kind: 'device', record_id: Number(target.record_id) },
+        // A screen keeps its own id as a string; Number() would make it NaN.
+        : { kind: 'device', record_id: devTv ? devTv.id : Number(target.record_id) },
       action,
       level,
       tune,
+      /* What a screen is to be put on. Only meaningful when it is being
+         switched on, and only ever acted on if the set is off at the time —
+         see runTvStep. A message is the exception and rides along either way. */
+      ...(devTv ? {
+        tv_app: !isOff && body?.tv_app ? String(body.tv_app).slice(0, 80)
+          : (body?.tv_app === undefined ? (base?.tv_app ?? null) : null),
+        youtube: !isOff && body?.youtube ? String(body.youtube).slice(0, 200)
+          : (body?.youtube === undefined ? (base?.youtube ?? null) : null),
+        volume: !isOff && body?.volume != null ? pct(body.volume)
+          : (body?.volume === undefined ? (base?.volume ?? null) : null),
+        toast: body?.toast ? String(body.toast).slice(0, 200)
+          : (body?.toast === undefined ? (base?.toast ?? null) : null),
+      } : {}),
       off_after,
       enabled: body?.enabled === undefined ? (base?.enabled ?? true) : !!body.enabled,
     },
@@ -2933,6 +3059,25 @@ function cleanSteps(raw) {
   const clean = [];
   const seen = new Set();
   for (const step of Array.isArray(raw) ? raw : []) {
+    /* A television's id is a name of ours ('tv-living'), not one of the hub's
+       numbers, so it has to be recognised before the Number() below turns it
+       into NaN and drops it — which is what silently happened to every screen
+       step before this. Its fields are its own: no level, no colour, and only
+       what a set can actually be told. */
+    if (typeof step?.record_id === 'string' && tvs.has(step.record_id)) {
+      if (seen.has(step.record_id)) continue;
+      seen.add(step.record_id);
+      const on = step.on !== false;
+      const out = { record_id: step.record_id, on };
+      if (on && step.tv_app) out.tv_app = String(step.tv_app).slice(0, 80);
+      if (on && step.youtube) out.youtube = String(step.youtube).slice(0, 200);
+      if (on && step.volume != null) {
+        out.volume = Math.max(0, Math.min(100, Math.round(Number(step.volume) || 0)));
+      }
+      if (step.toast) out.toast = String(step.toast).slice(0, 200);
+      clean.push(out);
+      continue;
+    }
     const id = Number(step?.record_id);
     const entry = devices.get(id);
     if (!entry || seen.has(id)) continue;
@@ -2952,7 +3097,13 @@ function cleanSteps(raw) {
 
 /** How a cue reads in one phrase: one room by name, or how many rooms. */
 function noteFor(steps) {
-  const rooms = [...new Set(steps.map(st => roomKey(devices.get(st.record_id).room).toLowerCase()))];
+  // A screen step has no hub record, so its room comes from the set itself.
+  // Read straight off devices.get() this threw the moment a cue held a
+  // television.
+  const rooms = [...new Set(steps.map((st) => {
+    const room = isTvStep(st) ? tvs.get(st.record_id).room : devices.get(st.record_id).room;
+    return roomKey(room).toLowerCase();
+  }))];
   return rooms.length === 1 ? rooms[0] : rooms.length + ' rooms';
 }
 
@@ -4920,6 +5071,33 @@ const HTML = /* html */ `<!doctype html>
   /* what one circuit will be set to, opened up */
   .step-edit { display: grid; gap: 12px; padding: 4px 0 16px 20px; }
   .step-edit[hidden] { display: none; }
+  /* On its own screen the editor is not nested under a row any more, so it
+     gives up the indent that said "this belongs to the row above". */
+  .step-edit.open { padding: 4px 0 10px; }
+  /* The one place the interface explains a rule rather than showing it: a cue
+     that deliberately does less than it was told has to say so, or it reads as
+     a fault. */
+  .step-note {
+    margin: 0; padding: 10px 12px; border-radius: 10px;
+    font-size: 12.5px; line-height: 1.45; color: var(--soft);
+    background: var(--paper-2); border: 1px solid var(--line);
+  }
+  .step-field { display: grid; gap: 6px; }
+  .step-field > span {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  /* appearance:none because an input is not the control it sits in — the same
+     trap the search field hit, where the browser's own lip drew a second box. */
+  .step-field input, .step-field select {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    font: 400 14px/1.2 var(--sans); color: var(--ink);
+    background: #fff; border: 1px solid var(--line-up); box-shadow: none;
+  }
+  .step-field input:focus, .step-field select:focus {
+    outline: 2px solid var(--edge-up); outline-offset: 1px;
+  }
   .onoff { display: flex; gap: 6px; }
   .onoff button {
     padding: 7px 16px; cursor: pointer; border-radius: 9px;
@@ -5101,6 +5279,15 @@ const HTML = /* html */ `<!doctype html>
     border: 1px solid var(--line); border-radius: 11px; background: var(--paper);
   }
   .sched-pick:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  /* The circuit chooser is a button that leads somewhere, not a dropdown, so
+     it says which way it goes and lets the name take the room it needs. */
+  .sched-pick.pickbtn { display: flex; align-items: center; gap: 10px; text-align: left; }
+  .sched-pick.pickbtn > span:first-child { flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sched-pick.pickbtn .chev { flex: 0 0 auto; color: var(--faint); }
+  /* Sheets are opaque, and the picker is a list inside one, so its rows sit on
+     paper rather than on the glass the board uses. */
+  #schedpicker { display: grid; gap: 6px; }
 
   .sheet-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 24px 20px;
                 border-top: 1px solid var(--edge); }
@@ -6295,8 +6482,15 @@ const HTML = /* html */ `<!doctype html>
      Mobile devices (touch screens and phones) skip the SVG displacement map
      because evaluating feDisplacementMap across dozens of cards causes severe
      GPU and software rasterization lag in Android WebView. */
+  /* Sheets and popovers are deliberately absent from this list. They are opaque
+     panels — this file's own rule, that glass is for chrome you look past and a
+     thing you read and type into has to be a panel — and the refraction put
+     them back into the glass: an opaque cream background, and the room board
+     legible straight through it behind a schedule's own fields. Fixed by not
+     refracting them rather than by out-specifying it, because the intent is
+     that the rule does not apply. */
   @media (min-width: 861px) and (hover: hover) {
-    .tile, .cue, .tab, .plate, .sheet, .timerpop, .saycard,
+    .tile, .cue, .tab, .plate, .saycard,
     .quick button, .nudge, .back, .cut, .rail {
       backdrop-filter: url("#lens") var(--lens);
     }
@@ -6686,13 +6880,21 @@ const HTML = /* html */ `<!doctype html>
           <button class="seg" type="button" data-kind="cue">Run a cue</button>
           <button class="seg" type="button" data-kind="device">Switch a circuit</button>
         </div>
-        <select class="sched-pick" id="schedtarget" aria-label="What to schedule"></select>
+        <select class="sched-pick" id="schedtarget" aria-label="Which cue"></select>
+        <!-- Ninety circuits in one dropdown is a list you scroll, not a choice
+             you make. A circuit is chosen the way a cue's steps are: room, then
+             circuit. -->
+        <button class="sched-pick pickbtn" id="schedcircuit" type="button">
+          <span id="schedcircuitwhat">Choose a circuit</span><span class="chev">›</span>
+        </button>
         <div class="seg-row" id="schedaction" hidden>
           <button class="seg" type="button" data-action="on">On</button>
           <button class="seg" type="button" data-action="off">Off</button>
         </div>
         <div class="sched-controls" id="schedcontrols" hidden></div>
       </div>
+
+      <div class="sched-field" id="schedpicker" hidden></div>
 
       <div class="sched-field" id="schedafterfield">
         <span class="sched-lab">Then switch it off again</span>
@@ -6748,6 +6950,10 @@ const HTML = /* html */ `<!doctype html>
 
 <script>
 const HUB = '${HUB_IP}';
+/* Interpolated at start-up, like HUB above. The cue editor offers a set's apps
+   in this order and hides LG's own housekeeping, and it cannot reach the
+   server's copy — referenced directly it was simply undefined in the browser. */
+const TV_APPS_SHOWN = ${JSON.stringify(TV_APP_ORDER)};
 
 /* What a circuit is decides its colour and its vocabulary. A fan is on this
    board because it is a circuit, but it does not glow, so it is not drawn
@@ -9119,10 +9325,80 @@ function schedSlider(label, key, draft, d, word, warm) {
   return row;
 }
 
+/* Which step of choose-a-circuit the schedule sheet is showing: nothing (the
+   form), the rooms, or one room's circuits. Same two steps as a cue's step
+   picker, and deliberately the same rows, so the two sheets do not teach the
+   house two different ways to name a light. */
+let schedPick = null;       // null | 'rooms' | 'circuits'
+let schedPickRoom = null;
+
+/** The rooms, then a room's circuits, drawn into the schedule sheet. */
+function drawSchedPicker() {
+  const box = el('#schedpicker');
+  box.hidden = !schedPick;
+  box.innerHTML = '';
+  if (!schedPick) return;
+
+  if (schedPick === 'rooms') {
+    box.appendChild(backButton('Back to the schedule', () => { schedPick = null; drawSchedSheet(); }));
+    for (const room of rooms()) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pick';
+      b.innerHTML = '<span class="what"></span><span class="count"></span><span class="chev">›</span>';
+      b.querySelector('.what').textContent = title(room);
+      b.querySelector('.count').textContent = inRoom(room).length + ' circuits';
+      b.onclick = () => { schedPickRoom = room; schedPick = 'circuits'; drawSchedSheet(); };
+      box.appendChild(b);
+    }
+    return;
+  }
+
+  box.appendChild(backButton('Rooms', () => { schedPick = 'rooms'; drawSchedSheet(); }));
+  for (const d of inRoom(schedPickRoom)) {
+    const mine = String(schedDraft.target?.record_id) === String(d.record_id);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pick' + (mine ? ' in' : '');
+    b.innerHTML = '<span class="what"></span><span class="count"></span>';
+    b.querySelector('.what').textContent = pretty(d.name);
+    b.querySelector('.count').textContent = mine ? 'this one' : '';
+    b.onclick = () => {
+      /* The id stays a string for a television and a number for a hub circuit,
+         which is the difference the server keys everything off. */
+      schedDraft.target = { kind: 'device', record_id: d.record_id };
+      // A circuit chosen afresh loses the last one's settings, which belonged
+      // to a different lamp.
+      delete schedDraft.level; delete schedDraft.tune;
+      schedDraft.tv_app = null; schedDraft.youtube = null;
+      schedDraft.volume = null; schedDraft.toast = null;
+      schedDraft.action = d.is_curtain ? 'open' : 'on';
+      schedPick = null;
+      drawSchedSheet();
+    };
+    box.appendChild(b);
+  }
+}
+
 /** Fills the sheet from the draft. Called on open and after every change. */
 function drawSchedSheet() {
   if (!schedDraft) return;
   el('#schedat').value = schedDraft.at;
+
+  /* While a circuit is being chosen the form gets out of the way, the same as
+     the cue sheet hides its head and foot while picking. */
+  drawSchedPicker();
+  for (const id of ['#schedat', '#scheddays', '#schedafterfield']) {
+    const n = el(id); if (n) n.closest('.sched-field').hidden = !!schedPick;
+  }
+  el('#schedkind').hidden = !!schedPick;
+  if (schedPick) {
+    el('#schedtarget').hidden = true;
+    el('#schedcircuit').hidden = true;
+    el('#schedaction').hidden = true;
+    el('#schedcontrols').hidden = true;
+    return;
+  }
 
   const days = el('#scheddays');
   days.innerHTML = '';
@@ -9148,34 +9424,24 @@ function drawSchedSheet() {
   }
 
   const pick = el('#schedtarget');
-  pick.innerHTML = '';
+  pick.hidden = kind !== 'cue';
+  el('#schedcircuit').hidden = kind !== 'device';
   if (kind === 'cue') {
-    if (!cues.length) {
-      pick.appendChild(new Option('No cues yet — make one first', ''));
-    }
+    pick.innerHTML = '';
+    if (!cues.length) pick.appendChild(new Option('No cues yet — make one first', ''));
     for (const c of cues) {
       const o = new Option(c.name, c.id);
       o.selected = schedDraft.target?.id === c.id;
       pick.appendChild(o);
     }
-  } else {
-    const byRoom = {};
-    for (const d of state.devices) (byRoom[d.room] = byRoom[d.room] || []).push(d);
-    for (const room of Object.keys(byRoom).sort()) {
-      const g = document.createElement('optgroup');
-      g.label = title(room);
-      for (const d of byRoom[room].slice().sort((a, b) => natural(a.name, b.name))) {
-        const o = new Option(pretty(d.name), String(d.record_id));
-        o.selected = Number(schedDraft.target?.record_id) === d.record_id;
-        g.appendChild(o);
-      }
-      pick.appendChild(g);
-    }
+    syncSchedTarget();
   }
-  syncSchedTarget();
 
-  const targetDev = kind === 'device' && schedDraft.target?.record_id
-    ? state.devices.find(x => x.record_id === Number(schedDraft.target.record_id)) : null;
+  const targetDev = kind === 'device' && schedDraft.target?.record_id != null
+    ? deviceOf(schedDraft.target.record_id) : null;
+  el('#schedcircuitwhat').textContent = targetDev
+    ? pretty(targetDev.name) + ' \u00b7 ' + title(targetDev.room)
+    : 'Choose a circuit';
   const isCurtain = !!targetDev?.is_curtain;
 
   /* Action buttons: Open/Close for curtains, On/Off for circuits */
@@ -9219,6 +9485,15 @@ function drawSchedSheet() {
         controls.appendChild(schedSlider('Warmth', 'tune', schedDraft, targetDev, warmthWord, true));
       }
     }
+    /* A screen has no level, so it falls outside showControls above and brings
+       its own fields — the same ones a cue offers, from the same function, so
+       the rule about not taking a set off whoever is watching is worded once. */
+    if (kind === 'device' && targetDev && targetDev.is_tv) {
+      controls.hidden = false;
+      controls.innerHTML = '';
+      drawTvStep(controls, schedDraft, targetDev, isLit,
+        (redraw) => { if (redraw) drawSchedSheet(); else el('#schedsays').textContent = schedPreview(); });
+    }
   }
 
   /* Auto-off / Auto-close */
@@ -9239,26 +9514,12 @@ function drawSchedSheet() {
 }
 
 /** Reads the picker back into the draft, so the draft is always the truth. */
+/* Reads the cue dropdown back into the draft. Circuits no longer come through
+   here — they are chosen in the picker, which writes the target itself and
+   keeps a television's id a string. */
 function syncSchedTarget() {
-  const pick = el('#schedtarget');
-  const kind = schedDraft.target?.kind || 'cue';
-  const v = pick.value;
-  if (!v) { schedDraft.target = null; return; }
-  schedDraft.target = kind === 'cue' ? { kind: 'cue', id: v } : { kind: 'device', record_id: Number(v) };
-  if (kind === 'device') {
-    const d = state.devices.find(x => x.record_id === Number(v));
-    if (d?.is_curtain) {
-      if (schedDraft.action === 'off' || schedDraft.action === 'close') schedDraft.action = 'close';
-      else schedDraft.action = 'open';
-      delete schedDraft.level;
-      delete schedDraft.tune;
-    } else {
-      if (schedDraft.action === 'close' || schedDraft.action === 'off') schedDraft.action = 'off';
-      else schedDraft.action = 'on';
-      if (d?.is_dimmable && schedDraft.level == null) schedDraft.level = d.level > 0 ? d.level : 100;
-      if (d?.is_tunable && schedDraft.tune == null) schedDraft.tune = d.tune != null ? d.tune : 80;
-    }
-  }
+  const v = el('#schedtarget').value;
+  schedDraft.target = v ? { kind: 'cue', id: v } : null;
 }
 
 /** The sentence under the title, so you can read back what you just built. */
@@ -9266,13 +9527,22 @@ function schedPreview() {
   if (!schedDraft.target) return 'Pick something for it to do.';
   if (!schedDraft.days.length) return 'Pick at least one day, or it will never run.';
   const d = schedDraft.target.kind === 'device'
-    ? state.devices.find(x => x.record_id === Number(schedDraft.target.record_id)) : null;
+    ? deviceOf(schedDraft.target.record_id) : null;
   let what = '';
   if (schedDraft.target.kind === 'cue') {
     what = 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue');
   } else if (d?.is_curtain) {
     const verb = (schedDraft.action === 'close' || schedDraft.action === 'off') ? 'close ' : 'open ';
     what = verb + pretty(d.name) + ' in ' + title(d.room);
+  } else if (d?.is_tv) {
+    const off = schedDraft.action === 'off' || schedDraft.action === 'close';
+    const bits = [];
+    if (!off && schedDraft.youtube) bits.push('a video');
+    else if (!off && schedDraft.tv_app) bits.push(appWord(schedDraft.tv_app).toLowerCase());
+    if (!off && schedDraft.volume != null) bits.push('volume ' + schedDraft.volume);
+    what = (off ? 'switch off ' : 'switch on ') + pretty(d.name) + ' in ' + title(d.room)
+      + (bits.length ? ' with ' + bits.join(', ') + ', if nobody is watching' : '')
+      + (schedDraft.toast ? (bits.length ? ' \u2014 and a message either way' : ' with a message') : '');
   } else {
     const isOff = schedDraft.action === 'off' || schedDraft.action === 'close';
     const verb = isOff ? 'switch off ' : 'switch on ';
@@ -9322,11 +9592,19 @@ el('#schedtarget').onchange = () => {
   syncSchedTarget();
   drawSchedSheet();
 };
+el('#schedcircuit').onclick = () => {
+  if (!schedDraft) return;
+  schedPick = 'rooms';
+  drawSchedSheet();
+};
 
 for (const b of el('#schedkind').querySelectorAll('.seg')) {
   b.onclick = () => {
     if ((schedDraft.target?.kind || 'cue') === b.dataset.kind) return;
     schedDraft.target = b.dataset.kind === 'cue' ? { kind: 'cue', id: null } : { kind: 'device', record_id: null };
+    // Nothing is chosen yet, so go where the choosing happens rather than
+    // leaving a button that says "Choose a circuit" to be found.
+    schedPick = b.dataset.kind === 'device' ? 'rooms' : null;
     drawSchedSheet();
   };
 }
@@ -9390,6 +9668,12 @@ el('#schedsave').onclick = async () => {
     tune: isOff ? null : (schedDraft.tune != null ? Number(schedDraft.tune) : null),
     off_after: schedDraft.off_after,
     enabled: schedDraft.enabled,
+    // Sent whatever the target, because the server keeps them only for a
+    // screen and drops them for anything else.
+    tv_app: isOff ? null : (schedDraft.tv_app || null),
+    youtube: isOff ? null : (schedDraft.youtube || null),
+    volume: isOff ? null : (schedDraft.volume != null ? Number(schedDraft.volume) : null),
+    toast: schedDraft.toast || null,
   });
   if (saved) { closeSchedSheet(); note('Saved · ' + saved.says); }
 };
@@ -9423,9 +9707,10 @@ el('#scheddelete').onclick = async (e) => {
 /* ───────────────────────── the sheet: a cue opened up and edited */
 
 let sheetCue = null;
-let sheetView = 'steps';    // steps | rooms | circuits
+let sheetView = 'steps';    // steps | rooms | circuits | one
 let pickRoom = null;
-let openStep = null;        // the one circuit whose controls are showing
+let editId = null;          // the circuit being customised
+let editFrom = 'steps';     // and which list to go back to
 
 const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" ' +
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
@@ -9450,7 +9735,7 @@ function openSheet(cue) {
   sheetCue = cue;
   sheetView = 'steps';
   pickRoom = null;
-  openStep = null;
+  editId = null;
   el('#sheetname').value = cue.name;
   el('#scrim').hidden = false;
   drawSheet();
@@ -9482,7 +9767,7 @@ function hideScrim(scrim, after) {
 function closeSheet() {
   hideScrim(el('#scrim'));
   sheetCue = null;
-  openStep = null;
+  editId = null;
   const danger = el('#sheetdelete');
   danger.classList.remove('armed');
   danger.textContent = 'Delete';
@@ -9515,7 +9800,15 @@ function drawSheet() {
   body.innerHTML = '';
   if (sheetView === 'steps') return drawStepList(body);
   if (sheetView === 'rooms') return drawRoomPicker(body);
+  if (sheetView === 'one') return drawStepEditor(body);
   return drawCircuitPicker(body);
+}
+
+/* What the two buttons on a step are called. A curtain does not go on and off,
+   it opens and closes — and the picker said On/Off for years because the words
+   were written into the step editor rather than taken from the circuit. */
+function onOffWords(d) {
+  return d && d.is_curtain ? ['Open', 'Close'] : ['On', 'Off'];
 }
 
 function drawStepList(body) {
@@ -9551,38 +9844,61 @@ function drawStepList(body) {
   body.appendChild(add);
 }
 
-/** One circuit in the cue: what it will be set to, and — opened — how to change it. */
+/* One circuit in the cue, as a row that leads to its own screen.
+ *
+ * It used to expand in place, which meant a cue was edited in two different
+ * ways depending on how you got there: picked in the circuit list, then found
+ * again in the step list and opened to be set. One editor, reached from both,
+ * is fewer places to look and half the code. */
 function stepRow(st, d) {
   const wrap = document.createElement('div');
   const lit = st.on !== false;
-  const open = openStep === st.record_id;
-  wrap.className = 'sheet-step' + (lit ? ' lit' : '') + (open ? ' open' : '');
-  wrap.style.setProperty('--pip', lit && st.tune != null
-    ? lampColour(st.tune)
-    : 'var(--warm)');
+  wrap.className = 'sheet-step' + (lit ? ' lit' : '');
+  wrap.style.setProperty('--pip', lit && st.tune != null ? lampColour(st.tune) : 'var(--warm)');
 
   const head = document.createElement('button');
   head.type = 'button';
   head.className = 'sheet-row';
   head.innerHTML = '<span class="dot"></span><span class="what"></span>' +
-                   '<span class="to"></span><span class="chev">▾</span>';
+                   '<span class="to"></span><span class="chev">›</span>';
   head.querySelector('.what').textContent = d ? pretty(d.name) : 'Circuit ' + st.record_id;
-  head.querySelector('.to').textContent = stepWord(st);
-  head.setAttribute('aria-expanded', String(open));
-  head.onclick = () => {
-    openStep = open ? null : st.record_id;
-    drawSheet();
-  };
+  head.querySelector('.to').textContent = stepWord(st, d);
+  head.onclick = () => { editId = st.record_id; editFrom = 'steps'; sheetView = 'one'; drawSheet(); };
   wrap.appendChild(head);
+  return wrap;
+}
 
-  if (!open) return wrap;
+/* Kept only so the old inline editor's helpers still have a caller while the
+   editor below is the single place a step is set. */
+/* ── one circuit, on its own screen ───────────────────────────────────────
+ *
+ * The last step of rooms -> circuit -> customise, and the only place a step is
+ * set. Reached from the circuit picker (having just added it) and from the step
+ * list (to change it later), so both roads land somewhere identical.
+ */
+function drawStepEditor(body) {
+  const st = (sheetCue.steps || []).find(x => String(x.record_id) === String(editId));
+  if (!st) { sheetView = editFrom === 'circuits' ? 'circuits' : 'steps'; return drawSheet(); }
+  const d = deviceOf(st.record_id);
+  const lit = st.on !== false;
+
+  body.appendChild(backButton(
+    editFrom === 'circuits' ? title(pickRoom) : 'All circuits in this cue',
+    () => { sheetView = editFrom === 'circuits' ? 'circuits' : 'steps'; drawSheet(); }));
+
+  const h = document.createElement('div');
+  h.className = 'sheet-room';
+  h.textContent = d ? pretty(d.name) + ' \u00b7 ' + title(d.room) : 'Circuit ' + st.record_id;
+  body.appendChild(h);
 
   const edit = document.createElement('div');
-  edit.className = 'step-edit';
+  edit.className = 'step-edit open';
 
+  // A curtain opens and closes; everything else goes on and off.
+  const [onWord, offWord] = onOffWords(d);
   const onoff = document.createElement('div');
   onoff.className = 'onoff';
-  for (const [word, want] of [['On', true], ['Off', false]]) {
+  for (const [word, want] of [[onWord, true], [offWord, false]]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = word;
@@ -9590,8 +9906,8 @@ function stepRow(st, d) {
     b.setAttribute('aria-pressed', String(lit === want));
     b.onclick = () => {
       st.on = want;
-      // Off carries no level or colour; on without one takes the lamp as it is.
-      if (!want) { delete st.level; delete st.tune; }
+      // Off carries no level, colour or screen; on without one takes it as it is.
+      if (!want) { delete st.level; delete st.tune; delete st.tv_app; delete st.youtube; delete st.volume; }
       else if (d) {
         if (d.is_dimmable && st.level == null) st.level = d.level > 0 ? d.level : 100;
         if (d.is_tunable && st.tune == null) st.tune = d.tune;
@@ -9603,11 +9919,13 @@ function stepRow(st, d) {
   }
   edit.appendChild(onoff);
 
-  if (lit && d && d.is_dimmable) {
-    edit.appendChild(stepSlider('Brightness', 'level', st, d, (v) => v + '%'));
-  }
-  if (lit && d && d.is_tunable) {
-    edit.appendChild(stepSlider('Warmth', 'tune', st, d, warmthWord, true));
+  if (lit && d && d.is_dimmable) edit.appendChild(stepSlider('Brightness', 'level', st, d, (v) => v + '%'));
+  if (lit && d && d.is_tunable) edit.appendChild(stepSlider('Warmth', 'tune', st, d, warmthWord, true));
+  /* save(true) redraws, save() does not — a slider must never rebuild the
+     control the finger is holding, while choosing an app has to clear the link
+     field beside it. */
+  if (d && d.is_tv) {
+    drawTvStep(edit, st, d, lit, (redraw) => { saveSteps(); if (redraw) drawSheet(); });
   }
 
   const drop = document.createElement('button');
@@ -9616,17 +9934,93 @@ function stepRow(st, d) {
   drop.textContent = 'Remove from cue';
   drop.onclick = () => {
     sheetCue.steps = sheetCue.steps.filter(x => x !== st);
-    openStep = null;
+    sheetView = editFrom === 'circuits' ? 'circuits' : 'steps';
     saveSteps();
     drawSheet();
   };
   edit.appendChild(drop);
-
-  wrap.appendChild(edit);
-  return wrap;
+  body.appendChild(edit);
 }
 
-function stepSlider(label, key, st, d, word, warm) {
+/* ── what a cue may do to a television ───────────────────────────────────
+ *
+ * The rule is the server's, but it has to be *said* here or it reads as a bug:
+ * a set that is already on belongs to whoever is watching it, so everything
+ * that would change the screen is only applied if the set is off when the cue
+ * fires. A message is the exception, because it can be delivered to somebody
+ * watching without taking the room away from them.
+ */
+function drawTvStep(edit, st, d, lit, save) {
+  save = save || saveSteps;
+  if (lit) {
+    const note = document.createElement('p');
+    note.className = 'step-note';
+    note.textContent = 'Only if the television is off when this runs. If someone is ' +
+      'watching, the cue leaves it alone \u2014 a message still gets through.';
+    edit.appendChild(note);
+
+    // What to put on the screen: nothing in particular, one of its own apps, or
+    // a video. They are one choice, not three, because the set can only be on
+    // one thing — picking an app clears a link and the other way round.
+    const apps = [{ id: '', title: 'Just switch it on' }].concat(
+      (d.tv_apps || []).filter(a => TV_APPS_SHOWN.includes(a.id)));
+    const pickApp = document.createElement('label');
+    pickApp.className = 'step-field';
+    pickApp.innerHTML = '<span>Open</span>';
+    const sel = document.createElement('select');
+    for (const a of apps) {
+      const o = new Option(a.title, a.id);
+      o.selected = !st.youtube && st.tv_app === a.id;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => {
+      if (sel.value) { st.tv_app = sel.value; st.youtube = null; }
+      else st.tv_app = null;
+      save(true);
+    };
+    pickApp.appendChild(sel);
+    edit.appendChild(pickApp);
+
+    const link = document.createElement('label');
+    link.className = 'step-field';
+    link.innerHTML = '<span>Or a YouTube link</span>';
+    const url = document.createElement('input');
+    url.type = 'text';
+    url.placeholder = 'paste a link, or leave empty';
+    url.value = st.youtube || '';
+    url.oninput = () => {
+      const v = url.value.trim();
+      if (v) { st.youtube = v; st.tv_app = null; } else st.youtube = null;
+      save();
+    };
+    // Saved as you type but only redrawn on blur: rebuilding the field on every
+    // keystroke would take the caret out from under the cursor.
+    url.onblur = () => save(true);
+    link.appendChild(url);
+    edit.appendChild(link);
+
+    edit.appendChild(stepSlider('Volume', 'volume', st, d, (v) => String(v), false, save));
+  }
+
+  const say = document.createElement('label');
+  say.className = 'step-field';
+  say.innerHTML = '<span>Message on screen</span>';
+  const msg = document.createElement('input');
+  msg.type = 'text';
+  msg.maxLength = 120;
+  msg.placeholder = 'always delivered, even mid-programme';
+  msg.value = st.toast || '';
+  msg.oninput = () => {
+    const v = msg.value.trim();
+    st.toast = v || null;
+    save();
+  };
+  say.appendChild(msg);
+  edit.appendChild(say);
+}
+
+function stepSlider(label, key, st, d, word, warm, save) {
+  save = save || saveSteps;
   const row = document.createElement('label');
   row.className = 'step-slider' + (warm ? ' warm' : '');
   const name = document.createElement('span');
@@ -9635,20 +10029,27 @@ function stepSlider(label, key, st, d, word, warm) {
   input.type = 'range';
   input.min = key === 'level' ? 1 : 0;
   input.max = 100; input.step = 1;
-  input.value = st[key] == null ? (key === 'level' ? 100 : d.tune) : st[key];
+  // Each key has its own idea of "unset": full for brightness, the lamp's own
+  // colour, and whatever the set is actually playing at for volume.
+  const fallback = key === 'level' ? 100 : key === 'volume' ? (d.tv_volume || 10) : d.tune;
+  input.value = st[key] == null ? fallback : st[key];
+  if (st[key] == null) st[key] = Number(input.value);
   const read = document.createElement('b');
   read.textContent = word(Number(input.value));
   input.addEventListener('input', () => {
     st[key] = Number(input.value);
     read.textContent = word(st[key]);
-    // the dot and the summary follow the value as it moves
+    /* The row this lives in is a step in a list, or the step editor's own
+       screen where there is no summary to keep up to date. Guarded, because
+       reaching for .sheet-step from the editor found nothing and threw on the
+       first drag. */
     const wrapEl = row.closest('.sheet-step');
-    if (key === 'tune') {
-      wrapEl.style.setProperty('--pip',
-        lampColour(st.tune));
+    if (wrapEl) {
+      if (key === 'tune') wrapEl.style.setProperty('--pip', lampColour(st.tune));
+      const to = wrapEl.querySelector('.to');
+      if (to) to.textContent = stepWord(st, d);
     }
-    wrapEl.querySelector('.to').textContent = stepWord(st);
-    saveSteps();
+    save();
   });
   row.append(name, input, read);
   return row;
@@ -9693,23 +10094,28 @@ function drawCircuitPicker(body) {
     b.innerHTML = '<span class="box">' + CHECK + '</span>' +
                   '<span class="what"></span><span class="count"></span>';
     b.querySelector('.what').textContent = pretty(d.name);
-    b.querySelector('.count').textContent = st ? stepWord(st) : 'not in this cue';
+    b.querySelector('.count').textContent = st ? stepWord(st, d) : 'not in this cue';
     b.setAttribute('aria-pressed', String(!!st));
+    /* Picking a circuit goes straight to setting it, which is the whole of
+       rooms -> circuit -> customise. It used to only tick a box, so having
+       chosen eight lights you then went back to the step list and opened all
+       eight again to say what each was for — the choosing and the setting were
+       two different screens for no reason. Removing lives on that screen now,
+       under the settings, where a destructive action belongs. */
     b.onclick = () => {
-      if (st) {
-        sheetCue.steps = sheetCue.steps.filter(x => x !== st);
-      } else {
+      if (!st) {
         // A circuit added to a cue starts on. Almost every cue is a list of
         // things to light, and most lamps are off when you sit down to build
-        // one — inheriting "off" meant adding eight lights and then opening
-        // all eight to say what you plainly meant. A step that should be off
-        // is the exception, and it is one tap away in the row below.
+        // one — inheriting "off" meant saying "on" eight times over.
         const next = { record_id: d.record_id, on: true };
         if (d.is_dimmable) next.level = d.status && d.level > 0 ? d.level : 100;
         if (d.is_tunable) next.tune = d.tune;
         sheetCue.steps = [...(sheetCue.steps || []), next];
+        saveSteps();
       }
-      saveSteps();
+      editId = d.record_id;
+      editFrom = 'circuits';
+      sheetView = 'one';
       drawSheet();
     };
     body.appendChild(b);
@@ -9727,10 +10133,21 @@ function backButton(label, go) {
 }
 
 // What one step will do, in the same words the tiles use.
-function stepWord(st) {
+/* What a step will do, in the circuit's own vocabulary. It used to say "off"
+   for everything, so a cue that closed a curtain read as switching it off. */
+function stepWord(st, d) {
+  if (d && d.is_curtain) return st.on === false ? 'close' : 'open';
+  if (d && d.is_tv) {
+    if (st.on === false) return 'off';
+    const bits = [];
+    if (st.youtube) bits.push('a video');
+    else if (st.tv_app) bits.push(appWord(st.tv_app).toLowerCase());
+    if (st.toast) bits.push('a message');
+    return bits.length ? 'on \u00b7 ' + bits.join(' \u00b7 ') : 'on';
+  }
   if (st.on === false) return 'off';
   const level = st.level == null ? 'on' : st.level + '%';
-  return st.tune == null ? level : level + ' · ' + warmthWord(st.tune);
+  return st.tune == null ? level : level + ' \u00b7 ' + warmthWord(st.tune);
 }
 
 /**
