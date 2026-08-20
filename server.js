@@ -927,7 +927,7 @@ class TvLink {
       /* The set's own launcher list, in the set's own order — no curation here.
          Deciding which of twenty-five are "the real apps" would be inventing a
          taxonomy, and that order is already the one the owner arranged. */
-      tv_apps: this.apps,
+      tv_apps: this.apps.map((a) => ({ id: a.id, title: a.title })),
       /* Waking is the one moment this device class cannot report itself: the
          magic packet goes to a set with nothing listening, and the socket does
          not come up for another ten seconds or so. Reporting OFF through that
@@ -986,7 +986,15 @@ class TvLink {
       tv.apps().then((r) => {
         this.apps = (r.launchPoints || [])
           .filter((a) => a.id && a.title)
-          .map((a) => ({ id: a.id, title: a.title }));
+          .map((a) => ({
+            id: a.id, title: a.title,
+            // The set serves its own app icons — real ones, so nothing here has
+            // to be drawn or guessed. They sit behind its self-signed
+            // certificate on :3001 though, which a browser on a plain-http page
+            // will not touch, so the URL stays server-side and the dashboard
+            // proxies the bytes.
+            icon: a.icon || a.mediumLargeIcon || a.largeIcon || null,
+          }));
         pushSoon();
       }).catch(() => { /* an older grant may not allow it; the row just stays empty */ });
       pushSoon();
@@ -1011,7 +1019,9 @@ class TvLink {
   dropped() {
     if (this.tv) { try { this.tv.close(); } catch (e) {} }
     this.tv = null;
-    this.apps = [];
+    // The app list deliberately survives: it changes when somebody installs
+    // something, not when the set sleeps, and dropping it made every icon in
+    // the panel disappear the moment the television went off.
     if (this.online || this.power) pushSoon();
     this.online = false;
     this.power = false;
@@ -1058,14 +1068,17 @@ class TvLink {
      sleeping one is woken and waited for rather than refused. The wake itself
      is a broadcast with no reply, so the wait is for the socket to come up —
      measured at around nine seconds from cold. */
+  async ensureAwake() {
+    if (this.tv) return;
+    await this.setPower(true);
+    for (let i = 0; i < 20 && !this.tv; i++) await new Promise((r) => setTimeout(r, 1000));
+    if (!this.tv) throw new Error('the television did not wake in time');
+  }
+
   async playYoutube(video) {
     const id = youtubeId(video);
     if (!id) throw new Error('not a YouTube link or id');
-    if (!this.tv) {
-      await this.setPower(true);
-      for (let i = 0; i < 20 && !this.tv; i++) await new Promise((r) => setTimeout(r, 1000));
-    }
-    if (!this.tv) throw new Error('the television did not wake in time');
+    await this.ensureAwake();
     await this.tv.youtube(id);
     this.app = 'youtube.leanback.v4';
     pushSoon();
@@ -1084,8 +1097,10 @@ class TvLink {
     return { ok: true, spoken: String(name).toLowerCase() + ' on the ' + this.said() };
   }
 
+  // "Put Netflix on" should mean it whatever the set is doing, the same as
+  // handing it a link does.
   async launchApp(id) {
-    if (!this.tv) throw new Error('the television is not reachable');
+    await this.ensureAwake();
     this.commandedAt = Date.now();
     await this.tv.launch(id);
     this.app = id;
@@ -1123,6 +1138,50 @@ const tvSignature = () => [...tvs.values()]
 setInterval(() => { for (const t of tvs.values()) if (!t.tv) t.open(); }, TV_RETRY_MS);
 TV_READY = true;
 for (const t of tvs.values()) t.open();
+
+/* The set's own app icons, fetched for the browser.
+ *
+ * They live behind the television's self-signed certificate on :3001, and the
+ * dashboard is served over plain http, so a browser will not load them
+ * directly on either count. Cached by URL rather than by app id: the URL
+ * carries a content hash, so a set that updates an app changes it and the
+ * stale bytes fall out of use on their own. */
+const tvIcons = new Map();
+
+app.get('/api/tv/:id/icon/:app', async (req, res) => {
+  const t = tvs.get(req.params.id);
+  const entry = t && t.apps.find((a) => a.id === req.params.app);
+  if (!entry || !entry.icon) return res.status(404).end();
+
+  const hit = tvIcons.get(entry.icon);
+  const serve = (buf) => {
+    res.set('Content-Type', /\.jpe?g$/i.test(entry.icon) ? 'image/jpeg' : 'image/png');
+    // The bytes never change for a given URL, so this can be cached hard.
+    res.set('Cache-Control', 'public, max-age=604800, immutable');
+    res.end(buf);
+  };
+  if (hit) return serve(hit);
+
+  try {
+    const https = require('https');
+    const buf = await new Promise((resolve, reject) => {
+      const rq = https.get(entry.icon, { rejectUnauthorized: false, timeout: 6000 }, (rs) => {
+        if (rs.statusCode !== 200) { rs.resume(); return reject(new Error('HTTP ' + rs.statusCode)); }
+        const parts = [];
+        rs.on('data', (c) => parts.push(c));
+        rs.on('end', () => resolve(Buffer.concat(parts)));
+      });
+      rq.on('timeout', () => rq.destroy(new Error('timed out')));
+      rq.on('error', reject);
+    });
+    tvIcons.set(entry.icon, buf);
+    serve(buf);
+  } catch (e) {
+    // A sleeping set serves nothing. The page hides the image and shows the
+    // app's name, which is why the name is always drawn as well.
+    res.status(502).end();
+  }
+});
 
 app.post('/api/tv/:id', async (req, res) => {
   const t = tvs.get(req.params.id);
@@ -4845,11 +4904,45 @@ const HTML = /* html */ `<!doctype html>
     scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
   }
-  .tvapps .tvkey { scroll-snap-align: start; white-space: nowrap; }
   .tvapps:empty::after {
-    content: 'Nothing to list until the set is awake';
+    content: 'Nothing to list until the set has been awake once';
     font-size: 13px; color: var(--faint);
   }
+  /* An app is its icon over its name. Icon-led, but never icon-only: half of
+     these are the set's own housekeeping and their icons say nothing, and a
+     sleeping television serves no bytes for any of them. */
+  .tvapp {
+    flex: 0 0 auto; width: 72px; padding: 9px 4px 8px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    scroll-snap-align: start; font: inherit; color: var(--ink);
+    background: var(--paper-2); border: 1px solid var(--line-up); border-radius: 14px;
+    transition: transform .24s cubic-bezier(.22,.94,.3,1), background .18s, border-color .18s;
+  }
+  .tvapp img {
+    width: 34px; height: 34px; border-radius: 8px; object-fit: contain;
+    /* The set draws several of these as white-on-transparent, which is
+       invisible on paper — so they sit on a dark chip of their own, the way a
+       launcher shows them. */
+       Edge to edge, with no padding: most of these are full-bleed squares and a
+       couple of pixels of inset drew a dark ring around an icon that already
+       had its own background. */
+    background: #201c18; box-sizing: border-box;
+  }
+  .tvapp img.gone { display: none; }
+  .tvapp span {
+    font-size: 9.5px; line-height: 1.2; text-align: center; color: var(--soft);
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .tvapp:hover { background: var(--paper); border-color: var(--ink); }
+  .tvapp:active { transform: scale(.955); transition-duration: .06s; }
+  .tvapp.on { border-color: var(--ink); background: var(--paper); }
+  .tvapp.on span { color: var(--ink); }
+
+  /* A key that is a glyph rather than a word. */
+  .tvkey.ico { display: inline-flex; align-items: center; justify-content: center; padding: 11px 0; }
+  .tvkey.ico svg { width: 21px; height: 21px; display: block; }
+  .tvpad .tvkey.ico { padding: 14px 0; }
+  .tvpad .ok svg { width: 23px; height: 23px; }
   .tvlink { display: flex; gap: 8px; }
   .tvlink input {
     flex: 1 1 auto; min-width: 0; appearance: none; -webkit-appearance: none;
@@ -5862,25 +5955,25 @@ const HTML = /* html */ `<!doctype html>
           <input type="range" class="slider dim" min="0" max="100" step="1" aria-label="Volume">
         </div>
         <div class="tvrow">
-          <button class="tvkey" type="button" data-step="-1" aria-label="Quieter">−</button>
-          <button class="tvkey" type="button" data-step="1" aria-label="Louder">+</button>
-          <button class="tvkey wide" type="button" id="tvmute">Mute</button>
+          <button class="tvkey ico" type="button" data-step="-1" data-ico="minus" aria-label="Quieter"></button>
+          <button class="tvkey ico" type="button" data-step="1" data-ico="plus" aria-label="Louder"></button>
+          <button class="tvkey wide ico" type="button" id="tvmute" aria-label="Mute"></button>
         </div>
       </div>
 
       <div class="tvblock">
         <div class="tvpad">
-          <button class="tvkey pad up"    type="button" data-btn="UP"    aria-label="Up">↑</button>
-          <button class="tvkey pad left"  type="button" data-btn="LEFT"  aria-label="Left">←</button>
-          <button class="tvkey pad ok"    type="button" data-btn="ENTER" aria-label="Select">OK</button>
-          <button class="tvkey pad right" type="button" data-btn="RIGHT" aria-label="Right">→</button>
-          <button class="tvkey pad down"  type="button" data-btn="DOWN"  aria-label="Down">↓</button>
+          <button class="tvkey pad up ico"    type="button" data-btn="UP"    data-ico="up"    aria-label="Up"></button>
+          <button class="tvkey pad left ico"  type="button" data-btn="LEFT"  data-ico="left"  aria-label="Left"></button>
+          <button class="tvkey pad ok ico"    type="button" data-btn="ENTER" data-ico="ok"    aria-label="Select"></button>
+          <button class="tvkey pad right ico" type="button" data-btn="RIGHT" data-ico="right" aria-label="Right"></button>
+          <button class="tvkey pad down ico"  type="button" data-btn="DOWN"  data-ico="down"  aria-label="Down"></button>
         </div>
         <div class="tvrow">
-          <button class="tvkey wide" type="button" data-btn="BACK">Back</button>
-          <button class="tvkey wide" type="button" data-btn="HOME">Home</button>
-          <button class="tvkey wide" type="button" data-btn="PLAY" aria-label="Play or pause">Play</button>
-          <button class="tvkey wide" type="button" data-btn="PAUSE">Pause</button>
+          <button class="tvkey wide ico" type="button" data-btn="BACK"  data-ico="back"  aria-label="Back"></button>
+          <button class="tvkey wide ico" type="button" data-btn="HOME"  data-ico="home"  aria-label="Home"></button>
+          <button class="tvkey wide ico" type="button" data-btn="PLAY"  data-ico="play"  aria-label="Play"></button>
+          <button class="tvkey wide ico" type="button" data-btn="PAUSE" data-ico="pause" aria-label="Pause"></button>
         </div>
       </div>
 
@@ -7467,6 +7560,29 @@ async function sendSlider(d, key) {
   }
 }
 
+/* The remote's glyphs, drawn here rather than fetched: 24x24, currentColor,
+   1.7 round — the same hand as the search and power glyphs already on the page.
+   Play is the one filled shape, because a triangle outline reads as a stray
+   arrow at this size and everyone alive knows the solid one. */
+const ICONS = {
+  up:    '<path d="M12 19V6"/><path d="M6.5 11.5L12 6l5.5 5.5"/>',
+  down:  '<path d="M12 5v13"/><path d="M6.5 12.5L12 18l5.5-5.5"/>',
+  left:  '<path d="M19 12H6"/><path d="M11.5 6.5L6 12l5.5 5.5"/>',
+  right: '<path d="M5 12h13"/><path d="M12.5 6.5L18 12l-5.5 5.5"/>',
+  ok:    '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/>',
+  back:  '<path d="M9.5 14.5L5 10l4.5-4.5"/><path d="M5 10h8.5a5.5 5.5 0 0 1 0 11H9"/>',
+  home:  '<path d="M3.5 11.2L12 4l8.5 7.2"/><path d="M6.2 9.6V20h11.6V9.6"/><path d="M10 20v-5h4v5"/>',
+  play:  '<path d="M8.5 5.2l10.5 6.8-10.5 6.8z" fill="currentColor" stroke="none"/>',
+  pause: '<path d="M9.5 5v14" stroke-width="2.1"/><path d="M14.5 5v14" stroke-width="2.1"/>',
+  loud:  '<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M15.6 9.2a4.4 4.4 0 0 1 0 5.6"/><path d="M18.4 6.8a8 8 0 0 1 0 10.4"/>',
+  muted: '<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M16 10l5 4"/><path d="M21 10l-5 4"/>',
+  minus: '<path d="M5.5 12h13"/>',
+  plus:  '<path d="M12 5.5v13"/><path d="M5.5 12h13"/>',
+};
+const icon = (name) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  (ICONS[name] || '') + '</svg>';
+
 /* ───────────────────────────────────────────── the television, enlarged */
 
 /* The tile keeps the key and the volume, because those are what anyone reaches
@@ -7492,6 +7608,16 @@ function tvSentence(d) {
 
 const titleCase = (s) => String(s).toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
 
+// Painted once, from the data attribute, so the markup carries no duplicated
+// SVG and a glyph is changed in one place.
+function paintIcons(root) {
+  for (const b of root.querySelectorAll('[data-ico]')) {
+    if (b.dataset.painted === b.dataset.ico) continue;
+    b.dataset.painted = b.dataset.ico;
+    b.innerHTML = icon(b.dataset.ico);
+  }
+}
+
 function openTv(d) {
   tvOpen = d.record_id;
   el('#tveyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
@@ -7510,8 +7636,13 @@ function drawTv() {
   el('#tvpower').textContent = d.status ? 'Switch it off' : 'Switch it on';
 
   const mute = el('#tvmute');
-  mute.textContent = d.tv_muted ? 'Unmute' : 'Mute';
+  // Shows what the set is doing, not what the button will do: a crossed-out
+  // speaker means it is muted now. The label says the action, for anyone who
+  // cannot see the glyph.
+  mute.dataset.ico = d.tv_muted ? 'muted' : 'loud';
+  mute.setAttribute('aria-label', d.tv_muted ? 'Unmute' : 'Mute');
   mute.classList.toggle('on', !!d.tv_muted);
+  paintIcons(el('#tvscrim'));
 
   // The strip is skipped while a finger is on it, the same rule the tiles follow.
   const vol = el('#tvvol');
@@ -7534,14 +7665,25 @@ function drawTv() {
     for (const a of d.tv_apps || []) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'tvkey' + (a.id === d.tv_app ? ' on' : '');
-      b.textContent = a.title;
+      b.className = 'tvapp' + (a.id === d.tv_app ? ' on' : '');
+      b.title = a.title;
+      // The set's own icon, proxied. The name is always drawn under it rather
+      // than only in a tooltip: half of these are LG's own housekeeping and
+      // their icons say nothing, and a sleeping set serves no bytes at all.
+      const img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.src = '/api/tv/' + encodeURIComponent(d.record_id) + '/icon/' + encodeURIComponent(a.id);
+      img.onerror = () => img.classList.add('gone');
+      const cap = document.createElement('span');
+      cap.textContent = a.title;
+      b.append(img, cap);
       b.onclick = () => tvSend({ app: a.id }, b);
       apps.appendChild(b);
     }
   } else {
-    for (const b of apps.children) b.classList.toggle('on', b.textContent === (((d.tv_apps || [])
-      .find(a => a.id === d.tv_app) || {}).title));
+    const running = (((d.tv_apps || []).find(a => a.id === d.tv_app)) || {}).title;
+    for (const b of apps.children) b.classList.toggle('on', b.title === running);
   }
 }
 
