@@ -3400,12 +3400,18 @@ function timerView(t) {
 async function runSleep(scope, label) {
   const steps = sleepSteps(scope);
   console.log(`sleep ${label}: lights and screens off, ${steps.length} circuits`);
-  if (steps.length) {
-    try { await sendSteps(sceneTargets(steps)); } catch (err) { console.error('sleep failed:', err.message); }
-    await readHubStateFresh().catch(() => {});
-  }
+  if (!steps.length) { pushSnapshot(true); return { total: 0, off: 0, missed: 0 }; }
+
+  /* Through applyScene, which sends, re-reads, and resends whatever the hub did
+     not take. Sending once was the bug: this fired five circuits at ASHU ROOM
+     and **two of the five stayed on** — the same intermittent batch loss this
+     file records for cues, which is exactly why cues verify. A cue that drops a
+     lamp is a cue you press again; a sleep timer that drops one leaves it
+     burning all night with nobody awake to notice, so it is the last thing that
+     should have been firing and forgetting. */
+  const r = await applyScene({ id: 'sleep:' + label, name: label, steps });
   pushSnapshot(true);
-  return steps.length;
+  return { total: steps.length, off: r.set, missed: r.missed };
 }
 
 async function runTimer(id) {
@@ -3467,10 +3473,14 @@ app.post('/api/timers', async (req, res) => {
       : (devices.get(Number(scope.slice(7)))?.record.device_name || 'Device').trim();
 
   if (minutes === 0) {
-    const n = await runSleep(scope, label);
+    const r = await runSleep(scope, label);
     return res.json({
-      ok: true, now: true, circuits: n,
-      spoken: n ? `${label} lights and screens off` : `nothing was on in ${label.toLowerCase()}`,
+      ok: true, now: true, circuits: r.total, off: r.off, missed: r.missed,
+      // Honest about a circuit the hub would not take, rather than reporting
+      // the number we sent and letting a lamp stay on unmentioned.
+      spoken: !r.total ? `nothing was on in ${label.toLowerCase()}`
+        : r.missed ? `${label} lights off, but ${r.missed} would not take`
+        : `${label} lights and screens off`,
     });
   }
 
@@ -3930,6 +3940,18 @@ const HTML = /* html */ `<!doctype html>
   .tab-load { display: none; }
 
   .cue-wrap { position: relative; margin-bottom: 6px; }
+  /* Sorted to the top is only half a signal — without a mark the boundary
+     between "touches this room" and the rest is invisible. A rim rather than a
+     tint, which is how the rest of this page says a thing is the chosen one. */
+  .cue-wrap.here .cue {
+    border-color: color-mix(in oklab, var(--ink) 30%, transparent);
+    background: var(--paper-2);
+  }
+  /* A rule between the two groups, so the promotion reads as an order and not
+     as a handful of cards that happen to look slightly different. */
+  .cue-wrap.here + .cue-wrap:not(.here) {
+    margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--line);
+  }
   .cue {
     position: relative; width: 100%; display: block; text-align: left; cursor: pointer;
     padding: 10px 34px 11px 12px; border-radius: 12px;
@@ -4524,27 +4546,22 @@ const HTML = /* html */ `<!doctype html>
     /* Four across leaves the held control narrow enough that its count wrapped
        to a second line and took the whole bar with it. */
     nav.quick #qoff span { white-space: nowrap; }
-    /* In a room the bar is all-off plus the durations, and there are four of
-       those now — so it needs the fifth column or the last one wraps and takes
-       the whole bar with it. */
-    nav.quick.in-room { grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr; }
-    nav.quick .qmin { display: none; }
-    nav.quick.in-room .qmin { display: flex; }
-    nav.quick.in-room #qtimer, nav.quick.in-room #qfind, nav.quick.in-room #qplans { display: none; }
-    /* Four durations in a fifth of the bar: nowrap and a notch smaller, or
-       "45 MIN" breaks after the number and makes the whole bar two lines tall. */
-    nav.quick .qmin {
-      align-items: center; justify-content: center;
-      white-space: nowrap;
-      font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
-      text-transform: uppercase; color: var(--soft);
-      background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
-    }
-    nav.quick .qmin.on { color: var(--ink); border-color: var(--ink); }
+    /* Four across in both views, so the bar never changes shape under the thumb
+       — only its fourth button changes what it is. The house offers Find,
+       because what you are looking for could be anywhere; a room offers Cues,
+       because standing in one the thing you reach for is a picture of it you
+       have already saved.
+       The quick durations used to sit here, replacing the other three buttons
+       whenever you were in a room. They are gone: they were a fifth column that
+       made a duration easier to reach than the room's own cues, and every one
+       of them is in the sleep panel, one tap further in. */
+    nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
+    nav.quick #qcues { display: none; }
+    nav.quick.in-room #qcues { display: flex; }
+    nav.quick.in-room #qfind { display: none; }
     nav.quick #qoff span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
                         text-transform: uppercase; }
   }
-  @media (min-width: 861px) { nav.quick .qmin { display: none !important; } }
 
   /* the column's smaller voices */
   .headpct { margin-left: auto; margin-right: 14px; align-self: center; font-family: var(--display);
@@ -6204,6 +6221,14 @@ const HTML = /* html */ `<!doctype html>
     #planbody #schedlist { display: block; }
     #planbody .sched { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
+    /* The same override, for the same reason. On the house view the cues are a
+       sideways rail of chips, and the rule that makes that work sets .cue to
+       width:auto **unscoped** — so it followed the list into this sheet and
+       shrink-wrapped every card to the width of its own name. In a sheet a cue
+       is a row again. */
+    #cuebody .cue { width: 100%; flex: none; min-width: 0; }
+    #cuebody .cue { backdrop-filter: none; -webkit-backdrop-filter: none; }
+
     /* A cue on a phone is a chip: the name is the whole target. The reading and
        the colour swatch are detail for a screen with room to spare. The name
        must not wrap, or the chip grows taller than the card it replaced. */
@@ -6743,12 +6768,15 @@ const HTML = /* html */ `<!doctype html>
     </svg>
     <span>Find</span>
   </button>
-  <!-- The durations you actually pick, where your thumb already is. The sleep
-       panel is still there for choosing a room, a single circuit, or now. -->
-  <button type="button" class="qmin" data-min="15">15 min</button>
-  <button type="button" class="qmin" data-min="30">30 min</button>
-  <button type="button" class="qmin" data-min="45">45 min</button>
-  <button type="button" class="qmin" data-min="60">60 min</button>
+  <button type="button" id="qcues" aria-label="Cues for this room">
+    <!-- A list with the last line picked out: a cue is one of several saved
+         pictures, and one of them is about to be chosen. -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 7h16M4 12h11M4 17h7"/><circle cx="17.5" cy="16.5" r="3"/>
+    </svg>
+    <span>Cues</span>
+  </button>
 </nav>
 
 <div class="popveil" id="popveil" hidden></div>
@@ -6767,8 +6795,12 @@ const HTML = /* html */ `<!doctype html>
   <!-- Not another button in the row of durations: "now" is a different kind of
        thing from "in 45 minutes", and reading it as one of a list of delays is
        exactly how it would get pressed by mistake. -->
+  <!-- The label says the gesture, the way the desktop all-off does ("Hold ·
+       all off"). Called just "Sleep now" it looked like a tap, and a tap does
+       nothing at all — a control that silently ignores you is broken however
+       deliberate the guard behind it is. -->
   <button class="pull sleepnow" id="sleepnow" type="button"
-          aria-label="Hold to put this room to sleep now">Sleep now</button>
+          aria-label="Hold to put this room to sleep now">Hold \u00b7 sleep now</button>
   <div class="running" id="timerrunning"></div>
 </div>
 
@@ -6885,6 +6917,20 @@ const HTML = /* html */ `<!doctype html>
      them instead, and this is where they live while it is open — the list
      itself is the very same node as the sidebar's, moved in and moved back,
      so there is one list in the DOM and no chance of the two disagreeing. -->
+<div class="scrim" id="cuescrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cuetitle">
+    <div class="sheet-head">
+      <div class="sheet-eyebrow" id="cueeyebrow">Saved pictures of the house</div>
+      <p class="sheet-name" id="cuetitle">Cues</p>
+    </div>
+    <div class="sheet-body" id="cuebody"></div>
+    <div class="sheet-foot">
+      <button class="sheet-btn go" id="cueadd" type="button">Create a cue</button>
+      <button class="sheet-btn" id="cueclose" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="scrim" id="planscrim" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="plantitle">
     <div class="sheet-head">
@@ -7490,6 +7536,13 @@ function go(view, room) {
   state.room = room || null;
   if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); }
   drawField();
+  /* The thumb bar's held control names the scope it will act on, and that scope
+     just changed. Without this it kept the previous view's words — standing on
+     the house board it still said "Room off · 9" — until the five-second
+     readout happened to come round. The action was always right, because
+     allOff() reads state.view when it fires; only the label lied, which on the
+     one destructive control in the bar is the worst place for it. */
+  readout();
   for (const t of document.querySelectorAll('#tabs .tab')) {
     if (t.dataset.room) tabState(t, t.dataset.room); else houseTabState(t);
   }
@@ -7708,7 +7761,6 @@ function drawField() {
   const quick = el('#quick');
   if (quick) quick.classList.toggle('in-room', inRoomView);
   // A timer fired from a room means that room, not the whole house.
-  for (const b of document.querySelectorAll('.qmin')) b.dataset.scope = inRoomView ? 'room' : 'house';
   drawRoomSay();
   stack.classList.toggle('as-house', state.view === 'house' && !state.q);
   const drawn = state.q ? fillSearch(stack)
@@ -9095,6 +9147,15 @@ async function loadCues() {
   drawCues();
 }
 
+/* Does this cue name a circuit in that room? Read off the steps rather than the
+   cue's note, which is a phrase for reading ("2 rooms") and not a list. */
+function touchesRoom(cue, room) {
+  return (cue.steps || []).some((st) => {
+    const d = deviceOf(st.record_id);
+    return d && d.room === room;
+  });
+}
+
 function drawCues() {
   const host = el('#cues');
   if (!host) return;
@@ -9107,9 +9168,18 @@ function drawCues() {
     host.appendChild(p);
     return;
   }
-  for (const cue of cues) {
+  /* Standing in a room, the cues that touch it are the only ones worth reaching
+     for, and they were scattered through a list ordered by when each was made.
+     A stable sort, so within the two halves nothing is shuffled — and only in a
+     room, because on the house view no room is the subject and promoting some
+     cues over others would be inventing a preference. */
+  const here = state.view === 'room' && !state.q ? state.room : null;
+  const order = here
+    ? [...cues].sort((a, b) => (touchesRoom(b, here) ? 1 : 0) - (touchesRoom(a, here) ? 1 : 0))
+    : cues;
+  for (const cue of order) {
     const wrap = document.createElement('div');
-    wrap.className = 'cue-wrap';
+    wrap.className = 'cue-wrap' + (here && touchesRoom(cue, here) ? ' here' : '');
 
     const b = document.createElement('button');
     b.type = 'button';
@@ -11285,20 +11355,26 @@ holdToFire(el('#sleepnow'), async () => {
 
 /* the thumb bar */
 el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
-for (const b of document.querySelectorAll('.qmin')) {
-  b.onclick = async () => {
-    const minutes = Number(b.dataset.min);
-    b.classList.add('on');
-    setTimeout(() => b.classList.remove('on'), 1200);
-    const scope = b.dataset.scope === 'room' && state.room ? 'room:' + state.room : 'house';
-    const r = await fetch('/api/timers', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ minutes, scope }),
-    }).then(x => x.json()).catch(() => null);
-    if (r && r.ok) { tick_haptic(9); note(r.spoken + '.'); loadAuto(); }
-    else note('That timer could not be set.');
-  };
+/* Cues, from a room. The list is one node with two homes, the same way the
+   schedules list and the search field are: it lives in the sidebar on a wide
+   screen and is moved into this sheet on a phone, rather than a second copy
+   being drawn that can fall out of step with the first. */
+function openCues() {
+  el('#cuebody').appendChild(el('#cues'));
+  el('#cuescrim').hidden = false;
+  drawCues();
 }
+
+function closeCues() {
+  hideScrim(el('#cuescrim'), () => {
+    const home = el('#seccues');
+    home.insertBefore(el('#cues'), el('#newcue'));
+  });
+}
+
+el('#qcues').onclick = openCues;
+el('#cueclose').onclick = closeCues;
+el('#cueadd').onclick = () => { closeCues(); newCue(); };
 
 el('#qtimer').onclick = () => openTimer(timerpop.hidden);
 el('#timerstop').onclick = cancelTimers;
