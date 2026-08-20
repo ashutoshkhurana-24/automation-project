@@ -146,6 +146,7 @@ class WebosTV {
     this.waiting = new Map();          // id -> {resolve, reject, keep}
     this.mac = this.opts.mac || null;
     this.key = this.opts.key || null;
+    this.spoke = false;                  // did any port get as far as opening
   }
 
   // Find this set's key: by MAC where we can resolve one, and — for a store
@@ -185,7 +186,13 @@ class WebosTV {
     try {
       return await this.dial('wss://' + this.ip + ':3001', { rejectUnauthorized: false }, wait);
     } catch (e) {
-      if (this.paired || this.ws && this.ws.readyState === WebSocket.OPEN) throw e;
+      /* Only fall back when the secure port failed at the transport level. If it
+         opened, the set was talking to us and its answer is the real one — so
+         reporting the plain port's failure instead actively misleads. That cost
+         a wrong diagnosis: a set that had raised a pairing prompt and waited
+         ninety seconds for somebody to accept it was reported as ECONNRESET,
+         which reads like a refusal. */
+      if (this.spoke) throw e;
       return this.dial('ws://' + this.ip + ':3000', {}, wait);
     }
   }
@@ -208,6 +215,7 @@ class WebosTV {
       });
 
       ws.on('open', () => {
+        this.spoke = true;               // this port talks; do not try the other
         const payload = Object.assign(
           // Forcing sends no key on purpose: presenting the old one invites the
           // set to renew the grant it already made, and the whole point of a
