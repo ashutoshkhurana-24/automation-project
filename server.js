@@ -6718,6 +6718,24 @@ const HTML = /* html */ `<!doctype html>
 
   @media (max-width: 560px) {
     .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    /* ── a cue, set by thumb ──────────────────────────────────────────
+       A cue's sliders were 18px tall with 136px of track: a line rather than a
+       target. The board's own strips are given 26px here for exactly this
+       reason, and these are the same gesture on a smaller surface — so the
+       labels give up some width and the track gets a real height.
+       And the fields have to be 16px, or iOS zooms the whole page the moment
+       one takes focus. That is already written down for the search field; the
+       television's link and message fields are the same trap. */
+    .step-slider { gap: 8px; }
+    .step-slider span { flex: 0 0 60px; font-size: 12px; }
+    .step-slider b { flex: 0 0 52px; font-size: 12px; }
+    .step-slider input { height: 30px; }
+    .step-slider input::-webkit-slider-thumb { width: 17px; height: 17px; margin-top: -7px; }
+    .step-slider input::-moz-range-thumb { width: 17px; height: 17px; }
+    .step-field input, .step-field select { font-size: 16px; padding: 11px 12px; }
+    /* The tick is the smallest thing in the row and the most consequential. */
+    .rowbox { padding: 13px 6px 13px 0; }
+    .rowbox .box { width: 21px; height: 21px; }
     .cat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
     /* a fingertip needs more than a mouse: a bigger switch, but not a taller
        tile — height here buys nothing and costs a whole row per screen */
@@ -10115,6 +10133,13 @@ function newCue() {
 }
 
 function openSheet(cue) {
+  /* One bottom sheet at a time on a phone. Opening a cue from the Cues sheet
+     put the editor *behind* it — both scrims are z-index 50 and #cuescrim is
+     later in the document — so tapping a cue's pencil looked as though it did
+     nothing at all. The launcher gives way to the thing it launched, which also
+     hands the borrowed cue list back to the sidebar on the way out. */
+  const launcher = el('#cuescrim');
+  if (launcher && !launcher.hidden) closeCues();
   sheetCue = cue;
   sheetView = 'steps';
   pickRoom = null;
@@ -11253,7 +11278,11 @@ el('#seek').addEventListener('blur', () => {
 el('#seekcancel').onclick = () => openSeek(false);
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!el('#scrim').hidden) { closeSheet(); return; }
+    // Topmost first, and through the same closer a flick uses.
+    for (const id of ['tvscrim', 'schedscrim', 'cuescrim', 'planscrim', 'bgscrim', 'scrim']) {
+      const sc = el('#' + id);
+      if (sc && !sc.hidden) { dismissSheet(sc); return; }
+    }
     if (state.q) { state.q = ''; el('#seek').value = ''; resetSeek(); drawField(); openSeek(false); }
     else if (state.view === 'room') go('house');
   }
@@ -11696,6 +11725,26 @@ loadAuto();
    distance and the speed count, because the two gestures people actually make
    are a slow deliberate push and a quick flick, and a distance-only rule
    ignores the second one. */
+/* Dismissing a sheet has to be the same act however it happens.
+ *
+ * Two of these sheets *borrow* a node — the cue list and the schedule list each
+ * live in the sidebar on a wide screen and are moved into a sheet on a phone —
+ * so their closers put it back. A flick used to call hideScrim directly, which
+ * hid the sheet and left the borrowed list inside it: flick the Cues sheet away
+ * and the cue rail on the house view was empty, and stayed empty, until you
+ * opened and closed the sheet properly. Named here so there is one place that
+ * knows how each sheet is put away. */
+function dismissSheet(scrim) {
+  const shut = {
+    scrim: closeSheet,
+    cuescrim: closeCues,
+    planscrim: closePlans,
+    schedscrim: closeSchedSheet,
+    tvscrim: closeTv,
+  }[scrim.id];
+  if (shut) shut(); else hideScrim(scrim);
+}
+
 (function sheetDrag() {
   let grip = null;
   document.addEventListener('pointerdown', (e) => {
@@ -11725,7 +11774,7 @@ loadAuto();
     g.scrim.classList.remove('gripped');
     const flick = g.y / Math.max(1, performance.now() - g.at);   // px per ms
     if (g.y > 110 || flick > 0.55) {
-      if (g.scrim.id === 'scrim') closeSheet(); else hideScrim(g.scrim);
+      dismissSheet(g.scrim);
       return;
     }
     g.scrim.classList.add('settling');
