@@ -909,16 +909,18 @@ const TV_APP_ORDER = [
 
 const TVS = [
   { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
-  /* Parent Room's set goes here once we know which MAC it is. There are two
-     unidentified QNED82BXAs on the LAN with near-consecutive MACs —
-     60:95:f8:1d:11:da and 60:95:f8:1d:08:ba — and nothing distinguishes them
-     while they are asleep, because a sleeping set answers neither ping nor
-     SSDP. Guessing is not free: the wrong mapping would put one room's
-     television on another room's tile, and "room off" would switch the wrong
-     screen off. Identify it while it is awake — discovery reports the DLNA
-     friendly name, which is how the Ashu Room set names itself — then add it
-     here and pair it. Nothing else about the protocol needs re-establishing;
-     they are the same model. */
+  /* Identified the only way that works: switched on, it answers SSDP and names
+     itself "Dadaji TV". Two unidentified QNED82BXAs were on the LAN with
+     near-consecutive MACs and nothing tells them apart while asleep, so the
+     first guess here was backed out rather than shipped — a wrong mapping puts
+     one room's television on another room's tile, and room-off then switches
+     the wrong screen off.
+     On **Wi-Fi**, so everything works except reliable power-on: Wake-on-Wireless
+     is the flaky half, and this set has already been seen waking its radio
+     without its panel. Its wired MAC is D0:CD:BF:A0:FC:DC — worth knowing
+     because keys are filed by MAC, so running it a cable would orphan this one
+     and cost another pairing prompt. */
+  { id: 'tv-parent', name: 'TV', room: 'PARENT ROOM', mac: '60:95:f8:1d:08:ba' },
 ];
 const YT_APP = 'youtube.leanback.v4';
 const TV_RETRY_MS = 20000;
