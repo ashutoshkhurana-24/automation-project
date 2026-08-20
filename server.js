@@ -920,6 +920,7 @@ const TVS = [
      here and pair it. Nothing else about the protocol needs re-establishing;
      they are the same model. */
 ];
+const YT_APP = 'youtube.leanback.v4';
 const TV_RETRY_MS = 20000;
 const TV_RETRY_MAX_MS = 160000;
 
@@ -1150,10 +1151,31 @@ class TvLink {
     const id = youtubeId(video);
     if (!id) throw new Error('not a YouTube link or id');
     await this.ensureAwake();
+
+    /* Confirmed, not assumed — this is the one command here that can be.
+       Every launch answers returnValue true whether or not the video appears,
+       which is exactly how the wrong field survived so long. The set's media
+       info carries a mediaId per video, so reading it either side of the launch
+       says whether the screen genuinely changed. Nothing needs closing or
+       bouncing through another app first: contentTarget lands on a running
+       YouTube too, verified by the mediaId changing with the app left open. */
+    const before = await this.tv.media().catch(() => null);
     await this.tv.youtube(id);
-    this.app = 'youtube.leanback.v4';
+    this.app = YT_APP;
     pushSoon();
-    return { ok: true, spoken: 'playing that on the ' + this.said(), video: id };
+
+    let now = null;
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 700));
+      now = await this.tv.media().catch(() => null);
+      if (now && now.mediaId && (!before || now.mediaId !== before.mediaId)) break;
+    }
+    const confirmed = !!(now && now.mediaId && (!before || now.mediaId !== before.mediaId));
+    return {
+      ok: true, video: id, confirmed,
+      spoken: confirmed ? 'playing that on the ' + this.said()
+                        : 'the ' + this.said() + ' opened YouTube but did not start the video',
+    };
   }
 
   /* The remote buttons ride a second socket the set hands out on request, so it
@@ -7820,7 +7842,14 @@ async function tvSend(body, btn) {
   const play = () => {
     const link = el('#tvyt').value.trim();
     if (!link) return;
-    tvSend({ youtube: link }, el('#tvytgo')).then((out) => { if (out) el('#tvyt').value = ''; });
+    /* The reply says whether the video actually started, so say so. A launch
+       that opens YouTube and sits on its home screen used to look identical to
+       one that worked, which is how the wrong call survived for two evenings. */
+    tvSend({ youtube: link }, el('#tvytgo')).then((out) => {
+      if (!out) return;
+      el('#tvyt').value = '';
+      if (!out.confirmed) note('YouTube opened, but the video did not start.');
+    });
   };
   el('#tvytgo').onclick = play;
   el('#tvyt').addEventListener('keydown', (e) => { if (e.key === 'Enter') play(); });

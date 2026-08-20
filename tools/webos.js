@@ -298,17 +298,39 @@ class WebosTV {
 
   /* Open a particular video in the YouTube app.
    *
-   * `contentId` on the launch is what does it — confirmed by eye on the Ashu
-   * Room set, which opened the video itself rather than the app's home screen.
-   * Do **not** reach for `ssap://system.launcher/open` with a watch URL: it is
-   * accepted, it returns true, and it opens the television's *web browser*
-   * (foreground app becomes com.webos.app.browser), which is a much worse way
-   * to watch anything. Measured alongside this one. */
+   * It is `params.contentTarget` carrying a leanback URL that does this, and
+   * nothing else. Three plausible calls were tried and two of them are traps,
+   * because all three answer returnValue true:
+   *   - `contentId` launches the app and lands on its home screen. It looks
+   *     like the obvious field and it is purely an app launcher.
+   *   - `system.launcher/open` with a watch URL opens the television's *web
+   *     browser*. The video does play, which is what made this look solved for
+   *     a while — in the wrong application.
+   *   - DIAL (`POST /apps/YouTube` with `v=<id>`) answers 200 once an Origin
+   *     header is present, reports the app as running, and still shows the
+   *     home screen: real casting goes on to YouTube's Lounge API, which is a
+   *     cloud service, not this.
+   * contentTarget also works on an app that is already open, so nothing needs
+   * closing or bouncing through Live TV first. */
   youtube(video) {
     const id = youtubeId(video);
     if (!id) throw new Error('not a YouTube link or id: ' + video);
-    return this.request('ssap://system.launcher/launch',
-      { id: 'youtube.leanback.v4', contentId: id });
+    return this.request('ssap://system.launcher/launch', {
+      id: 'youtube.leanback.v4',
+      params: { contentTarget: 'https://www.youtube.com/tv?v=' + id },
+    });
+  }
+
+  /* What is actually playing — the one honest instrument on this set.
+   *
+   * Empty while an app sits on its own home screen; a single entry with
+   * playState and a mediaId once something is really playing. That difference
+   * is what finally separated "the app opened" from "the video is on", after
+   * several rounds of asking a person to look at the screen. The mediaId
+   * changes per video, so a deep-link can be *confirmed* rather than assumed. */
+  async media() {
+    const r = await this.request('ssap://com.webos.media/getForegroundAppInfo', {});
+    return (r.foregroundAppInfo || [])[0] || null;
   }
   volumeUp()           { return this.request('ssap://audio/volumeUp'); }
   volumeDown()         { return this.request('ssap://audio/volumeDown'); }
