@@ -4123,7 +4123,9 @@ const HTML = /* html */ `<!doctype html>
   .tile.gang .tile-body,
   .tile.gang.dims .tile-body,
   .tile.gang.tunes .tile-body,
-  .tile.gang.dims.tunes .tile-body { position: relative; z-index: 2; padding-bottom: 0; }
+  .tile.gang.dims.tunes .tile-body {
+    position: relative; z-index: 2; width: 100%; padding-bottom: 0;
+  }
   /* The ceiling card carries two strips under its reading, so it sizes to its
      contents rather than to the tile grid's row height. */
   .tile.gang { display: flex; flex-direction: column; padding: 15px 16px 14px;
@@ -4296,7 +4298,13 @@ const HTML = /* html */ `<!doctype html>
     .tiles .tile.dims:not(.cobmember) .tile-body,
     .tiles .tile.tunes:not(.cobmember) .tile-body,
     .tiles .tile.dims.tunes:not(.cobmember) .tile-body {
-      position: relative; z-index: 2; padding-bottom: 0;
+      /* width, because .tile-body is a <button> and a button shrink-wraps to its
+         contents the moment it stops being absolutely positioned. Every other
+         tile got away with it — their names are wide enough to fill the card —
+         but a television's screen asks for 100% of its parent, which
+         contributes nothing to an intrinsic width, so the card sized itself to
+         the word "TV" and the screen came out two thirds too narrow. */
+      position: relative; z-index: 2; width: 100%; padding-bottom: 0;
     }
     .tiles .tile.dims .controls, .tiles .tile.tunes .controls {
       position: static; margin: 12px 0 0; padding: 0;
@@ -5108,13 +5116,76 @@ const HTML = /* html */ `<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     .tile.screen.on .tile-fill::before { animation: none; }
   }
+  /* The screen, inside the bezel.
+     A lamp tile reports a level; this one shows a picture, which is the whole
+     difference and the only thing on this board that can. Dark ground, a 1px
+     inner rim, and the running app's own art sitting on it — so from across the
+     room you can see not just that the set is on but what it is on.
+     Off it is genuinely inert: no glow, no picture, the one dead pane on a lit
+     board. Which is exactly what a switched-off television is. */
+  .tvpanel {
+    /* Screen-shaped, not "whatever space is left". Sized by flex it collapsed to
+       its minimum on a phone, where the tile grows to fit its contents and there
+       is no spare height to hand out — a 34px letterbox. An aspect ratio is also
+       the truer description of the thing: a television is 16:9 whatever tile it
+       is sitting in. */
+    flex: 0 0 auto; width: 100%; aspect-ratio: 16 / 9;
+    margin: 7px 0 6px; position: relative;
+    border-radius: 7px; overflow: hidden;
+    background:
+      linear-gradient(160deg, rgba(28,32,38,.90), rgba(18,21,25,.94));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+    display: grid; place-items: center;
+    transition: background .4s, box-shadow .4s;
+  }
+  /* Lit, the screen takes a breath of the set's own cool light around the edge —
+     the way a picture spills onto a bezel in a dark room. */
+  .tile.screen.on .tvpanel {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--cool) 46%, transparent),
+      inset 0 -14px 22px -12px color-mix(in srgb, var(--cool) 40%, transparent);
+  }
+  .tvposter {
+    width: 40%; max-width: 54px; aspect-ratio: 1; object-fit: contain;
+    border-radius: 6px; opacity: 0; transform: scale(.9);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2,.86,.28,1);
+  }
+  .tvposter.shown { opacity: .95; transform: none; }
+  /* No picture is a picture too: a dark screen with nothing on it should not sit
+     there looking like a loading failure, so it gets the faintest sheen. */
+  .tvpanel::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(122deg, rgba(255,255,255,.055), transparent 46%);
+  }
+
+  /* A television's volume is a slim bar, not a lamp's slab. Its own on-screen
+     volume is a hairline; borrowing that shape is most of what stops this tile
+     reading as a light. */
+  .tile.screen .strip { height: 26px; border-radius: 8px; }
+  .tile.screen .strip-hand {
+    width: 18px; height: 18px; margin-left: -9px;
+    left: clamp(10px, var(--at, 0%), calc(100% - 10px));
+  }
+  /* No label. A lamp needs one to tell brightness from warmth; a television has
+     a single bar, the tile already says what it is, and at 26px the handle sat
+     on top of the word. */
+  .tile.screen .strip-label { display: none; }
+  .tile.screen.dims .tile-body { padding-bottom: 42px; }
+
   /* The face opens the remote rather than switching the set, because the key in
      the corner already switches it and a television is the one circuit here
      with somewhere to go. The chevron is the whole affordance — a word would
      be a third label on a card that already carries two. */
+  /* The reading and the chevron share a line. On its own the chevron sat
+     orphaned between the reading and the volume, reading as a stray character
+     rather than as "there is more behind this". */
+  .tile.screen .tvread {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  }
+  .tile.screen .tvread .state { margin-top: 0; }
   .tile.screen .tvmore {
-    align-self: flex-end; margin-top: 1px;
-    font-size: 17px; line-height: 1; color: var(--faint); pointer-events: none;
+    flex: 0 0 auto; font-size: 17px; line-height: 1;
+    color: var(--faint); pointer-events: none;
   }
   .tile.screen.on .tvmore { color: color-mix(in oklab, var(--ink) 62%, transparent); }
 
@@ -7388,9 +7459,19 @@ function circuitTile(d, compact) {
     body.onclick = d.is_tv ? () => openTv(d) : () => setDevice(d, !d.status);
   }
   body.className = 'tile-body';
-  body.innerHTML = '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
+  /* A television gets a screen. It goes inside the body as a flex child rather
+     than being pinned to the tile, so it fills whatever is left between the
+     name and the volume — which is a different box on a phone, where the strips
+     stack under the face, than on a wide screen, where they are pinned to the
+     foot. No insets to keep in step with two layouts.
+     The wiring address goes: a set has no channel to chase, and "SCREEN
+     #tv-parent" was our own synthetic id leaking onto the face. */
+  body.innerHTML = d.is_tv
+    ? '<span class="roomname"></span><span class="tvpanel"><img alt="" class="tvposter"></span>' +
+      '<span class="tvread"><span class="state"></span><span class="tvmore">\u203a</span></span>'
+    : '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
   body.querySelector('.roomname').textContent = pretty(d.name).toUpperCase();
-  body.querySelector('.idline').textContent = idLine(d);
+  if (!d.is_tv) body.querySelector('.idline').textContent = idLine(d);
   tile.appendChild(body);
 
   // A curtain is two momentary relays with nothing to report, so it has no key.
@@ -7420,16 +7501,6 @@ function circuitTile(d, compact) {
     note_.className = 'blindnote';
     note_.textContent = 'IR IS ONE-WAY — THE REMOTE IS INVISIBLE TO US';
     body.appendChild(note_);
-  }
-
-  if (d.is_tv) {
-    // In flow at the foot of the face, not pinned to the tile: the strips sit
-    // under the face on a phone and beside it on a wide screen, so anything
-    // absolutely placed against the tile lands on top of one of them.
-    const more = document.createElement('span');
-    more.className = 'tvmore';
-    more.textContent = '\u203a';
-    body.appendChild(more);
   }
 
   if (d.is_curtain) tile.appendChild(curtainPulls(d));
@@ -7642,6 +7713,28 @@ function paintTile(tile, d) {
   tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
   const st = tile.querySelector('.state');
   if (st) st.textContent = tile.classList.contains('cobmember') ? shortState(d) : stateWord(d);
+
+  /* The screen shows what is on it. This is the one tile on the board that can
+     say more than a level — so it carries the set's own app art, which is
+     already being fetched for the panel and costs nothing here. A set that is
+     off shows nothing at all, which is what a dark screen is. */
+  const poster = tile.querySelector('.tvposter');
+  if (poster) {
+    const want = d.status && d.tv_app
+      ? '/api/tv/' + encodeURIComponent(d.record_id) + '/icon/' + encodeURIComponent(d.tv_app)
+      : '';
+    if (poster.dataset.want !== want) {
+      poster.dataset.want = want;
+      poster.classList.remove('shown');
+      if (want) {
+        poster.onload = () => poster.classList.add('shown');
+        poster.onerror = () => poster.classList.remove('shown');
+        poster.src = want;
+      } else {
+        poster.removeAttribute('src');
+      }
+    }
+  }
 
   for (const input of tile.querySelectorAll('.slider')) {
     if (input === document.activeElement) continue;   // never fight the hand on the slider
