@@ -923,6 +923,27 @@ const TVS = [
   { id: 'tv-parent', name: 'TV', room: 'PARENT ROOM', mac: '60:95:f8:1d:08:ba' },
 ];
 const YT_APP = 'youtube.leanback.v4';
+
+/* The app list, kept on disk between restarts.
+ *
+ * It is read from the set on every successful connection, so this is never the
+ * source of truth — only a stand-in for the gap between the process starting
+ * and a television next answering. Without it a set in standby showed a panel
+ * with no apps and no icons at all, which looks broken rather than asleep.
+ *
+ * Filed by MAC, like the pairing keys, for the same reason: addresses move. */
+const TV_APPS_PATH = path.join(__dirname, 'data', 'tv-apps.json');
+
+function loadTvApps() {
+  try { return JSON.parse(fs.readFileSync(TV_APPS_PATH, 'utf8')); } catch (e) { return {}; }
+}
+function saveTvApps(mac, apps) {
+  try {
+    const all = loadTvApps();
+    all[mac] = apps;
+    fs.writeFileSync(TV_APPS_PATH, JSON.stringify(all, null, 2) + '\n');
+  } catch (e) { console.error('could not cache the TV app list:', e.message); }
+}
 const TV_RETRY_MS = 20000;
 const TV_RETRY_MAX_MS = 160000;
 
@@ -940,7 +961,8 @@ class TvLink {
     this.volume = 0;
     this.muted = false;
     this.app = '';
-    this.apps = [];
+    // Whatever we knew last time, so the panel has icons before the set answers.
+    this.apps = loadTvApps()[this.mac] || [];
     this.commandedAt = 0;
     this.wakingUntil = 0;
     // Bumped by every power command. A wake schedules several reconnect
@@ -1046,7 +1068,7 @@ class TvLink {
           const at = TV_APP_ORDER.indexOf(id);
           return at === -1 ? TV_APP_ORDER.length : at;
         };
-        this.apps = (r.launchPoints || [])
+        const fresh = (r.launchPoints || [])
           .filter((a) => a.id && a.title)
           .map((a) => ({
             id: a.id, title: a.title,
@@ -1060,8 +1082,12 @@ class TvLink {
           // A stable sort, so everything the list does not name keeps the order
           // the television gave it rather than an arbitrary one of ours.
           .sort((a, b) => rank(a.id) - rank(b.id));
+        if (fresh.length) {
+          this.apps = fresh;
+          saveTvApps(this.mac, fresh);   // straight from the set: this is the truth
+        }
         pushSoon();
-      }).catch(() => { /* an older grant may not allow it; the row just stays empty */ });
+      }).catch(() => { /* an older grant may refuse it; whatever we had stands */ });
       pushSoon();
     } catch (e) {
       /* Off comes in two shapes, and only one of them looks like it.
@@ -1212,6 +1238,20 @@ class TvLink {
     return { ok: true, spoken: this.said() + (by > 0 ? ' louder' : ' quieter') };
   }
 
+  /* A line of text on the screen.
+   *
+   * Deliberately does not wake a sleeping set: a toast lasts a few seconds, and
+   * switching a television on to show one nobody asked to see is worse than not
+   * saying it. An unreachable set is reported as such rather than queued. */
+  async say(text) {
+    const message = String(text || '').trim().slice(0, 120);
+    if (!message) throw new Error('nothing to say');
+    if (!this.tv) throw new Error('the television is not reachable');
+    this.commandedAt = Date.now();
+    await this.tv.toast(message);
+    return { ok: true, spoken: 'said it on the ' + this.said(), message };
+  }
+
   async setMute(on) {
     if (!this.tv) throw new Error('the television is not reachable');
     this.commandedAt = Date.now();
@@ -1244,8 +1284,13 @@ for (const t of tvs.values()) t.open();
  * directly on either count. Cached by URL rather than by app id: the URL
  * carries a content hash, so a set that updates an app changes it and the
  * stale bytes fall out of use on their own. */
-const tvIcons = new Map();          // icon url -> bytes, once fetched
-const tvIconWait = new Map();       // icon url -> the fetch already in flight
+/* Keyed by the icon's *path*, not the whole URL. The path carries a content
+   hash, so it identifies the bytes; the host is the television's address, which
+   moves on DHCP — and a list restored from disk carries whatever address the
+   set had last time. Keying on the path means a set that has moved reuses the
+   bytes already fetched, and the request goes to where it lives now. */
+const tvIcons = new Map();          // icon path -> bytes, once fetched
+const tvIconWait = new Map();       // icon path -> the fetch already in flight
 /* One at a time, in a chain.
  *
  * A television will not serve two dozen HTTPS requests at once: asked for all
@@ -1258,9 +1303,15 @@ const tvIconWait = new Map();       // icon url -> the fetch already in flight
  * The cost is paid once: after that they come from the map above. */
 let iconQueue = Promise.resolve();
 
-function fetchIcon(url) {
-  if (tvIcons.has(url)) return Promise.resolve(tvIcons.get(url));
-  if (tvIconWait.has(url)) return tvIconWait.get(url);
+function fetchIcon(rawUrl, liveIp) {
+  let u;
+  try { u = new URL(rawUrl); } catch (e) { return Promise.reject(new Error('bad icon url')); }
+  if (liveIp) u.hostname = liveIp;
+  const url = u.toString();
+  const key = u.pathname;
+
+  if (tvIcons.has(key)) return Promise.resolve(tvIcons.get(key));
+  if (tvIconWait.has(key)) return tvIconWait.get(key);
 
   const once = () => new Promise((resolve, reject) => {
     const https = require('https');
@@ -1275,12 +1326,39 @@ function fetchIcon(url) {
   });
 
   const p = iconQueue.then(once).then(
-    (buf) => { tvIcons.set(url, buf); tvIconWait.delete(url); return buf; },
-    (e) => { tvIconWait.delete(url); throw e; });
+    (buf) => { tvIcons.set(key, buf); tvIconWait.delete(key); return buf; },
+    (e) => { tvIconWait.delete(key); throw e; });
   iconQueue = p.catch(() => {});      // the chain must survive a failure
-  tvIconWait.set(url, p);
+  tvIconWait.set(key, p);
   return p;
 }
+
+/* Put a line on every screen that is on.
+ *
+ * The quirk worth having: the televisions are the only devices in this house
+ * that can show words, so "dinner is ready" can land on whatever somebody is
+ * watching. Sets that are off are named in the reply rather than silently
+ * skipped — otherwise a message that reached nobody looks like one that
+ * reached everybody.
+ *
+ * Declared before /api/tv/:id so that "say" is not mistaken for a set's id. */
+app.post('/api/tv/say', async (req, res) => {
+  const message = String((req.body || {}).message || '').trim().slice(0, 120);
+  if (!message) return res.status(400).json({ ok: false, error: 'nothing to say' });
+
+  const told = [];
+  const missed = [];
+  for (const t of tvs.values()) {
+    try { await t.say(message); told.push(roomKey(t.room)); }
+    catch (e) { missed.push(roomKey(t.room)); }
+  }
+  const said = told.length
+    ? 'said it on ' + told.length + (told.length === 1 ? ' screen' : ' screens')
+    : 'no screen was on to say it';
+  res.status(told.length ? 200 : 502).json({
+    ok: told.length > 0, message, told, missed, spoken: said,
+  });
+});
 
 app.get('/api/tv/:id/icon/:app', async (req, res) => {
   const t = tvs.get(req.params.id);
@@ -1288,7 +1366,7 @@ app.get('/api/tv/:id/icon/:app', async (req, res) => {
   if (!entry || !entry.icon) return res.status(404).end();
 
   try {
-    const buf = await fetchIcon(entry.icon);
+    const buf = await fetchIcon(entry.icon, t.ip);
     res.set('Content-Type', /\.jpe?g$/i.test(entry.icon) ? 'image/jpeg' : 'image/png');
     // The bytes never change for a given URL, so this can be cached hard.
     res.set('Cache-Control', 'public, max-age=604800, immutable');
@@ -1305,6 +1383,7 @@ app.post('/api/tv/:id', async (req, res) => {
   if (!t) return res.status(404).json({ ok: false, error: 'no such television' });
   const b = req.body || {};
   try {
+    if (b.toast != null) return res.json(await t.say(b.toast));
     if (b.youtube != null) return res.json(await t.playYoutube(b.youtube));
     if (b.button != null) return res.json(await t.press(b.button));
     if (b.app != null) return res.json(await t.launchApp(b.app));
@@ -6191,6 +6270,14 @@ const HTML = /* html */ `<!doctype html>
       </div>
 
       <div class="tvblock">
+        <div class="tvlegend">Say something on the screen</div>
+        <div class="tvlink">
+          <input type="text" id="tvsayin" maxlength="120" placeholder="A line to put on the screen" aria-label="Message">
+          <button class="tvkey wide" type="button" id="tvsaygo">Say it</button>
+        </div>
+      </div>
+
+      <div class="tvblock">
         <div class="tvlegend">Play a YouTube link</div>
         <div class="tvlink">
           <input type="text" id="tvyt" placeholder="Paste a link, or a video id" aria-label="YouTube link">
@@ -7970,7 +8057,7 @@ function drawTv() {
   vol.style.setProperty('--tint', 'var(--cool)');
 
   // Everything but the key needs the set awake to mean anything.
-  for (const b of el('#tvscrim').querySelectorAll('[data-btn], [data-step], #tvmute, #tvytgo'))
+  for (const b of el('#tvscrim').querySelectorAll('[data-btn], [data-step], #tvmute, #tvytgo, #tvsaygo'))
     b.disabled = !d.status && b.id !== 'tvytgo';   // a link may wake it itself
 
   const apps = el('#tvapps');
@@ -8074,6 +8161,15 @@ async function tvSend(body, btn) {
   };
   el('#tvytgo').onclick = play;
   el('#tvyt').addEventListener('keydown', (e) => { if (e.key === 'Enter') play(); });
+
+  // The one thing a television can do that no other device here can: show words.
+  const say = () => {
+    const text = el('#tvsayin').value.trim();
+    if (!text) return;
+    tvSend({ toast: text }, el('#tvsaygo')).then((out) => { if (out) el('#tvsayin').value = ''; });
+  };
+  el('#tvsaygo').onclick = say;
+  el('#tvsayin').addEventListener('keydown', (e) => { if (e.key === 'Enter') say(); });
 
   document.addEventListener('keydown', (e) => {
     if (el('#tvscrim').hidden) return;

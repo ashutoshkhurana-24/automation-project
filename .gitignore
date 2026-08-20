@@ -41,3 +41,6 @@ the-house.apk
 
 # Pairing keys for the televisions: per-install, and a credential.
 data/tv-keys.json
+
+# The televisions app lists: a cache, rebuilt from the sets themselves.
+data/tv-apps.json
