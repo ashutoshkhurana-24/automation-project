@@ -339,6 +339,17 @@ class WebosTV {
     });
   }
   swInfo()             { return this.request('ssap://com.webos.service.update/getCurrentSWInformation'); }
+
+  /* Which interface the set is actually using, which is the one fact that
+     decides whether it can be switched on. It answers with a MAC per interface —
+     wiredInfo, wifiInfo, p2pInfo — and the one that matches the address ARP
+     knows is the live one.
+     Two things about this call. The payload must be empty: `{category:'network'}`
+     is refused with "could not validate json message against schema", which
+     reads like the method is missing when it is only fussy. And it lives under
+     a service that `getServiceList` does not mention at all, so the list is not
+     the last word on what a set will answer. */
+  network()            { return this.request('ssap://com.webos.service.connectionmanager/getinfo', {}); }
 }
 
 /* Anything a person is likely to paste. A bare id is passed straight through,
