@@ -5300,16 +5300,31 @@ const HTML = /* html */ `<!doctype html>
   .sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 18px;
                 scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent; }
   .sheet-room { margin: 18px 0 4px; font-size: 12.5px; color: var(--faint); }
-  .sheet-step { border-bottom: 1px solid rgba(255,213,160,.05); }
-  .sheet-row {
-    width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer;
-    background: none; border: 0; color: var(--soft); font: 400 14px/1.4 var(--sans); text-align: left;
+  .sheet-step { border-bottom: 1px solid var(--line); }
+  /* Two buttons, not one. The tick has to be its own hit target or a press
+     meant for it also opens the settings underneath — and on a phone that is
+     most presses, since the tick is the smallest thing in the row. */
+  .sheet-row { display: flex; align-items: center; gap: 10px; }
+  .rowbox {
+    flex: 0 0 auto; display: grid; place-items: center; cursor: pointer;
+    padding: 11px 4px 11px 0; background: none; border: 0;
   }
-  .sheet-row:hover { color: var(--ink); }
-  .sheet-row:focus-visible { outline: 2px solid var(--edge-up); outline-offset: -2px; border-radius: 8px; }
-  .sheet-step .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-                     border: 1.5px solid rgba(255,213,160,.2); }
-  .sheet-step.lit .dot { background: var(--pip); border-color: transparent; }
+  .rowface {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px;
+    padding: 10px 0; cursor: pointer; background: none; border: 0; text-align: left;
+    color: var(--soft); font: 400 14px/1.4 var(--sans);
+  }
+  .rowface:hover { color: var(--ink); }
+  .rowbox:focus-visible, .rowface:focus-visible {
+    outline: 2px solid var(--edge-up); outline-offset: -2px; border-radius: 8px;
+  }
+  .rowbox .box {
+    width: 19px; height: 19px; border-radius: 5px; display: grid; place-items: center;
+    border: 1.5px solid var(--line-up); transition: background .18s, border-color .18s;
+  }
+  .rowbox .box svg { width: 12px; height: 12px; color: var(--base); opacity: 0; }
+  .rowbox.in .box { background: var(--ink); border-color: var(--ink); }
+  .rowbox.in .box svg { opacity: 1; }
   .sheet-step .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sheet-step.lit .what { color: var(--ink); }
   .sheet-step .to { font-size: 13px; color: var(--faint); }
@@ -5319,9 +5334,8 @@ const HTML = /* html */ `<!doctype html>
   /* what one circuit will be set to, opened up */
   .step-edit { display: grid; gap: 12px; padding: 4px 0 16px 20px; }
   .step-edit[hidden] { display: none; }
-  /* On its own screen the editor is not nested under a row any more, so it
-     gives up the indent that said "this belongs to the row above". */
-  .step-edit.open { padding: 4px 0 10px; }
+  /* Indented, because it belongs to the row above it. */
+  .step-edit { padding: 2px 0 14px 29px; }
   /* The one place the interface explains a rule rather than showing it: a cue
      that deliberately does less than it was told has to say so, or it reads as
      a fault. */
@@ -10029,10 +10043,9 @@ el('#scheddelete').onclick = async (e) => {
 /* ───────────────────────── the sheet: a cue opened up and edited */
 
 let sheetCue = null;
-let sheetView = 'steps';    // steps | rooms | circuits | one
+let sheetView = 'steps';    // steps | rooms | circuits
 let pickRoom = null;
-let editId = null;          // the circuit being customised
-let editFrom = 'steps';     // and which list to go back to
+let openStep = null;        // the one circuit whose settings are showing
 
 const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" ' +
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
@@ -10057,7 +10070,7 @@ function openSheet(cue) {
   sheetCue = cue;
   sheetView = 'steps';
   pickRoom = null;
-  editId = null;
+  openStep = null;
   el('#sheetname').value = cue.name;
   el('#scrim').hidden = false;
   drawSheet();
@@ -10089,7 +10102,7 @@ function hideScrim(scrim, after) {
 function closeSheet() {
   hideScrim(el('#scrim'));
   sheetCue = null;
-  editId = null;
+  openStep = null;
   const danger = el('#sheetdelete');
   danger.classList.remove('armed');
   danger.textContent = 'Delete';
@@ -10122,7 +10135,6 @@ function drawSheet() {
   body.innerHTML = '';
   if (sheetView === 'steps') return drawStepList(body);
   if (sheetView === 'rooms') return drawRoomPicker(body);
-  if (sheetView === 'one') return drawStepEditor(body);
   return drawCircuitPicker(body);
 }
 
@@ -10133,6 +10145,12 @@ function onOffWords(d) {
   return d && d.is_curtain ? ['Open', 'Close'] : ['On', 'Off'];
 }
 
+/* ── the cue's own circuits ──────────────────────────────────────────────
+ *
+ * The same row as the picker below, so a cue is edited one way wherever you are
+ * looking at it: a tick that means "in this cue", and the settings opening
+ * underneath in place. Nothing navigates.
+ */
 function drawStepList(body) {
   const steps = sheetCue.steps || [];
   const byRoom = new Map();
@@ -10155,66 +10173,101 @@ function drawStepList(body) {
     h.className = 'sheet-room';
     h.textContent = room;
     body.appendChild(h);
-    for (const { st, d } of list) body.appendChild(stepRow(st, d));
+    for (const { st, d } of list) body.appendChild(circuitRow(d, st));
   }
 
   const add = document.createElement('button');
   add.type = 'button';
   add.className = 'sheet-add';
-  add.textContent = '+ Add or remove lights';
+  add.textContent = '+ Add or remove circuits';
   add.onclick = () => { sheetView = 'rooms'; drawSheet(); };
   body.appendChild(add);
 }
 
-/* One circuit in the cue, as a row that leads to its own screen.
+/* ── one circuit, as a row ───────────────────────────────────────────────
  *
- * It used to expand in place, which meant a cue was edited in two different
- * ways depending on how you got there: picked in the circuit list, then found
- * again in the step list and opened to be set. One editor, reached from both,
- * is fewer places to look and half the code. */
-function stepRow(st, d) {
+ * Membership is a tick and nothing else: **unticking takes it out of the cue**,
+ * which is what a checklist means and what anyone tries first. There was a
+ * screen for this, reached by tapping the circuit, with a "Remove from cue"
+ * button at the bottom of it — so adding eight lights was eight round trips,
+ * and taking one out again meant going in to find the button. Both jobs are on
+ * the row now: the tick decides whether it is in, and the rest of the row opens
+ * its settings underneath without going anywhere.
+ *
+ * The step is passed in when the circuit is in the cue, and null when it is not.
+ */
+function circuitRow(d, st) {
+  const id = d ? d.record_id : st.record_id;
+  const inCue = !!st;
+  const lit = inCue && st.on !== false;
+  const open = inCue && String(openStep) === String(id);
+
   const wrap = document.createElement('div');
-  const lit = st.on !== false;
-  wrap.className = 'sheet-step' + (lit ? ' lit' : '');
+  wrap.className = 'sheet-step' + (lit ? ' lit' : '') + (open ? ' open' : '');
   wrap.style.setProperty('--pip', lit && st.tune != null ? lampColour(st.tune) : 'var(--warm)');
 
-  const head = document.createElement('button');
-  head.type = 'button';
-  head.className = 'sheet-row';
-  head.innerHTML = '<span class="dot"></span><span class="what"></span>' +
-                   '<span class="to"></span><span class="chev">›</span>';
-  head.querySelector('.what').textContent = d ? pretty(d.name) : 'Circuit ' + st.record_id;
-  head.querySelector('.to').textContent = stepWord(st, d);
-  head.onclick = () => { editId = st.record_id; editFrom = 'steps'; sheetView = 'one'; drawSheet(); };
-  wrap.appendChild(head);
+  const row = document.createElement('div');
+  row.className = 'sheet-row';
+
+  /* Its own button, so the tick is a real hit target and a press on it never
+     also opens the settings. */
+  const tick = document.createElement('button');
+  tick.type = 'button';
+  tick.className = 'rowbox' + (inCue ? ' in' : '');
+  tick.innerHTML = '<span class="box">' + CHECK + '</span>';
+  tick.setAttribute('role', 'checkbox');
+  tick.setAttribute('aria-checked', String(inCue));
+  tick.setAttribute('aria-label', (inCue ? 'Take ' : 'Add ') + (d ? pretty(d.name) : 'circuit ' + id)
+    + (inCue ? ' out of this cue' : ' to this cue'));
+  tick.onclick = () => toggleStep(d, id, !inCue);
+  row.appendChild(tick);
+
+  const face = document.createElement('button');
+  face.type = 'button';
+  face.className = 'rowface';
+  face.innerHTML = '<span class="what"></span><span class="to"></span>' +
+                   (inCue ? '<span class="chev">\u25be</span>' : '');
+  face.querySelector('.what').textContent = d ? pretty(d.name) : 'Circuit ' + id;
+  face.querySelector('.to').textContent = inCue ? stepWord(st, d) : '';
+  face.setAttribute('aria-expanded', String(open));
+  // A circuit not in the cue yet: one press puts it in and opens it, which is
+  // the fast path for building a cue from nothing.
+  face.onclick = () => {
+    if (!inCue) return toggleStep(d, id, true, true);
+    openStep = open ? null : id;
+    drawSheet();
+  };
+  row.appendChild(face);
+  wrap.appendChild(row);
+
+  if (open) wrap.appendChild(stepControls(st, d));
   return wrap;
 }
 
-/* Kept only so the old inline editor's helpers still have a caller while the
-   editor below is the single place a step is set. */
-/* ── one circuit, on its own screen ───────────────────────────────────────
- *
- * The last step of rooms -> circuit -> customise, and the only place a step is
- * set. Reached from the circuit picker (having just added it) and from the step
- * list (to change it later), so both roads land somewhere identical.
- */
-function drawStepEditor(body) {
-  const st = (sheetCue.steps || []).find(x => String(x.record_id) === String(editId));
-  if (!st) { sheetView = editFrom === 'circuits' ? 'circuits' : 'steps'; return drawSheet(); }
-  const d = deviceOf(st.record_id);
+/** In or out of the cue. The only way membership changes. */
+function toggleStep(d, id, want, alsoOpen) {
+  if (!want) {
+    sheetCue.steps = (sheetCue.steps || []).filter(x => String(x.record_id) !== String(id));
+    if (String(openStep) === String(id)) openStep = null;
+  } else if (!stepFor(id)) {
+    /* A circuit added to a cue starts on. Almost every cue is a list of things
+       to light, and most lamps are off when you sit down to build one. */
+    const next = { record_id: id, on: true };
+    if (d && d.is_dimmable) next.level = d.status && d.level > 0 ? d.level : 100;
+    if (d && d.is_tunable) next.tune = d.tune;
+    sheetCue.steps = [...(sheetCue.steps || []), next];
+    if (alsoOpen) openStep = id;
+  }
+  saveSteps();
+  drawSheet();
+}
+
+/* What one circuit will be set to, opened underneath its row. No remove button:
+   that is the tick's job, and having both is how the tick came to mean nothing. */
+function stepControls(st, d) {
   const lit = st.on !== false;
-
-  body.appendChild(backButton(
-    editFrom === 'circuits' ? title(pickRoom) : 'All circuits in this cue',
-    () => { sheetView = editFrom === 'circuits' ? 'circuits' : 'steps'; drawSheet(); }));
-
-  const h = document.createElement('div');
-  h.className = 'sheet-room';
-  h.textContent = d ? pretty(d.name) + ' \u00b7 ' + title(d.room) : 'Circuit ' + st.record_id;
-  body.appendChild(h);
-
   const edit = document.createElement('div');
-  edit.className = 'step-edit open';
+  edit.className = 'step-edit';
 
   // A curtain opens and closes; everything else goes on and off.
   const [onWord, offWord] = onOffWords(d);
@@ -10249,19 +10302,7 @@ function drawStepEditor(body) {
   if (d && d.is_tv) {
     drawTvStep(edit, st, d, lit, (redraw) => { saveSteps(); if (redraw) drawSheet(); });
   }
-
-  const drop = document.createElement('button');
-  drop.type = 'button';
-  drop.className = 'step-drop';
-  drop.textContent = 'Remove from cue';
-  drop.onclick = () => {
-    sheetCue.steps = sheetCue.steps.filter(x => x !== st);
-    sheetView = editFrom === 'circuits' ? 'circuits' : 'steps';
-    saveSteps();
-    drawSheet();
-  };
-  edit.appendChild(drop);
-  body.appendChild(edit);
+  return edit;
 }
 
 /* ── what a cue may do to a television ───────────────────────────────────
@@ -10408,40 +10449,12 @@ function drawCircuitPicker(body) {
   h.textContent = title(pickRoom);
   body.appendChild(h);
 
-  for (const d of inRoom(pickRoom)) {
-    const st = stepFor(d.record_id);
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'pick' + (st ? ' in' : '');
-    b.innerHTML = '<span class="box">' + CHECK + '</span>' +
-                  '<span class="what"></span><span class="count"></span>';
-    b.querySelector('.what').textContent = pretty(d.name);
-    b.querySelector('.count').textContent = st ? stepWord(st, d) : 'not in this cue';
-    b.setAttribute('aria-pressed', String(!!st));
-    /* Picking a circuit goes straight to setting it, which is the whole of
-       rooms -> circuit -> customise. It used to only tick a box, so having
-       chosen eight lights you then went back to the step list and opened all
-       eight again to say what each was for — the choosing and the setting were
-       two different screens for no reason. Removing lives on that screen now,
-       under the settings, where a destructive action belongs. */
-    b.onclick = () => {
-      if (!st) {
-        // A circuit added to a cue starts on. Almost every cue is a list of
-        // things to light, and most lamps are off when you sit down to build
-        // one — inheriting "off" meant saying "on" eight times over.
-        const next = { record_id: d.record_id, on: true };
-        if (d.is_dimmable) next.level = d.status && d.level > 0 ? d.level : 100;
-        if (d.is_tunable) next.tune = d.tune;
-        sheetCue.steps = [...(sheetCue.steps || []), next];
-        saveSteps();
-      }
-      editId = d.record_id;
-      editFrom = 'circuits';
-      sheetView = 'one';
-      drawSheet();
-    };
-    body.appendChild(b);
-  }
+  /* The same row the cue's own list uses, so there is one thing to learn: tick
+     it to put it in, untick it to take it out, tap it to set it. It used to be
+     a bare checklist that sent you to a separate screen the moment you touched
+     anything — which made choosing eight circuits eight round trips, and made
+     the tick a thing you could not untick. */
+  for (const d of inRoom(pickRoom)) body.appendChild(circuitRow(d, stepFor(d.record_id)));
 }
 
 function backButton(label, go) {
