@@ -1593,6 +1593,14 @@ app.get('/api/health', (req, res) => {
       stale,
     },
     commands: { sent: stats.commandsSent, failed: stats.commandsFailed },
+    /* The televisions are the one subsystem that holds its own long-lived
+       connections, so whether each link is up is the thing most worth watching
+       here — a set that is simply switched off looks identical to one whose
+       link has broken, from the board. */
+    tvs: [...tvs.values()].map((t) => ({
+      id: t.id, room: roomKey(t.room), connected: !!t.tv, on: t.online && t.power,
+      address: t.ip, fails: t.fails, apps: t.apps.length,
+    })),
     cues_fired: stats.cuesFired,
     devices: devices.size,
     scenes: scenes.length,
@@ -4930,6 +4938,74 @@ const HTML = /* html */ `<!doctype html>
   }
   .strip.dragging { border-color: var(--line-up, var(--edge-up)); }
 
+  /* ── how the dashboard is doing ────────────────────────────────────────
+     A desktop-only readout, because it is a thing you go looking for at a
+     keyboard rather than something to carry on a phone board.
+     Quiet by design: a hollow ring you will never notice while everything
+     works, filling coral and breathing only when it does not. The rule the rest
+     of the interface follows — a signal, not a decoration. */
+  .pulse { display: none; }
+  .healthbox { display: none; }
+  .healthbox[hidden] { display: none; }
+
+  @media (min-width: 861px) {
+    .stamp { position: relative; }
+    .stamp-top { display: flex; align-items: center; gap: 9px; }
+    .stamp-top h1 { min-width: 0; }
+    .pulse {
+      display: inline-flex; align-items: center; justify-content: center;
+      flex: 0 0 auto; padding: 3px;
+      background: none; border: 0; cursor: pointer; border-radius: 50%;
+    }
+    .pulse i {
+      display: block; width: 7px; height: 7px; border-radius: 50%;
+      border: 1.5px solid var(--faint); background: transparent;
+      transition: background .3s, border-color .3s, box-shadow .3s;
+    }
+    .pulse:hover i { border-color: var(--ink); }
+    /* Trouble is the only thing that earns colour here. */
+    .pulse.bad i {
+      border-color: var(--accent); background: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+      animation: pulsebeat 1.9s ease-in-out infinite;
+    }
+    @keyframes pulsebeat { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 6%, transparent); } }
+    @media (prefers-reduced-motion: reduce) { .pulse.bad i { animation: none; } }
+
+    /* Opaque, like every other panel you read rather than look past. */
+    .healthbox:not([hidden]) {
+      display: block; position: absolute; z-index: 60; top: calc(100% + 12px); left: 0;
+      width: 320px; max-height: 70vh; overflow-y: auto; padding: 14px 16px 12px;
+      background: #fbf7f0; border: 1px solid var(--line); border-radius: 16px;
+      box-shadow: 0 26px 54px -20px rgba(24,20,16,.5);
+      animation: lift .22s cubic-bezier(.2,.8,.3,1) both;
+    }
+    .hb-head {
+      display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px;
+      padding-bottom: 9px; border-bottom: 1px solid var(--edge);
+    }
+    .hb-head span {
+      flex: 1 1 auto; font-family: var(--display); font-size: 19px; color: var(--ink);
+    }
+    .hb-x {
+      flex: 0 0 auto; background: none; border: 0; cursor: pointer; padding: 0 2px;
+      font: inherit; font-size: 19px; line-height: 1; color: var(--faint);
+    }
+    .hb-x:hover { color: var(--ink); }
+    .healthbox dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
+    .healthbox dt {
+      font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--faint); padding-top: 2px;
+    }
+    .healthbox dd { margin: 0; font-size: 13px; color: var(--ink); }
+    .healthbox dd b { font-weight: 500; }
+    /* A figure that is wrong should look wrong, and nothing else should. */
+    .healthbox dd.off { color: var(--accent); }
+    .healthbox .hb-sep {
+      grid-column: 1 / -1; margin: 7px 0 2px; height: 1px; background: var(--edge);
+    }
+  }
+
   /* ── the television ───────────────────────────────────────────────────
      Every other lit pane on this board is a lamp, and shows it: warm light
      rising through glass. A television does not make lamplight, it makes
@@ -5840,8 +5916,23 @@ const HTML = /* html */ `<!doctype html>
 
   <header class="plate">
     <div class="stamp">
-      <h1>Pravita's Apartment</h1>
+      <!-- The ring rides the title line, not the tally: the tally is a long
+           sentence that already fills its width, so a dot after it simply
+           wrapped onto a line of its own.
+           Quiet unless something is wrong. /api/health answers without touching
+           the hub, so this can be checked once a minute; it exists because the
+           failure that matters is invisible from the board — the process alive
+           and serving pages while no longer reaching the hub. -->
+      <span class="stamp-top">
+        <h1>Pravita's Apartment</h1>
+        <button class="pulse" id="pulse" type="button" aria-expanded="false"
+                aria-label="How the dashboard is doing"><i></i></button>
+      </span>
       <p class="tally" id="tally"></p>
+    </div>
+    <div class="healthbox" id="healthbox" hidden role="dialog" aria-label="How the dashboard is doing">
+      <div class="hb-head"><span id="hbverdict">checking…</span><button class="hb-x" id="hbclose" type="button" aria-label="Close">×</button></div>
+      <dl id="hbrows"></dl>
     </div>
     <button class="seek-toggle" id="seektoggle" type="button" aria-expanded="false" aria-label="Find a circuit">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
@@ -7699,6 +7790,107 @@ const ICONS = {
 const icon = (name) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
   'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   (ICONS[name] || '') + '</svg>';
+
+/* ─────────────────────────────────────── how the dashboard is doing */
+
+/* /api/health answers without touching the hub, which is the whole reason it
+   can be polled on a timer. It exists for the failure systemd cannot see: the
+   process alive and serving pages while no longer reaching the hub. This puts a
+   face on it for whoever is at a keyboard — a ring that is invisible until it
+   is not, and a panel of figures behind it. Desktop only, deliberately: it is
+   something you go looking for, not something to carry on a phone board. */
+const wideScreen = () => window.matchMedia('(min-width: 861px)').matches;
+
+const forHumans = {
+  since: (s) => s == null ? 'never' : s < 60 ? s + 's ago'
+    : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago',
+  spell: (s) => s < 60 ? s + 's' : s < 3600 ? Math.round(s / 60) + 'm'
+    : s < 86400 ? (s / 3600).toFixed(1) + 'h' : (s / 86400).toFixed(1) + 'd',
+};
+
+let healthTimer = null;
+
+async function readHealth() {
+  if (!wideScreen()) return;
+  const dot = el('#pulse');
+  try {
+    const res = await fetch('/api/health');
+    const h = await res.json();
+    // The endpoint answers 503 when the reader has stopped getting through, so
+    // the status alone is the verdict — no need to re-derive it here.
+    dot.classList.toggle('bad', !res.ok || !h.ok);
+    dot.title = (h.ok ? 'Everything answering' : 'Not reaching the hub')
+      + ' — up ' + forHumans.spell(h.uptime_s);
+    if (!el('#healthbox').hidden) drawHealth(h);
+    return h;
+  } catch (err) {
+    dot.classList.add('bad');
+    dot.title = 'The dashboard is not answering';
+  }
+}
+
+function drawHealth(h) {
+  el('#hbverdict').textContent = h.ok ? 'Everything answering.' : 'Not reaching the hub.';
+  const rows = [];
+  const row = (k, v, bad) => rows.push('<dt>' + k + '</dt><dd' + (bad ? ' class="off"' : '') + '>' + v + '</dd>');
+  const sep = () => rows.push('<div class="hb-sep"></div>');
+
+  const hub = h.hub || {};
+  row('Hub', hub.ok ? 'answering, read ' + forHumans.since(hub.last_read_age_s)
+                    : 'not answering', !hub.ok);
+  row('Reads', '<b>' + hub.reads_ok + '</b> good, <b>' + hub.reads_failed + '</b> failed'
+    + (hub.success_rate != null ? ' · ' + Math.round(hub.success_rate * 100) + '%' : ''),
+    hub.reads_failed > 0);
+  if (hub.consecutive_failures) row('In a row', hub.consecutive_failures + ' failing', true);
+  if (hub.last_error) row('Last error', String(hub.last_error).slice(0, 90), true);
+
+  sep();
+  for (const t of h.tvs || []) {
+    row(title(t.room).replace(/ Room$/i, ''),
+      (t.connected ? (t.on ? 'on' : 'standby, still answering') : 'off, not connected')
+      + (t.address ? ' · ' + t.address : ''),
+      false);
+  }
+
+  sep();
+  row('Sent', '<b>' + h.commands.sent + '</b> commands, <b>' + h.commands.failed + '</b> failed',
+    h.commands.failed > 0);
+  row('Cues', h.cues_fired + ' fired');
+  row('Watching', h.clients + (h.clients === 1 ? ' browser' : ' browsers'));
+  sep();
+  row('Up', forHumans.spell(h.uptime_s));
+  row('Memory', h.memory_mb + ' MB');
+  row('Node', h.node);
+  el('#hbrows').innerHTML = rows.join('');
+}
+
+(function wireHealth() {
+  const dot = el('#pulse');
+  const box = el('#healthbox');
+  if (!dot || !box) return;
+
+  const shut = () => { box.hidden = true; dot.setAttribute('aria-expanded', 'false'); };
+  dot.onclick = async () => {
+    if (!box.hidden) return shut();
+    box.hidden = false;
+    dot.setAttribute('aria-expanded', 'true');
+    el('#hbrows').innerHTML = '';
+    const h = await readHealth();
+    if (h) drawHealth(h);
+  };
+  el('#hbclose').onclick = shut;
+  document.addEventListener('click', (e) => {
+    if (box.hidden || box.contains(e.target) || dot.contains(e.target)) return;
+    shut();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.hidden) shut(); });
+
+  // Cheap enough for a minute, and it never touches the hub.
+  if (wideScreen()) {
+    readHealth();
+    healthTimer = setInterval(() => { if (!document.hidden) readHealth(); }, 60000);
+  }
+})();
 
 /* ───────────────────────────────────────────── the television, enlarged */
 
