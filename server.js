@@ -868,6 +868,11 @@ function snapshot() {
     /* There is one schedule list for the house, so it rides the same frame the
        devices do — edit on a phone and the laptop redraws without asking. */
     schedules: scheduleList(),
+    /* Which hour the house is in, so the theme is the same on every screen
+       looking at it. Rides the snapshot so it lands on first paint and on every
+       push, and is in /api/automations too, which is polled once a minute and
+       is therefore what carries the page across 19:00 while nothing else moves. */
+    clock: hubClock(),
   };
 }
 
@@ -3273,6 +3278,30 @@ function saveSettings() {
  */
 const DAY_COLOUR = [[0, 100], [6, 100], [8, 55], [10, 30], [16, 32], [19, 65], [21, 85], [23, 100], [24, 100]];
 
+/* ── night, decided by the hub ────────────────────────────────────────────
+ *
+ * The dashboard goes dark in the evening, and **the hub's clock is the
+ * authority** — not the browser's. A phone in another timezone, or the Mac
+ * abroad, must still show the house as the house is: it is 21:00 in the hall or
+ * it is not, and that is not a property of who is looking.
+ *
+ * The boundaries are the ones the circadian curve already turns on — 19:00,
+ * where DAY_COLOUR starts warming, and 06:00, where it starts cooling — rather
+ * than a second pair invented for the theme.
+ *
+ * Sent as minutes-since-midnight rather than an epoch, because an epoch says
+ * nothing about which hour it is in Kolkata: the page carries the offset and
+ * counts forward from it, so it crosses the boundary on its own without asking.
+ */
+const NIGHT_FROM = 19;
+const NIGHT_UNTIL = 6;
+
+function hubClock(now = new Date()) {
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  const h = now.getHours();
+  return { minutes, night: h >= NIGHT_FROM || h < NIGHT_UNTIL };
+}
+
 function circadianTune(now = new Date()) {
   const h = now.getHours() + now.getMinutes() / 60;
   for (let i = 1; i < DAY_COLOUR.length; i++) {
@@ -3432,6 +3461,9 @@ app.get('/api/automations', (req, res) => {
     nudges: nudgeList(),
     timers: [...timers.values()].map(timerView).sort((a, b) => a.at - b.at),
     colour_now: circadianTune(),
+    clock: hubClock(),
+    night_from: NIGHT_FROM,
+    night_until: NIGHT_UNTIL,
   });
 });
 
@@ -3681,6 +3713,20 @@ const HTML = /* html */ `<!doctype html>
     --clay:   #c8553d;
     --accent: #e0574a;
 
+    /* Sheets and popovers are opaque on purpose — glass is for chrome you look
+       past, and a panel you read and type into has to be a panel. It was
+       written as a literal in five places, which is exactly the sort of thing
+       that cannot follow a theme. */
+    --sheet:     #fbf7f0;
+    /* A field inside a sheet sits above the sheet, not level with it. */
+    --field:     #ffffff;
+    /* The same two surfaces with the alpha taken out, and the flat ground that
+       replaces the photograph. Plain mode reaches for these rather than naming
+       colours of its own, so it needs to know nothing about which theme it is
+       running in — one .lite block serves both. */
+    --paper-solid:   #fdfaf5;
+    --paper-2-solid: #f6efe3;
+    --ground:        #d9d3c8;
     --pane:      rgba(253,250,245,.86);
     --pane-up:   rgba(253,250,245,.96);
     --edge:      rgba(43,38,34,.09);
@@ -3690,6 +3736,7 @@ const HTML = /* html */ `<!doctype html>
     --lens-up: blur(24px) saturate(152%) brightness(1.10);
     --sheen: none;
     --cast: 0 18px 40px -22px rgba(58,44,30,.42), 0 3px 10px -5px rgba(58,44,30,.18);
+    --cast-flat: 0 6px 14px -10px rgba(58,44,30,.34);
     --halo: none;
 
     --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -3717,6 +3764,113 @@ const HTML = /* html */ `<!doctype html>
       rgba(255,236,206,.07) 50%,
       rgba(255,236,206,.22) 76%,
       rgba(255,246,230,.66) 100%);
+  }
+
+  /* ── after seven ────────────────────────────────────────────────────────
+     The same design at night, not a different one. Every rule in this sheet is
+     written against these tokens, so the theme is a palette swap and nothing
+     else moves — and the two things this file insists on hold in both:
+
+     **The contrast is made inside the pane.** A dark sheet laid over the
+     photograph would be frosting, exactly as the cream one was: the panes go
+     dark and the picture stays a picture.
+
+     **The only colour is light.** The chrome inverts to a cool near-black and
+     white glass; --warm, --cool and --neutral do not move at all, because they
+     are what a lamp is actually making. A lit tile mixes its tint into --base,
+     which is now dark, so on paper it reads as pigment soaking in and here it
+     reads as a lamp glowing out of the dark — the same declaration, the right
+     thing both times.
+
+     The coral comes back up to #ff6f61, which is what it was before it was
+     darkened to survive on paper. */
+  .dark body {
+    /* More opaque than the paper theme's .80, and for the same reason stated in
+       reverse. A pane is 72% dark over a photograph, so where the picture is
+       bright — the limestone, the sky — the composite comes up and white type on
+       it loses its contrast; the unlit cards over the mountain were the dimmest
+       thing on the board. Held at .86 the pane is very nearly its own colour and
+       the reading no longer depends on which part of the picture it happens to
+       be sitting on. The blur and the remaining 14% are what keep it glass. */
+    --paper:   rgba(24,27,32,.86);
+    --paper-2: rgba(18,21,25,.90);
+    --sheet:   #171a1f;
+    --field:   #0d1014;
+    --paper-solid:   #191c21;
+    --paper-2-solid: #13161a;
+    --ground:        #0f1216;
+
+    --ink:     #ecebe8;
+    --base:    #12151a;
+    --soft:    #9ba1a9;
+    /* Measured, not picked: against the unlit pane over this ground, #6f7681 is
+       3.87:1 on the 10.5px lines a dark card is mostly made of — the wiring
+       address, OFF, a strip's label. #7d848e is 4.70 and still clearly the
+       quieter of the two greys, which is the job --faint has. */
+    --faint:   #7d848e;
+    --line:    rgba(255,255,255,.10);
+    --line-up: rgba(255,255,255,.22);
+
+    --clay:   #e0705a;
+    --accent: #ff6f61;
+
+    --pane:      rgba(24,27,32,.78);
+    --pane-up:   rgba(32,36,42,.90);
+    --edge:      rgba(255,255,255,.09);
+    --edge-up:   rgba(255,255,255,.20);
+    --lip:       rgba(255,255,255,.10);
+    /* Darkens the backdrop instead of lifting it — the one number in --lens
+       that has to change direction, since white type sits on it now. */
+    --lens:    blur(22px) saturate(132%) brightness(.58);
+    --lens-up: blur(24px) saturate(136%) brightness(.62);
+    --cast: 0 18px 40px -22px rgba(0,0,0,.72), 0 3px 10px -5px rgba(0,0,0,.5);
+    --cast-flat: 0 6px 14px -10px rgba(0,0,0,.6);
+  }
+  /* The photograph is pushed back harder, because legibility now depends on the
+     picture being dark rather than on it being bright. fitShot aims at a lower
+     number after seven; this is the floor under whatever it decides. */
+  /* A lit pane keeps far less of the tint after seven, and this is the one place
+     the two themes genuinely differ rather than swapping colours.
+     On paper a lit card is pigment: pale amber with dark ink on it, and the more
+     light the lamp is making the more pigment it takes. Inverted literally, that
+     floods the card with bright amber and puts white ink on top of it — which is
+     the worst contrast on the board, at exactly the brightness you most want to
+     read. So here the pane stays dark and the light comes *out* of it: the fill
+     gradient, the lit rim and the two halos already carry it, which is what this
+     file has always said the signal is. */
+  .dark .tile.on {
+    background: color-mix(in oklab, var(--tint) calc(13% + var(--lit) * 15%), var(--base));
+  }
+  /* And the fill is a glow rather than a wash. These stops run 100/86/52/18 on
+     paper — light soaking into the card — which over a dark pane is a slab of
+     bright amber with white type on it.
+     The leading stop is 24% because that is what the contrast allows, measured
+     rather than chosen: swept against every lit room on the board, a 13% pane
+     gives 3.57:1 on the 12px labels at 38%, 4.29 at 30%, and **4.95 at 24%**.
+     The pane keeps its 13% — a card has to read as lit even at low brightness —
+     so the glow is what gives, and 24% is the brightest it can be and still be
+     readable. */
+  .dark .tile-fill {
+    background: linear-gradient(104deg,
+      color-mix(in srgb, var(--tint) 24%, transparent) 0%,
+      color-mix(in srgb, var(--tint) 19%, transparent) calc(18% + var(--fill) * 40%),
+      color-mix(in srgb, var(--tint) 10%, transparent) calc(40% + var(--fill) * 42%),
+      color-mix(in srgb, var(--tint) 3%, transparent) calc(68% + var(--fill) * 32%));
+  }
+  .dark .tile.on .chip {
+    background: color-mix(in oklab, var(--base) 84%, var(--tint));
+    color: color-mix(in oklab, var(--ink) 88%, var(--tint));
+  }
+  .dark .photo { filter: saturate(.9) brightness(var(--shot-dim, 1)) contrast(1.04); }
+  /* The vignette held the two edges where chrome sits by laying cream over
+     them. In the dark it has to hold them the other way. */
+  .dark .photo::after {
+    background:
+      linear-gradient(180deg,
+        rgba(8,10,13,.62) 0%, rgba(8,10,13,.30) 14%,
+        rgba(8,10,13,.10) 34%, rgba(8,10,13,.14) 72%,
+        rgba(8,10,13,.38) 88%, rgba(8,10,13,.66) 100%),
+      radial-gradient(140% 100% at 50% 42%, transparent 44%, rgba(4,6,9,.55) 100%);
   }
 
   * { box-sizing: border-box; }
@@ -4301,7 +4455,7 @@ const HTML = /* html */ `<!doctype html>
     position: absolute; top: 50%; z-index: 2; pointer-events: none;
     left: clamp(13px, var(--at, 0%), calc(100% - 13px));
     width: 24px; height: 24px; margin-left: -12px; transform: translateY(-50%);
-    border-radius: 50%; background: #fdfaf5;
+    border-radius: 50%; background: var(--base);
     border: 1.5px solid color-mix(in oklab, var(--ink) 62%, transparent);
     box-shadow: 0 1px 3px rgba(43,38,34,.30), 0 4px 10px -4px rgba(43,38,34,.34);
     transition: transform .16s cubic-bezier(.22,.94,.3,1), border-color .2s;
@@ -4834,7 +4988,7 @@ const HTML = /* html */ `<!doctype html>
      edge and the two halos below, which are untouched, so a lit card still
      reads as lit from across the room while its own words stay readable. */
   .tile.on {
-    background: color-mix(in oklab, var(--tint) calc(42% + var(--lit) * 18%), #fdfaf5);
+    background: color-mix(in oklab, var(--tint) calc(42% + var(--lit) * 18%), var(--base));
     border-color: color-mix(in oklab, var(--tint) 92%, var(--line));
     box-shadow:
       0 0 0 1px color-mix(in oklab, var(--tint) calc(34% + var(--lit) * 26%), transparent),
@@ -4937,7 +5091,7 @@ const HTML = /* html */ `<!doctype html>
   .tile.on .big.dark { color: color-mix(in oklab, var(--ink) 76%, var(--tint)); }
   .tile.on .chip {
     color: color-mix(in oklab, var(--ink) 82%, var(--tint));
-    background: color-mix(in oklab, #fdfaf5 72%, var(--tint));
+    background: color-mix(in oklab, var(--base) 72%, var(--tint));
     border-color: color-mix(in oklab, var(--ink) 34%, transparent);
   }
   .tile.on .chip:hover { color: var(--ink); border-color: color-mix(in oklab, var(--ink) 58%, transparent); }
@@ -5085,7 +5239,7 @@ const HTML = /* html */ `<!doctype html>
      cue's own list of rooms. Glass is for chrome you look past. */
   .sheet {
     width: min(540px, 100%); max-height: min(680px, 88vh); display: flex; flex-direction: column;
-    border-radius: 24px; border: 1px solid var(--line); background: #fbf7f0;
+    border-radius: 24px; border: 1px solid var(--line); background: var(--sheet);
     box-shadow: 0 40px 80px -26px rgba(24,20,16,.55);
     animation: lift .3s cubic-bezier(.2,.8,.3,1) both;
   }
@@ -5153,7 +5307,7 @@ const HTML = /* html */ `<!doctype html>
     appearance: none; -webkit-appearance: none;
     width: 100%; padding: 10px 12px; border-radius: 10px;
     font: 400 14px/1.2 var(--sans); color: var(--ink);
-    background: #fff; border: 1px solid var(--line-up); box-shadow: none;
+    background: var(--field); border: 1px solid var(--line-up); box-shadow: none;
   }
   .step-field input:focus, .step-field select:focus {
     outline: 2px solid var(--edge-up); outline-offset: 1px;
@@ -5319,7 +5473,7 @@ const HTML = /* html */ `<!doctype html>
     font-family: var(--mono); font-size: 11px; letter-spacing: .02em;
     transition: background .18s, color .18s, border-color .18s;
   }
-  .day[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--base, #fdfaf5); }
+  .day[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--base); }
   .day:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   /* [hidden] is display:none from the UA sheet, and any display of our own
      beats it — so a row told to hide stayed on screen. */
@@ -5330,9 +5484,9 @@ const HTML = /* html */ `<!doctype html>
      equal buttons and the answer was invisible. */
   .seg[aria-pressed="true"] {
     background: var(--ink); border-color: var(--ink);
-    color: var(--base, #fdfaf5); font-weight: 500;
+    color: var(--base); font-weight: 500;
   }
-  .seg[aria-pressed="true"]:hover { background: #443b34; border-color: #443b34; color: var(--base, #fdfaf5); }
+  .seg[aria-pressed="true"]:hover { background: color-mix(in oklab, var(--ink) 88%, var(--base)); border-color: color-mix(in oklab, var(--ink) 88%, var(--base)); color: var(--base); }
   .sched-pick {
     width: 100%; margin-bottom: 10px; padding: 10px 12px; cursor: pointer;
     font: inherit; font-size: 13.5px; color: var(--ink);
@@ -5359,7 +5513,7 @@ const HTML = /* html */ `<!doctype html>
   .sheet-btn:hover { color: var(--ink); background: rgba(255,213,160,.1); }
   .sheet-btn:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
   .sheet-btn.go { background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500; }
-  .sheet-btn.go:hover { color: var(--base); background: #443b34; border-color: #443b34; }
+  .sheet-btn.go:hover { color: var(--base); background: color-mix(in oklab, var(--ink) 88%, var(--base)); border-color: color-mix(in oklab, var(--ink) 88%, var(--base)); }
   .sheet-btn.danger { margin-left: auto; }
   .sheet-btn.danger:hover, .sheet-btn.danger.armed { color: var(--clay); border-color: var(--clay); }
 
@@ -5371,7 +5525,7 @@ const HTML = /* html */ `<!doctype html>
     /* Opaque, like the sheet and the sleep timer: this is a sentence you have
        about three seconds to read, over whatever the photograph happens to be
        doing under it. */
-    background: #fbf7f0; border: 1px solid var(--line); border-radius: 14px;
+    background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
     box-shadow: 0 24px 50px -20px rgba(24,20,16,.5);
     font-size: 13.5px; color: var(--ink);
     transition: transform .34s cubic-bezier(.2,.8,.3,1), opacity .22s, visibility .34s;
@@ -5499,7 +5653,7 @@ const HTML = /* html */ `<!doctype html>
     .healthbox:not([hidden]) {
       display: block; position: absolute; z-index: 60; top: calc(100% + 12px); left: 0;
       width: 320px; max-height: 70vh; overflow-y: auto; padding: 14px 16px 12px;
-      background: #fbf7f0; border: 1px solid var(--line); border-radius: 16px;
+      background: var(--sheet); border: 1px solid var(--line); border-radius: 16px;
       box-shadow: 0 26px 54px -20px rgba(24,20,16,.5);
       animation: lift .22s cubic-bezier(.2,.8,.3,1) both;
     }
@@ -5834,7 +5988,7 @@ const HTML = /* html */ `<!doctype html>
     position: fixed; z-index: 46; right: 18px; bottom: 18px;
     width: min(330px, calc(100vw - 36px));
     padding: 15px; border-radius: 18px;
-    background: #fbf7f0; border: 1px solid var(--line);
+    background: var(--sheet); border: 1px solid var(--line);
     box-shadow: 0 30px 60px -22px rgba(24,20,16,.5), var(--cast);
     animation: pop-in .26s cubic-bezier(.2,.9,.3,1) both;
   }
@@ -6344,7 +6498,7 @@ const HTML = /* html */ `<!doctype html>
     .seeklayer .seek {
       display: flex; flex: 0 0 auto; max-width: none; margin: 0;
       padding: 11px 14px; border-radius: 18px;
-      background: #fbf7f0; border: 1px solid var(--line); box-shadow: var(--cast);
+      background: var(--sheet); border: 1px solid var(--line); box-shadow: var(--cast);
     }
     .seeklayer .seek input { font-size: 16px; }   /* under 16 and iOS zooms the field */
     .seeklayer .seek-ghost { font-size: 16px; }
@@ -6505,9 +6659,12 @@ const HTML = /* html */ `<!doctype html>
      rule about glass, applied in reverse. */
   .lite body {
     --lens: none;
-    --paper:   #fdfaf5;
-    --paper-2: #f6efe3;
-    --cast: 0 6px 14px -10px rgba(58,44,30,.34);
+    /* Asked of the theme rather than named here, so this one block serves the
+       paper palette and the dark one. Naming them meant plain mode was always
+       light, whatever hour it was. */
+    --paper:   var(--paper-solid);
+    --paper-2: var(--paper-2-solid);
+    --cast: var(--cast-flat);
   }
   /* One flat colour, which is the cheapest background there is: no photograph
      to decode at 3200px on a tablet with 1GB, no seven-layer gradient stack, no
@@ -6518,7 +6675,7 @@ const HTML = /* html */ `<!doctype html>
      ground is what the ink was chosen for, and it keeps the rule that matters —
      the chrome is neutral, so the only colour on the board is a lamp. */
   .lite .photo {
-    background-image: none; background-color: #d9d3c8;
+    background-image: none; background-color: var(--ground);
     filter: none; transform: none;
   }
   .lite .photo::after { background: none; }
@@ -6699,6 +6856,11 @@ const HTML = /* html */ `<!doctype html>
         <button class="setting" id="setnudge" type="button" aria-pressed="true">
           <span class="dot"></span>
           <span>Tell me what's been left on</span>
+        </button>
+        <button class="setting" id="setdark" type="button">
+          <span class="dot"></span>
+          <span>Dark after seven</span>
+          <span class="val" id="setdarkval"></span>
         </button>
         <button class="setting" id="setlite" type="button" aria-pressed="false">
           <span class="dot"></span>
@@ -7168,6 +7330,7 @@ async function load() {
     KIND_ORDER.indexOf(kindOf(a)) - KIND_ORDER.indexOf(kindOf(b)) || natural(a.name, b.name));
   state.sync = snap;
   state.schedules = snap.schedules || [];
+  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now(); applyTheme(); }
   drawIndex();
   drawField();
   readout();
@@ -7214,6 +7377,7 @@ function applySnapshot(snap) {
     state.schedules = snap.schedules;
     drawSchedules();
   }
+  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now(); applyTheme(); }
   if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
     // On first load the CSS already points at the right picture, but nothing
     // has measured it yet, so the dimming still has to be worked out.
@@ -10589,7 +10753,11 @@ const setShot = (v) => {
  * the cards sit. So it measures the bright end instead: the 88th percentile,
  * held near a level ink survives. A dark picture with a small bright sky is
  * then left alone rather than lifted. */
-const SHOT_BRIGHT = 196;          // where the top of the picture should land
+/* Where the bright end of the picture should land. Legibility runs the other
+   way in the two themes — ink needs the photograph held down, white type needs
+   it held further down still — so this is not one number. */
+const SHOT_BRIGHT = 196;
+const SHOT_BRIGHT_DARK = 88;
 
 function fitShot(v) {
   const img = new Image();
@@ -10613,7 +10781,9 @@ function fitShot(v) {
       seen += hist[l];
       if (seen >= n * 0.88) { p88 = l; break; }
     }
-    const dim = Math.max(0.55, Math.min(1.12, SHOT_BRIGHT / Math.max(1, p88)));
+    const target = document.documentElement.classList.contains('dark')
+      ? SHOT_BRIGHT_DARK : SHOT_BRIGHT;
+    const dim = Math.max(0.28, Math.min(1.12, target / Math.max(1, p88)));
     document.documentElement.style.setProperty('--shot-dim', dim.toFixed(3));
   };
   img.src = '/bg.jpg?v=' + v;
@@ -11029,6 +11199,8 @@ async function loadAuto() {
   try {
     const a = await fetch('/api/automations').then(r => r.json());
     Object.assign(auto, a);
+    if (a.clock) { hubMinutes = a.clock.minutes; hubMinutesAt = Date.now(); }
+    applyTheme();
     drawNudges();
     drawTimers();
     drawSettings();
@@ -11542,6 +11714,78 @@ setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
 setInterval(readout, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 
+/* ── after seven ─────────────────────────────────────────────────────────
+ *
+ * The board goes dark in the evening, and **the hub's clock decides**, not the
+ * browser's. A phone in another timezone, or this Mac abroad, must still show
+ * the house as the house is — it is half nine in the hall or it is not, and
+ * that is not a property of who is looking. So the server sends the hour it is
+ * in, and the page counts forward from it rather than reading its own clock.
+ *
+ * It crosses the boundary without being told: /api/automations already arrives
+ * once a minute, so it carries the theme across 19:00 while nothing else in the
+ * house moves. Between those the page steps its own copy of the hub's minutes
+ * forward, so the flip is on the minute rather than up to a minute late.
+ *
+ * Only a person's choice is stored — the same rule plain mode learned. An hour
+ * is recomputed for free, and a stored verdict about what time it is would be
+ * wrong within the hour.
+ */
+const THEME_KEY = 'neo-theme';        // 'dark' | 'light' | absent = follow the house
+let hubMinutes = null;                // minutes past midnight, IST, as the hub says
+let hubMinutesAt = 0;                 // when we were told, by our own clock
+
+function hubNowMinutes() {
+  if (hubMinutes == null) return null;
+  const gone = Math.floor((Date.now() - hubMinutesAt) / 60000);
+  return (hubMinutes + gone) % 1440;
+}
+
+function houseIsDark() {
+  const m = hubNowMinutes();
+  if (m == null) return false;        // until the house has told us, stay as we are
+  const from = (auto.night_from != null ? auto.night_from : 19) * 60;
+  const until = (auto.night_until != null ? auto.night_until : 6) * 60;
+  return m >= from || m < until;
+}
+
+function themeChoice() {
+  try { return localStorage.getItem(THEME_KEY); } catch { return null; }
+}
+
+function applyTheme() {
+  const chosen = themeChoice();
+  const dark = chosen ? chosen === 'dark' : houseIsDark();
+  const was = document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  // The backdrop wants a different brightness in each theme, and fitShot is the
+  // only thing that knows how bright this particular photograph is.
+  if (was !== dark && state.bgv) setShot(state.bgv);
+  const b = el('#setdark');
+  if (b) {
+    b.classList.toggle('on', dark);
+    const v = el('#setdarkval');
+    if (v) {
+      v.textContent = chosen === 'dark' ? 'always on'
+        : chosen === 'light' ? 'always off'
+        : dark ? 'on, after ' + (auto.night_from != null ? auto.night_from : 19) + ':00'
+        : 'after ' + (auto.night_from != null ? auto.night_from : 19) + ':00';
+    }
+  }
+}
+
+/* Three states in one control: follow the house, then forced on, then forced
+   off. A switch cannot say "follow the house", and that is the useful default. */
+function cycleTheme() {
+  const now = themeChoice();
+  const next = now == null ? 'dark' : now === 'dark' ? 'light' : null;
+  try {
+    if (next == null) localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, next);
+  } catch { /* private mode */ }
+  applyTheme();
+}
+
 /* ── plain and fast ──────────────────────────────────────────────────────
  *
  * Which devices cannot afford the material, decided by what kind of device it
@@ -11592,6 +11836,20 @@ function setLite(on, why) {
   }
 }
 
+(function decideTheme() {
+  const asked = new URLSearchParams(location.search).get('dark');
+  if (asked !== null) {
+    try {
+      if (asked === 'auto') localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, asked === '0' ? 'light' : 'dark');
+    } catch { /* private mode */ }
+  }
+  applyTheme();
+  // A minute is the finest this needs to be, and it is what makes the board go
+  // dark at 19:00 with nobody touching it.
+  setInterval(applyTheme, 60000);
+})();
+
 (function decideLite() {
   const asked = new URLSearchParams(location.search).get('lite');
   if (asked !== null) return setLite(asked !== '0', 'asked');
@@ -11601,6 +11859,8 @@ function setLite(on, why) {
   const why = autoLite();
   setLite(!!why, why);
 })();
+
+el('#setdark').onclick = cycleTheme;
 
 el('#setlite').onclick = () =>
   setLite(!document.documentElement.classList.contains('lite'), 'asked');
