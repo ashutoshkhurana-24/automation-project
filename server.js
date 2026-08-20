@@ -4347,9 +4347,30 @@ const HTML = /* html */ `<!doctype html>
     header.plate { display: none; }
   }
 
-  .group-label { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); margin: 16px 0 -4px;
-                 text-shadow: var(--halo); }
-  .group-label:first-child { margin-top: 0; }
+  /* ── a category ────────────────────────────────────────
+     Each kind of circuit is a box of its own, spanning only the columns its
+     contents actually need — so a room's single air conditioner and its single
+     television sit side by side instead of each taking a row and leaving three
+     quarters of it empty. Full width is the fallback, not the rule. */
+  .cat { grid-column: 1 / -1; min-width: 0; }
+  .cat-tiles {
+    display: grid; gap: clamp(12px, 1.4vw, 18px); align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
+    grid-auto-rows: min-content; min-width: 0;
+  }
+  /* A heading laid straight onto the photograph is not a heading. Faint ink on
+     limestone said nothing at all, and which picture is showing is not
+     something a label should depend on — so it carries its own contrast, in
+     the same paper as the panes it names. */
+  .cat-head, .group-label {
+    width: max-content; max-width: 100%; margin: 0 0 9px; padding: 5px 11px;
+    border-radius: 9px; font-family: var(--mono); font-size: 10px;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--soft);
+    background: var(--paper-2); border: 1px solid var(--line);
+    backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
+    text-shadow: none;
+  }
+  .group-label { grid-column: 1 / -1; }
   /* Over a photograph, faint ink on nothing is not a message. */
   .empty {
     grid-column: 1 / -1; font-size: 13.5px; color: var(--soft);
@@ -4528,6 +4549,28 @@ const HTML = /* html */ `<!doctype html>
   }
   .tile.on .tile-name { color: var(--ink); }
   .tile-read { font-size: 13px; color: var(--faint); transition: color .25s; }
+  /* The name and what the circuit is doing, on one line. Stacked, they were two
+     of the three text lines that made a lit COB card unreadable — a name, a
+     wiring address and a reading, crammed above two strips. */
+  /* The line has to end before the number starts, the same way a room card's
+     name ends before its all-off button — the number is absolute, so nothing
+     else reserves the corner for it and a long name would simply run under it.
+     Wrapping is the safety valve: the state drops to its own line rather than
+     the name being cut, since a truncated name is the worse failure. */
+  .headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px;
+              min-width: 0; padding-right: 80px; }
+  .headline .roomname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .headline .state { margin-top: 0; flex: 0 0 auto; }
+  .headline .state::before { content: '\\00b7\\00a0'; color: var(--faint); }
+  /* A dimmer's level is the thing you glance at, so it goes where every other
+     measurement on this board lives — the corner, in the same numerals as the
+     ceiling card above it, clear of the key which owns the corner itself. */
+  .tile-num {
+    position: absolute; z-index: 2; top: 12px; right: 44px;
+    font-family: var(--display); font-size: 26px; line-height: 1;
+    color: var(--faint); transition: color .25s;
+  }
+  .tile.on .tile-num { color: var(--ink); }
   /* A lit circuit's reading is ink, not grey. This rule used to say --soft and
      sat *after* the one that said ink, so the state line quietly lost — the
      same half-live-CSS trap as the search field and --base before it. */
@@ -5599,6 +5642,12 @@ const HTML = /* html */ `<!doctype html>
     #sechouse { margin-top: 14px; }
 
     .field .tiles { grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    /* --span comes from fillRoom, which counts what the category holds: a wide
+       tile is worth two columns and a ceiling card is worth the whole board.
+       The inner grid takes the same count, so a wide tile inside a two-column
+       category still spans it exactly. */
+    .cat { grid-column: span var(--span, 4); }
+    .cat-tiles { grid-template-columns: repeat(var(--span, 4), minmax(0, 1fr)); gap: 16px; }
     .tile.hero-room { grid-column: span 2; grid-row: span 2; height: auto;
                       min-height: calc(var(--tile-h) * 2 + clamp(12px, 1.4vw, 18px)); }
     .tile.hero-room .tile-name { font-size: 22px; }
@@ -5973,6 +6022,20 @@ const HTML = /* html */ `<!doctype html>
       top: auto; bottom: 13px; left: 14px; right: auto; width: 22px; height: 22px;
     }
     .tiles .tile.cobmember .tile-body { padding-bottom: 46px; }
+    /* The rails own the right of a compact card, so the number takes the top of
+       the left column rather than the corner — and the wiring address goes,
+       which is the same trade this card already makes everywhere else: the
+       rails say the detail and the id stays in the tooltip and on the full
+       card. Without that, four things were stacked in 86px of face. */
+    .tiles .tile.cobmember .tile-num { top: 11px; left: 13px; right: auto; font-size: 20px; }
+    .tiles .tile.cobmember .idline { display: none; }
+    /* And the name keeps its line. 'COB 1 · ON' wants about 82px and the face
+       is 72px wide once the rails have theirs, so side by side the name — the
+       only shrinkable thing in that row — was ellipsised to 'COB…'. Stacked,
+       both fit, and the separator has nothing left to separate. */
+    .tiles .tile.cobmember .headline { display: block; padding-right: 0; }
+    .tiles .tile.cobmember .headline .state { display: block; }
+    .tiles .tile.cobmember .headline .state::before { content: none; }
     /* No room for a word on a 27px rail, so the warmth one says which it is
        by wearing the scale it sets. */
     .tiles .tile.cobmember .strip-label { display: none; }
@@ -6004,6 +6067,7 @@ const HTML = /* html */ `<!doctype html>
 
   @media (max-width: 560px) {
     .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    .cat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
     /* a fingertip needs more than a mouse: a bigger switch, but not a taller
        tile — height here buys nothing and costs a whole row per screen */
     .tile { --tile-h: 132px; }
@@ -6492,6 +6556,10 @@ const KINDS = {
   screen:  { label: 'Screens',  tint: 'var(--neutral)', on: 'on',      off: 'off' },
 };
 const KIND_ORDER = ['light', 'fan', 'curtain', 'climate', 'screen'];
+/* A wide screen lays the board out in four columns. A category asks for the
+   columns its circuits need and no more, so the small ones pack together. */
+const BOARD_COLS = 4;
+const tileUnits = (d) => (d.is_tunable || d.is_ac || d.is_curtain) ? 2 : 1;
 
 const kindOf = (d) =>
   d.app_type === 'C' ? 'curtain' :
@@ -7203,8 +7271,12 @@ function dealIn(stack) {
   void stack.offsetWidth;                 // restart the animation, do not resume it
   stack.classList.add(dir);
   let i = 0;
+  // A room's tiles live inside their category now, so the stagger has to go in
+  // after them — otherwise a whole section arrives as one card.
   for (const kid of stack.children) {
     kid.style.animationDelay = Math.min(i++, 10) * 26 + 'ms';
+    const box = kid.querySelector && kid.querySelector('.cat-tiles');
+    if (box) for (const tile of box.children) tile.style.animationDelay = Math.min(i++, 10) * 26 + 'ms';
   }
 }
 
@@ -7275,20 +7347,37 @@ function fillHouse(stack) {
   });
 }
 
-// A room is a board of circuits, grouped by what they are.
+/* A room is a board of circuits, grouped by what they are — and each group is
+   a box of its own rather than a full-width run under a label. A category with
+   one air conditioner asked for a whole row and left three quarters of it
+   empty, three times over at the foot of every room. It asks for what it needs
+   now, so the tail of a room packs into one row. */
 function fillRoom(stack, room) {
   const items = inRoom(room);
   for (const kind of KIND_ORDER) {
     const group = items.filter(d => kindOf(d) === kind);
     if (!group.length) continue;
-    const label = document.createElement('div');
-    label.className = 'group-label';
-    label.textContent = KINDS[kind].label;
-    stack.appendChild(label);
     // The COBs lead the lights, on one control — they are a ceiling, not five
     // switches. Their own tiles stay below it for the times one lamp is the point.
     const cobs = kind === 'light' ? group.filter(isCob) : [];
-    if (cobs.length > 1) stack.appendChild(cobTile(room, cobs));
+    /* What the category costs in columns. The ceiling card spans whatever grid
+       it is given, so a room with one counts as the whole board. */
+    const weight = (cobs.length > 1 ? BOARD_COLS : 0) +
+                   group.reduce((n, d) => n + tileUnits(d), 0);
+
+    const cat = document.createElement('section');
+    cat.className = 'cat';
+    cat.style.setProperty('--span', String(Math.min(BOARD_COLS, Math.max(1, weight))));
+    const head = document.createElement('div');
+    head.className = 'cat-head';
+    head.textContent = KINDS[kind].label;
+    const box = document.createElement('div');
+    box.className = 'cat-tiles';
+    cat.appendChild(head);
+    cat.appendChild(box);
+    stack.appendChild(cat);
+
+    if (cobs.length > 1) box.appendChild(cobTile(room, cobs));
     /* Whatever is on comes first. Walking into a room, the question is never
        "where is the bed spot" — it is "what is burning", and the answer was
        scattered through fourteen cards in installer order. A stable sort, so
@@ -7296,7 +7385,7 @@ function fillRoom(stack, room) {
        it had. */
     const byLit = [...group].sort((a, b) => (b.status ? 1 : 0) - (a.status ? 1 : 0));
     byLit.forEach(d => {
-      stack.appendChild(circuitTile(d, cobs.length > 1 && isCob(d)));
+      box.appendChild(circuitTile(d, cobs.length > 1 && isCob(d)));
     });
   }
 }
@@ -7469,6 +7558,13 @@ function circuitTile(d, compact) {
   body.innerHTML = d.is_tv
     ? '<span class="roomname"></span><span class="tvpanel"><img alt="" class="tvposter"></span>' +
       '<span class="tvread"><span class="state"></span><span class="tvmore">\u203a</span></span>'
+    /* A dimmer is the one circuit whose reading is a number, and stacking that
+       number under a name and a wiring address, above two strips, is what made
+       a lit COB card unreadable. The number goes to the corner and the word
+       rides the name, which leaves two lines where there were three. */
+    : d.is_dimmable
+    ? '<span class="headline"><span class="roomname"></span><span class="state"></span></span>' +
+      '<span class="idline"></span><span class="tile-num"></span>'
     : '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
   body.querySelector('.roomname').textContent = pretty(d.name).toUpperCase();
   if (!d.is_tv) body.querySelector('.idline').textContent = idLine(d);
@@ -7695,14 +7791,6 @@ function gangSlider(tile, key) {
 
 /* ────────────────────────────────────────────────── drawing one circuit */
 
-/* On the compact COB tile the rails already show brightness and colour, and
-   the face is 74px narrower to make room for them — so the full reading wraps
-   to four lines and buries the name. The card says the short version and lets
-   the rails say the rest. */
-const shortState = (d) => !d.status ? 'OFF'
-  : d.is_tv ? 'ON · VOL ' + d.tv_volume
-  : d.is_dimmable ? 'ON · ' + d.level + '%' : 'ON';
-
 function paintTile(tile, d) {
   if (!tile) return;
   tile.style.setProperty('--tint', tintOf(d));
@@ -7711,8 +7799,13 @@ function paintTile(tile, d) {
   // How much light this circuit is making drives the glow, not just the fill.
   tile.style.setProperty('--lit', (level / 100).toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
+  /* With the level in the corner the reading must not say it again, and the
+     warmth strip already carries its own word — so a dimmer's reading is the
+     one word the board is scanned for and nothing else. */
+  const num = tile.querySelector('.tile-num');
+  if (num) num.textContent = d.status ? d.level + '%' : '';
   const st = tile.querySelector('.state');
-  if (st) st.textContent = tile.classList.contains('cobmember') ? shortState(d) : stateWord(d);
+  if (st) st.textContent = num ? (d.status ? 'ON' : 'OFF') : stateWord(d);
 
   /* The screen shows what is on it. This is the one tile on the board that can
      say more than a level — so it carries the set's own app art, which is
