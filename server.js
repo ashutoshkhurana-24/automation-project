@@ -881,6 +881,32 @@ function pushSoon() {
    so a set is found by MAC — last known address first, then SSDP. */
 const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId } = require('./tools/webos');
 
+/* The order the app row is drawn in.
+ *
+ * The set's own launcher order puts its housekeeping first — Apps, then LG
+ * Channels — so Netflix and YouTube started half off the edge of a scrolling
+ * row. This is the order asked for: the things anyone actually opens, then the
+ * rest of the real services, and LG's own furniture last in whatever order the
+ * television lists it.
+ *
+ * By id, not by title: titles carry marketing ("Spotify - Music and Podcasts")
+ * and change with locale, while ids do not. An id that this set does not have
+ * is simply skipped, so the same list suits the second television. */
+const TV_APP_ORDER = [
+  'youtube.leanback.v4',              // YouTube
+  'netflix',                          // Netflix
+  'hotstar',                          // JioHotstar
+  'amazon',                           // Prime Video
+  'com.webos.app.lgchannels',         // LG Channels
+  // the rest of the things that actually play something
+  'spotify-beehive',                  // Spotify
+  'com.apple.appletv',                // Apple TV
+  'com.zee5.app',                     // ZEE5
+  'com.webos.app.livetv',             // Live TV
+  'com.webos.app.mediadiscovery',     // Media Player
+  'com.webos.app.browser',            // Web Browser
+];
+
 const TVS = [
   { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
 ];
@@ -984,6 +1010,10 @@ class TvLink {
       // Read once per connection rather than subscribed: apps are installed
       // and removed by hand every few months, not while you are watching.
       tv.apps().then((r) => {
+        const rank = (id) => {
+          const at = TV_APP_ORDER.indexOf(id);
+          return at === -1 ? TV_APP_ORDER.length : at;
+        };
         this.apps = (r.launchPoints || [])
           .filter((a) => a.id && a.title)
           .map((a) => ({
@@ -994,7 +1024,10 @@ class TvLink {
             // will not touch, so the URL stays server-side and the dashboard
             // proxies the bytes.
             icon: a.icon || a.mediumLargeIcon || a.largeIcon || null,
-          }));
+          }))
+          // A stable sort, so everything the list does not name keeps the order
+          // the television gave it rather than an arbitrary one of ours.
+          .sort((a, b) => rank(a.id) - rank(b.id));
         pushSoon();
       }).catch(() => { /* an older grant may not allow it; the row just stays empty */ });
       pushSoon();
@@ -7610,6 +7643,13 @@ const titleCase = (s) => String(s).toLowerCase().replace(/\b[a-z]/g, c => c.toUp
 
 // Painted once, from the data attribute, so the markup carries no duplicated
 // SVG and a glyph is changed in one place.
+/* The name that fits a 72px chip. Several of these carry their marketing line
+   in the title — "Spotify - Music and Podcasts", "WindowSight: Art & Photography
+   TV Screensaver" — which wraps to three lines and says nothing the icon has not
+   already said. Cut at the first dash or colon; the full name stays in the
+   button's tooltip, so nothing is actually lost. */
+const appLabel = (t) => String(t).split(/\\s+[-–:]\\s+|:\\s+/)[0].trim();
+
 function paintIcons(root) {
   for (const b of root.querySelectorAll('[data-ico]')) {
     if (b.dataset.painted === b.dataset.ico) continue;
@@ -7676,7 +7716,7 @@ function drawTv() {
       img.src = '/api/tv/' + encodeURIComponent(d.record_id) + '/icon/' + encodeURIComponent(a.id);
       img.onerror = () => img.classList.add('gone');
       const cap = document.createElement('span');
-      cap.textContent = a.title;
+      cap.textContent = appLabel(a.title);
       b.append(img, cap);
       b.onclick = () => tvSend({ app: a.id }, b);
       apps.appendChild(b);
