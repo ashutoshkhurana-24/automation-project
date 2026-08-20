@@ -3385,17 +3385,26 @@ function timerView(t) {
   return { id: t.id, scope: t.scope, label: t.label, at: t.at, seconds_left: Math.max(0, Math.round((t.at - Date.now()) / 1000)) };
 }
 
+/* Going to sleep, whether it was asked for now or forty-five minutes ago.
+   Shared so that "sleep now" and a timer that has run down cannot drift apart:
+   they are the same circuits, chosen the same way, and the fan and the AC keep
+   running in both. */
+async function runSleep(scope, label) {
+  const steps = sleepSteps(scope);
+  console.log(`sleep ${label}: lights and screens off, ${steps.length} circuits`);
+  if (steps.length) {
+    try { await sendSteps(sceneTargets(steps)); } catch (err) { console.error('sleep failed:', err.message); }
+    await readHubStateFresh().catch(() => {});
+  }
+  pushSnapshot(true);
+  return steps.length;
+}
+
 async function runTimer(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
-  const steps = sleepSteps(t.scope);
-  console.log(`sleep timer ${t.label}: lights off, ${steps.length} circuits`);
-  if (steps.length) {
-    try { await sendSteps(sceneTargets(steps)); } catch (err) { console.error('timer failed:', err.message); }
-    await readHubStateFresh().catch(() => {});
-  }
-  pushSnapshot(true);
+  await runSleep(t.scope, t.label);
 }
 
 function armTimer(t) {
@@ -3433,11 +3442,14 @@ app.post('/api/nudges/:id/dismiss', (req, res) => {
   res.json({ ok: true, nudges: nudgeList() });
 });
 
-app.post('/api/timers', (req, res) => {
+app.post('/api/timers', async (req, res) => {
   const minutes = Number(req.body?.minutes);
   const scope = String(req.body?.scope || 'house');
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 720) {
-    return res.status(400).json({ ok: false, error: 'minutes must be between 1 and 720' });
+  /* Zero means now. It is the same endpoint and the same scope grammar rather
+     than a second one to keep in step — going to sleep this second is the same
+     act as going to sleep in an hour, minus the waiting. */
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 720) {
+    return res.status(400).json({ ok: false, error: 'minutes must be 0 (now) to 720' });
   }
   if (!/^(house|room:.+|device:\d+)$/.test(scope)) {
     return res.status(400).json({ ok: false, error: 'scope must be house, room:NAME or device:ID' });
@@ -3445,6 +3457,15 @@ app.post('/api/timers', (req, res) => {
   const label = scope === 'house' ? 'Everything'
     : scope.startsWith('room:') ? scope.slice(5)
       : (devices.get(Number(scope.slice(7)))?.record.device_name || 'Device').trim();
+
+  if (minutes === 0) {
+    const n = await runSleep(scope, label);
+    return res.json({
+      ok: true, now: true, circuits: n,
+      spoken: n ? `${label} lights and screens off` : `nothing was on in ${label.toLowerCase()}`,
+    });
+  }
+
   const t = { id: 't' + (++timerSeq), scope, label, at: Date.now() + minutes * 60000 };
   armTimer(t);
   res.json({ ok: true, timer: timerView(t), spoken: `${label} lights off in ${minutes} minutes` });
@@ -4495,13 +4516,19 @@ const HTML = /* html */ `<!doctype html>
     /* Four across leaves the held control narrow enough that its count wrapped
        to a second line and took the whole bar with it. */
     nav.quick #qoff span { white-space: nowrap; }
-    nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
+    /* In a room the bar is all-off plus the durations, and there are four of
+       those now — so it needs the fifth column or the last one wraps and takes
+       the whole bar with it. */
+    nav.quick.in-room { grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr; }
     nav.quick .qmin { display: none; }
     nav.quick.in-room .qmin { display: flex; }
     nav.quick.in-room #qtimer, nav.quick.in-room #qfind, nav.quick.in-room #qplans { display: none; }
+    /* Four durations in a fifth of the bar: nowrap and a notch smaller, or
+       "45 MIN" breaks after the number and makes the whole bar two lines tall. */
     nav.quick .qmin {
       align-items: center; justify-content: center;
-      font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+      white-space: nowrap;
+      font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
       text-transform: uppercase; color: var(--soft);
       background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
     }
@@ -4981,6 +5008,10 @@ const HTML = /* html */ `<!doctype html>
   .pull:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
   .pull.working { color: var(--ink); border-color: var(--edge-up); }
   .timerstop { margin-top: 9px; width: 100%; }
+  /* The one control in the sleep panel that acts now rather than promising
+     later, so it is held like all-off and reddens while it fills. */
+  .sleepnow { margin-top: 9px; width: 100%; }
+  .sleepnow.armed { color: var(--clay); border-color: var(--clay); }
 
   .degrees { display: flex; align-items: center; gap: 7px; }
   .degrees b { flex: 1; text-align: center; font-weight: 500; font-size: 14px; color: var(--ink); }
@@ -6614,7 +6645,7 @@ const HTML = /* html */ `<!doctype html>
       </div>
       <div class="index-sec" id="sectimer">
         <div class="legend">Sleep</div>
-        <p class="roomnote" id="timerstate">No timer running</p>
+        <p class="roomnote" id="timerstate">Nothing set</p>
         <!-- Setting a timer took one tap from the thumb bar; calling it off
              took finding the timer sheet, and inside a room on a phone the
              sheet is not even in the bar. Something that switches the lights
@@ -6681,11 +6712,16 @@ const HTML = /* html */ `<!doctype html>
     </svg>
     <span id="qoffword">All off</span>
   </button>
-  <button type="button" id="qtimer" aria-label="Sleep timer" aria-expanded="false">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-      <circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 2h6"/>
+  <button type="button" id="qtimer" aria-label="Sleep" aria-expanded="false">
+    <!-- A crescent rather than a stopwatch. This is not about measuring time,
+         it is about going to bed, and a clock face said the wrong thing on a
+         bar where every other glyph names the thing it does. Outline in the
+         same hand as the rest: 24x24, currentColor, round caps. -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.5 14.8A8.6 8.6 0 0 1 9.2 3.5a8 8 0 1 0 11.3 11.3z"/>
     </svg>
-    <span id="qtimerword">Timer</span>
+    <span id="qtimerword">Sleep</span>
   </button>
   <button type="button" id="qplans" aria-label="Schedules">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
@@ -6699,17 +6735,18 @@ const HTML = /* html */ `<!doctype html>
     </svg>
     <span>Find</span>
   </button>
-  <!-- The three durations you actually pick, where your thumb already is. The
-       timer sheet is still there for choosing a room or a single circuit. -->
+  <!-- The durations you actually pick, where your thumb already is. The sleep
+       panel is still there for choosing a room, a single circuit, or now. -->
   <button type="button" class="qmin" data-min="15">15 min</button>
   <button type="button" class="qmin" data-min="30">30 min</button>
+  <button type="button" class="qmin" data-min="45">45 min</button>
   <button type="button" class="qmin" data-min="60">60 min</button>
 </nav>
 
 <div class="popveil" id="popveil" hidden></div>
 <div class="timerpop" id="timerpop" role="dialog" aria-label="Sleep timer" hidden>
   <h3>Sleep timer</h3>
-  <p id="timerwhy">Lights off by themselves, later. The fan and AC keep running.</p>
+  <p id="timerwhy">Lights and screens off. The fan and AC keep running.</p>
   <div class="scopes" id="timerscopes"></div>
   <div class="mins" id="timermins">
     <button type="button" data-min="15">15 min</button>
@@ -6719,6 +6756,11 @@ const HTML = /* html */ `<!doctype html>
     <button type="button" data-min="90">1½ hours</button>
     <button type="button" data-min="120">2 hours</button>
   </div>
+  <!-- Not another button in the row of durations: "now" is a different kind of
+       thing from "in 45 minutes", and reading it as one of a list of delays is
+       exactly how it would get pressed by mistake. -->
+  <button class="pull sleepnow" id="sleepnow" type="button"
+          aria-label="Hold to put this room to sleep now">Sleep now</button>
   <div class="running" id="timerrunning"></div>
 </div>
 
@@ -11107,7 +11149,7 @@ function drawTimers() {
     const t = (auto.timers || [])[0];
     state_.textContent = t
       ? Math.max(1, Math.round(t.seconds_left / 60)) + ' MIN LEFT · ' + (t.label || 'THE HOUSE').toUpperCase()
-      : 'No timer running';
+      : 'Nothing set';
   }
   const stop = el('#timerstop');
   if (stop) {
@@ -11134,7 +11176,7 @@ function drawTimers() {
     host.appendChild(row);
   }
   const on = auto.timers.length;
-  el('#qtimerword').textContent = on ? on + ' set' : 'Timer';
+  el('#qtimerword').textContent = on ? on + ' set' : 'Sleep';
   el('#qtimer').classList.toggle('on', !!on);
 }
 
@@ -11217,6 +11259,22 @@ el('#timermins').addEventListener('click', async (e) => {
   } catch { note('Could not set that timer.'); }
 });
 
+/* Now, through the same endpoint with zero minutes, so the circuits it puts out
+   are the ones a timer would have — lights and screens, the fan and the AC left
+   running. Held rather than tapped: it switches a room off there and then, and
+   this is the one control in the panel that is not a promise about later. */
+holdToFire(el('#sleepnow'), async () => {
+  if (!timerScope) return note('Pick a room first.');
+  try {
+    const r = await fetch('/api/timers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes: 0, scope: 'room:' + timerScope }),
+    }).then(x => x.json());
+    if (r.ok) { note(r.spoken + '.'); openTimer(false); loadAuto(); }
+    else note(r.error || 'Could not do that.');
+  } catch { note('Could not do that.'); }
+});
+
 /* the thumb bar */
 el('#qfind').onclick = () => { openSeek(true); el('#seek').focus(); };
 for (const b of document.querySelectorAll('.qmin')) {
@@ -11242,9 +11300,11 @@ document.addEventListener('click', (e) => {
 });
 
 // All-off is held, not tapped — the same gesture as the main button, because
-// switching off the whole house should never be a stray thumb.
-(function wireQuickOff() {
-  const b = el('#qoff');
+/* Held, not tapped: anything that puts lights out should never be a stray
+   thumb. Shared by all-off and by sleep-now, which are the same shape of risk —
+   both act on a room or the house immediately and neither can be un-pressed. */
+function holdToFire(b, action) {
+  if (!b) return;
   let raf = 0, from = 0;
   const stop = () => { cancelAnimationFrame(raf); b.classList.remove('armed'); };
   b.addEventListener('pointerdown', (e) => {
@@ -11253,13 +11313,15 @@ document.addEventListener('click', (e) => {
     from = performance.now();
     b.classList.add('armed');
     const step = (now) => {
-      if (now - from >= HOLD_MS) { stop(); return allOff(); }
+      if (now - from >= HOLD_MS) { stop(); return action(); }
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
-})();
+}
+
+holdToFire(el('#qoff'), allOff);
 
 // Chrome will not offer to install without one of these. It only registers in a
 // secure context, so on plain http over the LAN this is simply skipped.
