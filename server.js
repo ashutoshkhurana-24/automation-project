@@ -962,12 +962,22 @@ class TvLink {
 
   // What the board draws. A set we cannot reach is off, not broken.
   snapshot() {
+    const on = this.online ? this.power : Date.now() < this.wakingUntil;
     return {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'TV', device_type: 'SSAP', device_id: this.mac, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
       is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
-      is_tv: true, tv_app: this.app, tv_volume: this.volume, tv_muted: this.muted,
+      is_tv: true, tv_volume: this.volume, tv_muted: this.muted,
+      /* Nothing is playing on a set that is off. A television can hold its SSAP
+         socket open with the panel dark — the same screen-off standby that
+         stopped a pairing prompt being seen on the other set — and the running
+         app then lingers from its last push, so the API described a switched-off
+         television as showing YouTube.
+         Decided here rather than cleared when the power push arrives, because
+         the two subscriptions fire in whatever order the set sends them: doing
+         it there worked only when power happened to land last. */
+      tv_app: on ? this.app : '',
       /* The set's own launcher list, in the set's own order — no curation here.
          Deciding which of twenty-five are "the real apps" would be inventing a
          taxonomy, and that order is already the one the owner arranged. */
@@ -980,7 +990,7 @@ class TvLink {
          either answers or the window lapses — at which point it reverts to off,
          which is then the truth. It is the only belief on this tile, and it
          expires. */
-      status: this.online ? this.power : Date.now() < this.wakingUntil,
+      status: on,
       level: 0, tune: 0,
     };
   }
