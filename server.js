@@ -137,7 +137,9 @@ function decodeLevel(v) {
 }
 
 function deviceList() {
-  return tvDeviceList().concat([...devices.values()].map(({ room, record }) => ({
+  return tvDeviceList().concat([...devices.values()]
+    .filter(({ room, record }) => !shadowedByTv(record, room))
+    .map(({ room, record }) => ({
     record_id: record.record_id,
     name: String(record.device_name || '').trim(),
     room: roomKey(room),
@@ -168,6 +170,24 @@ function deviceList() {
    deviceList() can be read in one piece. Before they are wired up it answers
    with nothing, which is what a dashboard with no televisions should show. */
 function tvDeviceList() { return TV_READY ? tvList() : []; }
+
+/* The hub has its own television record — 517 "T.V", device_type LIP, app_type
+ * TV, in ASHU ROOM — and it is the same set we now drive properly over SSAP.
+ * Left in, the board carries two tiles called TV in one room: one that reads
+ * live and one that can only report what it was last told. That is the worst
+ * kind of clutter, because the two can disagree and nothing on the face says
+ * which to believe.
+ *
+ * So a hub screen record is hidden while a television in the same room is
+ * spoken to directly. Matched on room and app_type rather than on the id, so
+ * the second set needs no code when it is paired. If 517 turns out to drive
+ * something else — a socket, a different screen — drop this and rename it
+ * instead. */
+function shadowedByTv(record, room) {
+  if ((record.app_type || '') !== 'TV') return false;
+  const here = roomKey(room);
+  return TV_READY && tvList().some((t) => t.room === here);
+}
 // var, so it hoists as undefined rather than sitting in the temporal dead zone
 // a const would — deviceList() must be safe to call before the televisions are
 // wired up, and reading a const too early throws rather than answering falsy.
@@ -880,6 +900,7 @@ class TvLink {
     this.volume = 0;
     this.muted = false;
     this.app = '';
+    this.apps = [];
     this.commandedAt = 0;
     this.wakingUntil = 0;
     // Bumped by every power command. A wake schedules several reconnect
@@ -903,6 +924,10 @@ class TvLink {
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
       is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
       is_tv: true, tv_app: this.app, tv_volume: this.volume, tv_muted: this.muted,
+      /* The set's own launcher list, in the set's own order — no curation here.
+         Deciding which of twenty-five are "the real apps" would be inventing a
+         taxonomy, and that order is already the one the owner arranged. */
+      tv_apps: this.apps,
       /* Waking is the one moment this device class cannot report itself: the
          magic packet goes to a set with nothing listening, and the socket does
          not come up for another ten seconds or so. Reporting OFF through that
@@ -956,6 +981,14 @@ class TvLink {
       this.power = true;                    // it answered, so it is awake
       this.wakingUntil = 0;                 // no need to believe anything now
       this.misses = 0;
+      // Read once per connection rather than subscribed: apps are installed
+      // and removed by hand every few months, not while you are watching.
+      tv.apps().then((r) => {
+        this.apps = (r.launchPoints || [])
+          .filter((a) => a.id && a.title)
+          .map((a) => ({ id: a.id, title: a.title }));
+        pushSoon();
+      }).catch(() => { /* an older grant may not allow it; the row just stays empty */ });
       pushSoon();
     } catch (e) {
       /* Off comes in two shapes, and only one of them looks like it.
@@ -978,6 +1011,7 @@ class TvLink {
   dropped() {
     if (this.tv) { try { this.tv.close(); } catch (e) {} }
     this.tv = null;
+    this.apps = [];
     if (this.online || this.power) pushSoon();
     this.online = false;
     this.power = false;
@@ -1038,6 +1072,36 @@ class TvLink {
     return { ok: true, spoken: 'playing that on the ' + this.said(), video: id };
   }
 
+  /* The remote buttons ride a second socket the set hands out on request, so it
+     is opened lazily and kept — reopening it per keypress would put a
+     round-trip in front of every arrow. */
+  async press(name) {
+    if (!this.tv) throw new Error('the television is not reachable');
+    if (!/^[A-Z0-9_]{1,20}$/.test(String(name).toUpperCase())) throw new Error('not a button');
+    const r = await this.tv.remote();
+    r.button(name);
+    this.commandedAt = Date.now();
+    return { ok: true, spoken: String(name).toLowerCase() + ' on the ' + this.said() };
+  }
+
+  async launchApp(id) {
+    if (!this.tv) throw new Error('the television is not reachable');
+    this.commandedAt = Date.now();
+    await this.tv.launch(id);
+    this.app = id;
+    pushSoon();
+    const named = (this.apps.find((a) => a.id === id) || {}).title || id;
+    return { ok: true, spoken: named + ' on the ' + this.said() };
+  }
+
+  // A step rather than an absolute, so two taps in flight cannot fight.
+  async stepVolume(by) {
+    if (!this.tv) throw new Error('the television is not reachable');
+    this.commandedAt = Date.now();
+    await (by > 0 ? this.tv.volumeUp() : this.tv.volumeDown());
+    return { ok: true, spoken: this.said() + (by > 0 ? ' louder' : ' quieter') };
+  }
+
   async setMute(on) {
     if (!this.tv) throw new Error('the television is not reachable');
     this.commandedAt = Date.now();
@@ -1051,7 +1115,7 @@ class TvLink {
 const tvs = new Map(TVS.map((t) => [t.id, new TvLink(t)]));
 const tvList = () => [...tvs.values()].map((t) => t.snapshot());
 const tvSignature = () => [...tvs.values()]
-  .map((t) => `${t.id}:${t.online ? 1 : 0}${t.power ? 1 : 0}:${t.volume}:${t.muted ? 1 : 0}:${t.app}`)
+  .map((t) => `${t.id}:${t.online ? 1 : 0}${t.power ? 1 : 0}:${t.volume}:${t.muted ? 1 : 0}:${t.app}:${t.apps.length}`)
   .join('|');
 
 // One reconnect loop for all of them. A set that is off simply fails to
@@ -1066,6 +1130,9 @@ app.post('/api/tv/:id', async (req, res) => {
   const b = req.body || {};
   try {
     if (b.youtube != null) return res.json(await t.playYoutube(b.youtube));
+    if (b.button != null) return res.json(await t.press(b.button));
+    if (b.app != null) return res.json(await t.launchApp(b.app));
+    if (b.step != null) return res.json(await t.stepVolume(Number(b.step)));
     if (b.on != null) return res.json(await t.setPower(!!b.on));
     if (b.mute != null) return res.json(await t.setMute(b.mute));
     if (b.volume != null) return res.json(await t.setVolume(Number(b.volume)));
@@ -3788,10 +3855,12 @@ const HTML = /* html */ `<!doctype html>
      there absolutely. This card stacks instead, so that reservation is an
      empty 70px band between the title and the controls — which is exactly
      what made the ceiling card twice the size it needed on a phone. */
+  /* Positioned for the same reason as the tiles above: the ceiling card stacks
+     its strips in flow, but its body must still sit over its own fill. */
   .tile.gang .tile-body,
   .tile.gang.dims .tile-body,
   .tile.gang.tunes .tile-body,
-  .tile.gang.dims.tunes .tile-body { position: static; padding-bottom: 0; }
+  .tile.gang.dims.tunes .tile-body { position: relative; z-index: 2; padding-bottom: 0; }
   /* The ceiling card carries two strips under its reading, so it sizes to its
      contents rather than to the tile grid's row height. */
   .tile.gang { display: flex; flex-direction: column; padding: 15px 16px 14px;
@@ -3955,10 +4024,16 @@ const HTML = /* html */ `<!doctype html>
        on the COBs isn't black" actually was); and it lost its absolute box,
        so 82px of rail clearance came out of a 135px card and left 40px for
        "ON · 70%" to wrap inside. */
+    /* Relative, not static. In flow the two are identical, so the strips still
+       stack under the face — but a static box has no z-index, and .tile-fill is
+       positioned, so a static body paints *underneath* the tile's own tint.
+       That is the third time this has bitten: invisible behind a pale amber
+       wash, obvious the moment a television put a blue one there. Anything
+       that takes a body out of absolute positioning must keep it positioned. */
     .tiles .tile.dims:not(.cobmember) .tile-body,
     .tiles .tile.tunes:not(.cobmember) .tile-body,
     .tiles .tile.dims.tunes:not(.cobmember) .tile-body {
-      position: static; padding-bottom: 0;
+      position: relative; z-index: 2; padding-bottom: 0;
     }
     .tiles .tile.dims .controls, .tiles .tile.tunes .controls {
       position: static; margin: 12px 0 0; padding: 0;
@@ -4318,6 +4393,15 @@ const HTML = /* html */ `<!doctype html>
   /* ── the sheet ───────────────────────────────────────────────────────── */
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+    /* minmax(0, …) rather than the implicit auto column. An auto grid column is
+       sized to its item's *max-content*, so any sheet containing something that
+       scrolls sideways widened the column, and the sheet's own
+       width: min(540px, 100%) then resolved that 100% against the blown-up
+       column instead of the window. The television's app row — twenty-five
+       nowrap buttons behind overflow-x: auto — took the sheet to 2956px on a
+       375px phone and pushed half the panel off screen. Same family as the
+       -100vw full-bleed trick that once widened the whole document. */
+    grid-template-columns: minmax(0, 1fr);
     padding: 22px; background: rgba(28,24,20,.32);
     backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
     animation: fade .22s ease both;
@@ -4669,6 +4753,111 @@ const HTML = /* html */ `<!doctype html>
     box-shadow: 0 2px 5px rgba(43,38,34,.34), 0 7px 16px -5px rgba(43,38,34,.42);
   }
   .strip.dragging { border-color: var(--line-up, var(--edge-up)); }
+
+  /* ── the television ───────────────────────────────────────────────────
+     Every other lit pane on this board is a lamp, and shows it: warm light
+     rising through glass. A television does not make lamplight, it makes
+     pictures — so a lit set goes cool rather than amber, and instead of the
+     static fill it carries a very slow drift of two soft washes. Twenty
+     seconds a cycle, far below the speed anything else here moves at, so it
+     reads as a screen alight in the room rather than as an animation. Off, it
+     is completely inert: the one dead pane on a lit board, which is exactly
+     what a switched-off television is. */
+  .tile.screen.on .tile-fill::before {
+    content: ''; position: absolute; inset: -20%; pointer-events: none;
+    background:
+      radial-gradient(38% 44% at 28% 32%, color-mix(in srgb, var(--cool) 34%, transparent), transparent 70%),
+      radial-gradient(34% 40% at 72% 68%, color-mix(in srgb, var(--cool) 22%, transparent), transparent 72%);
+    animation: screendrift 21s ease-in-out infinite alternate;
+  }
+  @keyframes screendrift {
+    from { transform: translate3d(-4%, -3%, 0) scale(1); }
+    to   { transform: translate3d(5%, 4%, 0) scale(1.08); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tile.screen.on .tile-fill::before { animation: none; }
+  }
+  /* The face opens the remote rather than switching the set, because the key in
+     the corner already switches it and a television is the one circuit here
+     with somewhere to go. The chevron is the whole affordance — a word would
+     be a third label on a card that already carries two. */
+  .tile.screen .tvmore {
+    align-self: flex-end; margin-top: 1px;
+    font-size: 17px; line-height: 1; color: var(--faint); pointer-events: none;
+  }
+  .tile.screen.on .tvmore { color: color-mix(in oklab, var(--ink) 62%, transparent); }
+
+  /* ── the television, enlarged ─────────────────────────────────────────── */
+  .tvsheet .sheet-body { display: flex; flex-direction: column; gap: 18px; }
+  /* The sentence, not a row of fields. This is the one place the panel talks,
+     so it takes the display face and the number takes the accent — the same
+     idiom as the hero on a wide screen. */
+  .tvsay {
+    margin: 8px 0 0; font-family: var(--display); font-weight: 400;
+    font-size: clamp(24px, 4.4vw, 32px); line-height: 1.1; letter-spacing: -.01em;
+    color: var(--ink);
+  }
+  .tvsay b { font-style: italic; font-weight: 400; color: var(--accent); }
+  /* min-width: 0 so a scrolling row inside can actually shrink rather than
+     forcing its own content width on everything above it. */
+  .tvblock { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .tvlegend {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .tvrow { display: flex; gap: 8px; }
+  .tvkey {
+    flex: 0 0 auto; min-width: 46px; padding: 11px 14px; cursor: pointer;
+    font: inherit; font-size: 14px; color: var(--ink);
+    background: var(--paper-2); border: 1px solid var(--line-up); border-radius: 12px;
+    transition: transform .24s cubic-bezier(.22,.94,.3,1), background .18s, border-color .18s;
+  }
+  .tvkey.wide { flex: 1 1 0; min-width: 0; }
+  .tvkey:hover { background: var(--paper); border-color: var(--ink); }
+  .tvkey:active { transform: scale(.955); transition-duration: .06s; }
+  .tvkey[disabled] { opacity: .4; cursor: default; }
+  .tvkey.go { background: var(--ink); border-color: var(--ink); color: var(--base); }
+  .tvkey.on { background: var(--ink); border-color: var(--ink); color: var(--base); }
+
+  /* A pad, laid out as a pad. Three columns so the arrows sit where a thumb
+     already expects them; OK in the middle because that is where it is on
+     every remote ever made. */
+  .tvpad {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr); gap: 8px;
+    /* width before the auto margins: an auto cross-axis margin on a flex item
+       cancels the stretch, so margin:0 auto alone shrank the pad to its own
+       min-content — three arrows 70px wide in the middle of the panel. */
+    width: 100%; max-width: 268px; margin: 0 auto;
+  }
+  .tvpad .up    { grid-area: 1 / 2; }
+  .tvpad .left  { grid-area: 2 / 1; }
+  .tvpad .ok    { grid-area: 2 / 2; }
+  .tvpad .right { grid-area: 2 / 3; }
+  .tvpad .down  { grid-area: 3 / 2; }
+  .tvpad .tvkey { min-width: 0; padding: 15px 0; text-align: center; font-size: 16px; }
+  .tvpad .ok { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; }
+
+  /* The set's own list, in the set's own order, in one scrolling line — so the
+     panel does not grow by however many apps somebody has installed. */
+  .tvapps {
+    display: flex; gap: 8px; min-width: 0; overflow-x: auto; padding-bottom: 4px;
+    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  .tvapps .tvkey { scroll-snap-align: start; white-space: nowrap; }
+  .tvapps:empty::after {
+    content: 'Nothing to list until the set is awake';
+    font-size: 13px; color: var(--faint);
+  }
+  .tvlink { display: flex; gap: 8px; }
+  .tvlink input {
+    flex: 1 1 auto; min-width: 0; appearance: none; -webkit-appearance: none;
+    padding: 11px 13px; font: inherit; font-size: 15px; color: var(--ink);
+    background: var(--paper-2); border: 1px solid var(--line-up); border-radius: 12px;
+    box-shadow: none;
+  }
+  .tvlink input:focus { outline: 2px solid var(--edge-up); outline-offset: 1px; }
 
   /* ── arriving ────────────────────────────────────────────────────────
      A board that replaces itself all at once is a page load. Dealt in, one
@@ -5653,6 +5842,68 @@ const HTML = /* html */ `<!doctype html>
   </div>
 </div>
 
+<!-- ── the television, enlarged ──────────────────────────────────────────
+     The tile carries the two things anyone reaches for — the key and the
+     volume — and everything else lives here, because a remote, an app list and
+     a paste field on the board would be most of the board. Opaque, like every
+     sheet: this one is read and typed into, and glass is for chrome you look
+     past. -->
+<div class="scrim" id="tvscrim" hidden>
+  <div class="sheet tvsheet" role="dialog" aria-modal="true" aria-labelledby="tvsay">
+    <div class="sheet-head">
+      <div class="sheet-eyebrow" id="tveyebrow">Television</div>
+      <p class="tvsay" id="tvsay"></p>
+    </div>
+    <div class="sheet-body">
+      <div class="tvblock">
+        <div class="strip dimstrip tvvol" id="tvvol">
+          <span class="strip-fill"></span><span class="strip-hand"></span>
+          <span class="strip-label">VOLUME</span>
+          <input type="range" class="slider dim" min="0" max="100" step="1" aria-label="Volume">
+        </div>
+        <div class="tvrow">
+          <button class="tvkey" type="button" data-step="-1" aria-label="Quieter">−</button>
+          <button class="tvkey" type="button" data-step="1" aria-label="Louder">+</button>
+          <button class="tvkey wide" type="button" id="tvmute">Mute</button>
+        </div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvpad">
+          <button class="tvkey pad up"    type="button" data-btn="UP"    aria-label="Up">↑</button>
+          <button class="tvkey pad left"  type="button" data-btn="LEFT"  aria-label="Left">←</button>
+          <button class="tvkey pad ok"    type="button" data-btn="ENTER" aria-label="Select">OK</button>
+          <button class="tvkey pad right" type="button" data-btn="RIGHT" aria-label="Right">→</button>
+          <button class="tvkey pad down"  type="button" data-btn="DOWN"  aria-label="Down">↓</button>
+        </div>
+        <div class="tvrow">
+          <button class="tvkey wide" type="button" data-btn="BACK">Back</button>
+          <button class="tvkey wide" type="button" data-btn="HOME">Home</button>
+          <button class="tvkey wide" type="button" data-btn="PLAY" aria-label="Play or pause">Play</button>
+          <button class="tvkey wide" type="button" data-btn="PAUSE">Pause</button>
+        </div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvlegend">Go somewhere</div>
+        <div class="tvapps" id="tvapps"></div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvlegend">Play a YouTube link</div>
+        <div class="tvlink">
+          <input type="text" id="tvyt" placeholder="Paste a link, or a video id" aria-label="YouTube link">
+          <button class="tvkey wide go" type="button" id="tvytgo">Play it</button>
+        </div>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="sheet-btn" id="tvpower" type="button">Switch it off</button>
+      <button class="sheet-btn" id="tvclose" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── the schedules, on a phone ─────────────────────────────────────────
      Under the house they sat below a board 555px tall, which is a long way to
      scroll for something you came to the app to change. The thumb bar carries
@@ -5939,6 +6190,33 @@ function applySnapshot(snap) {
   for (const d of state.devices) {
     const now = fresh.get(d.record_id);
     if (!now || inFlight.has(d.record_id)) continue;
+
+    /* A television carries its own fields and its own guarantees, so it is
+       merged first and on its own terms.
+       This whole loop was written for hub circuits: it copies status, level and
+       tune, and skips the record entirely when those three match. A set whose
+       volume or running app had changed matched on all three and was dropped —
+       so the page kept showing the volume it had at load, and Unmute computed
+       from that stale copy and sent Mute a second time.
+       It also skips the settle-time guard below on purpose. That guard exists
+       because a hub read describes the house as it was seconds ago; a
+       television pushes its own changes as they happen, so its snapshot is
+       never behind our own command. */
+    if (d.is_tv) {
+      const same = now.status === d.status && now.tv_volume === d.tv_volume
+        && now.tv_muted === d.tv_muted && now.tv_app === d.tv_app
+        && (now.tv_apps || []).length === (d.tv_apps || []).length;
+      if (same) continue;
+      d.status = now.status;
+      d.tv_volume = now.tv_volume;
+      d.tv_muted = now.tv_muted;
+      d.tv_app = now.tv_app;
+      d.tv_apps = now.tv_apps;
+      paint(d);
+      moved = true;
+      continue;
+    }
+
     // This snapshot was taken before we last commanded this circuit, so it
     // cannot know about that command. Wait for a read that does.
     if ((commandedAt.get(d.record_id) || 0) > (snap.synced_at || 0)) continue;
@@ -5967,6 +6245,9 @@ function tick() {
   for (const tab of document.querySelectorAll('.tab[data-room]')) tabState(tab, tab.dataset.room);
   for (const t of document.querySelectorAll('.tile[data-room]')) roomTileState(t, t.dataset.room);
   for (const t of document.querySelectorAll('.tile[data-gang]')) paintGang(t);
+  // The set pushes its own changes, so a panel left open follows the actual
+  // remote in somebody's hand rather than going stale.
+  if (tvOpen && !el('#tvscrim').hidden) drawTv();
   const cut = el('#cut');
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
@@ -6711,7 +6992,13 @@ function circuitTile(d, compact) {
   // The sliders sit at the foot of the tile now, so pressing the tile itself
   // simply switches the circuit — the same as everywhere else.
   const body = document.createElement(d.is_curtain ? 'div' : 'button');
-  if (body.tagName === 'BUTTON') { body.type = 'button'; body.onclick = () => setDevice(d, !d.status); }
+  if (body.tagName === 'BUTTON') {
+    body.type = 'button';
+    // A television's face opens its panel rather than switching it: the key in
+    // the corner already switches it, and this is the one circuit in the house
+    // with anywhere else to go.
+    body.onclick = d.is_tv ? () => openTv(d) : () => setDevice(d, !d.status);
+  }
   body.className = 'tile-body';
   body.innerHTML = '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
   body.querySelector('.roomname').textContent = pretty(d.name).toUpperCase();
@@ -6745,6 +7032,16 @@ function circuitTile(d, compact) {
     note_.className = 'blindnote';
     note_.textContent = 'IR IS ONE-WAY — THE REMOTE IS INVISIBLE TO US';
     body.appendChild(note_);
+  }
+
+  if (d.is_tv) {
+    // In flow at the foot of the face, not pinned to the tile: the strips sit
+    // under the face on a phone and beside it on a wide screen, so anything
+    // absolutely placed against the tile lands on top of one of them.
+    const more = document.createElement('span');
+    more.className = 'tvmore';
+    more.textContent = '\u203a';
+    body.appendChild(more);
   }
 
   if (d.is_curtain) tile.appendChild(curtainPulls(d));
@@ -7003,8 +7300,11 @@ function stateWord(d) {
      is plain fact and needs no hedge: it says what is playing and how loud.
      Off is equally certain — a sleeping set closes its ports, so silence means
      off rather than "we do not know". */
+  // No volume here: the strip on the face already shows it, and saying it twice
+  // is exactly the clutter worth avoiding. Muted earns a word, because a strip
+  // cannot show it.
   if (d.is_tv) return 'ON' + (d.tv_app ? ' · ' + appWord(d.tv_app) : '')
-                           + ' · ' + (d.tv_muted ? 'MUTED' : 'VOL ' + d.tv_volume);
+                           + (d.tv_muted ? ' · MUTED' : '');
   // Everything that is genuinely on says so first, in the same word, whatever
   // it is. A fan used to say TURNING and a lamp used to say 40% — both true,
   // neither of them the thing you are scanning the board for, which is simply
@@ -7166,6 +7466,147 @@ async function sendSlider(d, key) {
     setTimeout(() => inFlight.delete(d.record_id), 4000);
   }
 }
+
+/* ───────────────────────────────────────────── the television, enlarged */
+
+/* The tile keeps the key and the volume, because those are what anyone reaches
+   for. This is everything else: the pad, the set's own app list, and somewhere
+   to paste a link. It follows the live state while it is open — the set pushes
+   power, volume and the running app, so the sentence and the strip move on
+   their own when somebody uses the actual remote. */
+let tvOpen = null;
+
+const tvDev = () => state.devices.find(d => d.record_id === tvOpen) || null;
+
+/* What the set is doing, said rather than reported. The app's real title comes
+   from the set's own launcher list where we have it — "Prime Video" reads
+   better than the reverse-DNS id, and better than a guess from it. */
+function tvSentence(d) {
+  if (!d.status) return 'Asleep.';
+  const known = (d.tv_apps || []).find(a => a.id === d.tv_app);
+  const app = known ? known.title : (d.tv_app ? titleCase(appWord(d.tv_app)) : null);
+  if (d.tv_muted) return (app || 'Awake') + ', muted.';
+  const vol = ', at <b>' + d.tv_volume + '</b>.';
+  return (app || 'Awake') + vol;
+}
+
+const titleCase = (s) => String(s).toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
+
+function openTv(d) {
+  tvOpen = d.record_id;
+  el('#tveyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  drawTv();
+  const scrim = el('#tvscrim');
+  scrim.hidden = false;
+  el('#tvyt').value = '';
+}
+
+function closeTv() { hideScrim(el('#tvscrim'), () => { tvOpen = null; }); }
+
+function drawTv() {
+  const d = tvDev();
+  if (!d) return;
+  el('#tvsay').innerHTML = tvSentence(d);
+  el('#tvpower').textContent = d.status ? 'Switch it off' : 'Switch it on';
+
+  const mute = el('#tvmute');
+  mute.textContent = d.tv_muted ? 'Unmute' : 'Mute';
+  mute.classList.toggle('on', !!d.tv_muted);
+
+  // The strip is skipped while a finger is on it, the same rule the tiles follow.
+  const vol = el('#tvvol');
+  const input = vol.querySelector('input');
+  if (input !== document.activeElement) {
+    input.value = d.tv_volume;
+    vol.style.setProperty('--at', d.tv_volume + '%');
+  }
+  vol.style.setProperty('--tint', 'var(--cool)');
+
+  // Everything but the key needs the set awake to mean anything.
+  for (const b of el('#tvscrim').querySelectorAll('[data-btn], [data-step], #tvmute, #tvytgo'))
+    b.disabled = !d.status && b.id !== 'tvytgo';   // a link may wake it itself
+
+  const apps = el('#tvapps');
+  const want = (d.tv_apps || []).map(a => a.id).join(',');
+  if (apps.dataset.want !== want) {
+    apps.dataset.want = want;
+    apps.innerHTML = '';
+    for (const a of d.tv_apps || []) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tvkey' + (a.id === d.tv_app ? ' on' : '');
+      b.textContent = a.title;
+      b.onclick = () => tvSend({ app: a.id }, b);
+      apps.appendChild(b);
+    }
+  } else {
+    for (const b of apps.children) b.classList.toggle('on', b.textContent === (((d.tv_apps || [])
+      .find(a => a.id === d.tv_app) || {}).title));
+  }
+}
+
+async function tvSend(body, btn) {
+  const d = tvDev();
+  if (!d) return;
+  if (btn) { btn.classList.add('busy'); setTimeout(() => btn.classList.remove('busy'), 500); }
+  tick();
+  try {
+    const res = await fetch('/api/tv/' + encodeURIComponent(d.record_id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) throw new Error(out.error || 'the television did not answer');
+    return out;
+  } catch (err) {
+    note(pretty(d.name) + ' \u2014 ' + err.message);
+  }
+}
+
+(function wireTv() {
+  const scrim = el('#tvscrim');
+  el('#tvclose').onclick = closeTv;
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) closeTv(); });
+
+  el('#tvpower').onclick = async () => {
+    const d = tvDev();
+    if (!d) return;
+    await tvSend({ on: !d.status });
+  };
+
+  // One listener for every button that is just a button name or a volume step.
+  scrim.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-btn], [data-step]');
+    if (!b || b.disabled) return;
+    if (b.dataset.btn) tvSend({ button: b.dataset.btn }, b);
+    else tvSend({ step: Number(b.dataset.step) }, b);
+  });
+
+  el('#tvmute').onclick = () => { const d = tvDev(); if (d) tvSend({ mute: !d.tv_muted }); };
+
+  const vol = el('#tvvol');
+  const input = vol.querySelector('input');
+  input.addEventListener('input', () => {
+    vol.style.setProperty('--at', input.value + '%');
+    const d = tvDev();
+    if (d) d.tv_volume = Number(input.value);
+    el('#tvsay').innerHTML = d ? tvSentence(d) : '';
+  });
+  input.addEventListener('change', () => tvSend({ volume: Number(input.value) }));
+
+  const play = () => {
+    const link = el('#tvyt').value.trim();
+    if (!link) return;
+    tvSend({ youtube: link }, el('#tvytgo')).then((out) => { if (out) el('#tvyt').value = ''; });
+  };
+  el('#tvytgo').onclick = play;
+  el('#tvyt').addEventListener('keydown', (e) => { if (e.key === 'Enter') play(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (el('#tvscrim').hidden) return;
+    if (e.key === 'Escape') closeTv();
+  });
+})();
 
 /* ────────────────────────────────────── switching a room's COBs together */
 

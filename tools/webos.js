@@ -81,14 +81,27 @@ const MANIFEST = {
     ],
     serial: '2f930e2d2cfe083771f68e4fe7bb07',
   },
+  /* This is the list that is actually granted. The one inside `signed` above is
+     decorative — proven by asking the set what it could do and getting 401 on
+     exactly the calls whose permission sat there and not here: the installed-app
+     list, the firmware version, picture settings, and the pointer-input socket
+     that carries the remote buttons.
+     Asked for in one go on purpose. A set grants what was requested at pairing
+     time and nothing more, so every later addition costs somebody a walk to the
+     television to accept a prompt again. Better to ask once. */
   permissions: [
     'LAUNCH', 'LAUNCH_WEBAPP', 'APP_TO_APP', 'CLOSE', 'TEST_OPEN', 'TEST_PROTECTED',
-    'CONTROL_AUDIO', 'CONTROL_DISPLAY', 'CONTROL_INPUT_JOYSTICK',
+    'TEST_SECURE', 'CONTROL_AUDIO', 'CONTROL_DISPLAY', 'CONTROL_INPUT_JOYSTICK',
     'CONTROL_INPUT_MEDIA_RECORDING', 'CONTROL_INPUT_MEDIA_PLAYBACK',
     'CONTROL_INPUT_TV', 'CONTROL_POWER', 'READ_APP_STATUS', 'READ_CURRENT_CHANNEL',
     'READ_INPUT_DEVICE_LIST', 'READ_NETWORK_STATE', 'READ_RUNNING_APPS',
     'READ_TV_CHANNEL_LIST', 'WRITE_NOTIFICATION_TOAST', 'READ_POWER_STATE',
     'READ_COUNTRY_INFO',
+    // the four that were answering 401, and the ones that ride alongside them
+    'READ_INSTALLED_APPS', 'CONTROL_MOUSE_AND_KEYBOARD', 'CONTROL_INPUT_TEXT',
+    'READ_UPDATE_INFO', 'WRITE_SETTINGS', 'WRITE_NOTIFICATION_ALERT',
+    'READ_NOTIFICATIONS', 'SEARCH', 'READ_TV_CURRENT_TIME',
+    'READ_LGE_TV_INPUT_EVENTS', 'UPDATE_FROM_REMOTE_APP',
   ],
 };
 
@@ -196,8 +209,11 @@ class WebosTV {
 
       ws.on('open', () => {
         const payload = Object.assign(
-          { forcePairing: false, pairingType: 'PROMPT', manifest: MANIFEST },
-          this.key ? { 'client-key': this.key } : {});
+          // Forcing sends no key on purpose: presenting the old one invites the
+          // set to renew the grant it already made, and the whole point of a
+          // forced pairing is to be granted the *wider* list above.
+          { forcePairing: !!this.opts.force, pairingType: 'PROMPT', manifest: MANIFEST },
+          this.key && !this.opts.force ? { 'client-key': this.key } : {});
         ws.send(JSON.stringify({ type: 'register', id: 'register_0', payload }));
       });
 
@@ -286,8 +302,34 @@ class WebosTV {
     return this.request('ssap://system.launcher/launch',
       { id: 'youtube.leanback.v4', contentId: id });
   }
+  volumeUp()           { return this.request('ssap://audio/volumeUp'); }
+  volumeDown()         { return this.request('ssap://audio/volumeDown'); }
   play()               { return this.request('ssap://media.controls/play'); }
   pause()              { return this.request('ssap://media.controls/pause'); }
+
+  /* The remote buttons do not travel over SSAP at all. The set hands back the
+     address of a *second* socket and the buttons go down that one as plain
+     text, not JSON — a shape worth knowing before debugging it, because sending
+     JSON there is accepted and does nothing.
+     It also needs CONTROL_MOUSE_AND_KEYBOARD, which has to be in the top-level
+     permission list at pairing time; without it the request for the address is
+     a 401 and the whole channel looks absent rather than unauthorised. */
+  async remote() {
+    if (this._remote) return this._remote;
+    const r = await this.request('ssap://com.webos.service.networkinput/getPointerInputSocket');
+    if (!r.socketPath) throw new Error('the set gave no remote socket');
+    const ws = new WebSocket(r.socketPath, { rejectUnauthorized: false, handshakeTimeout: 6000 });
+    await new Promise((ok, no) => { ws.once('open', ok); ws.once('error', no); });
+    ws.on('close', () => { this._remote = null; });
+    const send = (s) => ws.send(s);
+    return (this._remote = {
+      button: (name) => send('type:button\nname:' + String(name).toUpperCase() + '\n\n'),
+      click: () => send('type:click\n\n'),
+      move: (dx, dy) => send('type:move\ndx:' + dx + '\ndy:' + dy + '\ndown:0\n\n'),
+      scroll: (dx, dy) => send('type:scroll\ndx:' + dx + '\ndy:' + dy + '\n\n'),
+      close: () => ws.close(),
+    });
+  }
   swInfo()             { return this.request('ssap://com.webos.service.update/getCurrentSWInformation'); }
 }
 
