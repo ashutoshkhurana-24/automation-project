@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const express = require('express');
 const WebSocket = require('ws');
 
@@ -797,6 +798,28 @@ function sendBatchToHub(commands, gapMs) {
 
 const app = express();
 app.use(express.json());
+
+/* Nothing this box served was compressed, and it is mostly text. The page is
+   358KB of HTML on every walk-up and /api/devices is 29KB every time the house
+   moves; gzipped they are 98KB and 2.4KB. On a wall tablet over Wi-Fi that is
+   the difference between a board that is simply there and one you stand and
+   wait for, and the hub is an old OptiPlex, so the cost matters at both ends.
+   Only res.json is wrapped, which is what makes this safe: /api/stream writes
+   its own frames with res.write and cannot be caught here and buffered — which
+   is exactly how compression normally breaks server-sent events. Small bodies
+   are left alone, since a gzip header is bigger than a health check. */
+app.use((req, res, next) => {
+  res.json = (body) => {
+    const text = JSON.stringify(body);
+    res.type('json');
+    if (text.length < 1024 || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+      return res.send(text);
+    }
+    res.set('Content-Encoding', 'gzip').set('Vary', 'Accept-Encoding');
+    return res.send(zlib.gzipSync(text));
+  };
+  next();
+});
 
 const REFRESH_MS = 15000;
 const SETTLE_MS = 3200;
@@ -3243,8 +3266,30 @@ app.delete('/api/timers/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/', (req, res) =>
-  res.type('html').set('Cache-Control', 'no-store').send(HTML));
+/* The page is a constant — it is built once at startup with HUB_IP folded in —
+   so it is compressed once here rather than per request, and the tag is taken
+   over its own bytes. `no-store` was costing the tablet a full 358KB download
+   and re-parse on every single walk-up; `no-cache` still makes the browser ask
+   every time, so a deploy can never be missed, but an unchanged app answers
+   304 with no body at all. */
+/* On the first request rather than at load: the page is declared at the foot of
+   this file, so touching it up here is a use-before-initialisation. Memoised,
+   so it is still compressed exactly once per process. */
+let shell = null;
+const theShell = () => shell || (shell = {
+  gz: zlib.gzipSync(HTML, { level: 9 }),
+  tag: '"' + require('crypto').createHash('sha1').update(HTML).digest('hex').slice(0, 16) + '"',
+});
+
+app.get('/', (req, res) => {
+  const page = theShell();
+  res.type('html').set('Cache-Control', 'no-cache').set('ETag', page.tag);
+  if (req.headers['if-none-match'] === page.tag) return res.status(304).end();
+  if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+    return res.set('Content-Encoding', 'gzip').set('Vary', 'Accept-Encoding').send(page.gz);
+  }
+  res.send(HTML);
+});
 
 app.listen(PORT, () => {
   console.log(`Pravita's Apartment  ->  http://localhost:${PORT}`);
