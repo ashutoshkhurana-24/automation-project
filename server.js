@@ -944,6 +944,15 @@ const TVS = [
      because keys are filed by MAC, so running it a cable would orphan this one
      and cost another pairing prompt. */
   { id: 'tv-parent', name: 'TV', room: 'PARENT ROOM', mac: '60:95:f8:1d:08:ba' },
+  /* A **QNED70BLA**, not the QNED82BXA the other two are, and on a MAC outside
+     the 60:95:f8 range they share — so the long-unidentified 60:95:f8:1d:11:da
+     is *not* this set and is still unaccounted for. It named itself over SSDP
+     with the model number rather than a room, which is why it had to be
+     identified by switching it on with somebody standing in front of it.
+     Its default app is com.webos.app.home, where both others boot into
+     com.webos.app.livetv — so do not read "home screen" here as a set that has
+     failed to launch something. */
+  { id: 'tv-living', name: 'TV', room: 'LIVING', mac: '8c:77:79:5f:dc:64' },
 ];
 const YT_APP = 'youtube.leanback.v4';
 

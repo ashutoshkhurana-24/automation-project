@@ -345,6 +345,11 @@ Two **LG webOS QNED82BXA** sets, both reachable on the LAN and both controllable
 |---|---|---|---|
 | TV 1 | `d0:cd:bf:a0:fc:cb` | Ashu's Room | `192.168.1.8` |
 | TV 2 | `60:95:f8:1d:11:da` | (unnamed) | `192.168.1.18` |
+| Living | `8c:77:79:5f:dc:64` | webOS TV QNED70BLA | `192.168.1.28` |
+
+**The Living set is a QNED70BLA, not a QNED82BXA** (added 2026-08-20), and its MAC is outside the `60:95:f8` range the other two share — so **`60:95:f8:1d:11:da` is still unaccounted for**; it is not this set, as had been assumed. It announced itself over SSDP with its model number rather than a room name, so the only way to place it was to switch it on with somebody standing in front of it. Two things differ from the other two: it boots into `com.webos.app.home` where they boot into `com.webos.app.livetv`, so a "home screen" reading here is not a launch that failed; and LIVING has no hub screen record, so `shadowedByTv()` has nothing to hide.
+
+**Keys are per-install and the hub keeps its own file, so a set paired from the Mac has to have its key carried over** — and `data/tv-keys.json` must be *merged*, never blindly overwritten, because a key lost is a pairing prompt somebody has to walk to the television to accept. Check the shared entries match before copying.
 
 **The MAC is the identity; the address is not.** Both sets are on DHCP and both moved subnets during the network work below — so `data/tv-keys.json` files pairing keys **under the MAC**, resolved from the ARP table. It was keyed by address first, and a lease renewal silently orphaned a key that had cost somebody a walk to the television to press Accept.
 
