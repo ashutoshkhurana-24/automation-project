@@ -12517,6 +12517,14 @@ el('#qtimer').onclick = () => openTimer(timerpop.hidden);
 el('#timerstop').onclick = cancelTimers;
 document.addEventListener('click', (e) => {
   if (timerpop.hidden) return;
+  /* A control inside this panel that redraws its own list has already replaced
+     the node the click came from by the time this runs — picking a room does
+     exactly that, since pickScope calls drawScopes and that empties the host. So
+     contains() could not find the target any more, decided the click was
+     outside, and the panel closed itself the moment you chose a room.
+     A target that is no longer in the document came from something that just
+     re-rendered, which is never the page outside this panel. */
+  if (!e.target.isConnected) return;
   if (!timerpop.contains(e.target) && !el('#qtimer').contains(e.target)) openTimer(false);
 });
 
