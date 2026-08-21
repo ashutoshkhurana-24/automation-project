@@ -2214,9 +2214,26 @@ function acCommand(record, verb, arg) {
   return arg == null ? `${verb} ${target}` : `${verb} ${target} ${arg}`;
 }
 
+/* Said out loud in a reply, so it has to read like speech: an hour is an hour,
+   not 60 minutes, and one minute is not "1 minutes". */
+function spokenMins(m) {
+  if (m >= 60 && m % 60 === 0) return (m / 60) + (m === 60 ? ' hour' : ' hours');
+  return m + (m === 1 ? ' minute' : ' minutes');
+}
+
+/* The one way an air conditioner is switched, shared by the endpoint and by a
+   timer that has run down — the same reason runSleep is shared by "sleep now"
+   and a sleep timer. An IR unit needs its command string; a bare record is
+   dropped by the hub without a word (see runAcOff). */
+async function acPower(entry, on) {
+  await sendToHub(entry.record.record_id, { device_status: String(on) },
+    acCommand(entry.record, on ? 'on' : 'off'));
+  entry.record.device_status = String(on);
+}
+
 app.post('/api/ac', async (req, res) => {
   const recordId = Number(req.body?.record_id);
-  const { power, mode, fan, swing, temp } = req.body || {};
+  const { power, mode, fan, swing, temp, off_after: offAfter } = req.body || {};
 
   if (!Number.isInteger(recordId)) {
     return res.status(400).json({ ok: false, error: 'record_id must be an integer' });
@@ -2235,9 +2252,15 @@ app.post('/api/ac', async (req, res) => {
   try {
     if (power != null) {
       const on = power === true || power === 'true' || power === 'on';
-      await sendToHub(recordId, { device_status: String(on) }, acCommand(entry.record, on ? 'on' : 'off'));
+      await acPower(entry, on);
       sent.push(on ? 'on' : 'off');
-      entry.record.device_status = String(on);
+      /* Switching it off cancels any pending off, and that is a safety point
+         rather than tidiness: this is infrared, so a stale off fired an hour
+         later would land on whatever the unit is doing then — including a unit
+         somebody has since started with its own remote, which the hub cannot
+         see. Only cancel when no new timer is being asked for in the same
+         breath, or "off, then on again in a moment" would drop the new one. */
+      if (!on && offAfter == null) { clearAcTimer(recordId); saveState(); }
     }
     if (mode != null) {
       if (!AC_MODES.includes(mode)) {
@@ -2271,8 +2294,40 @@ app.post('/api/ac', async (req, res) => {
       sent.push(t + '°');
       entry.record.ac_temp = String(t);
     }
+    /* An auto-off, in the same request as the power on.
+       One request rather than two because they are one intention: "on, and off
+       again in an hour". Two calls can half-fail and leave the unit running with
+       nobody expecting it to. It is also accepted on its own, with no power at
+       all, because deciding twenty minutes later is the normal case. */
+    let timer = null;
+    if (offAfter != null) {
+      const mins = Number(offAfter);
+      if (!Number.isFinite(mins) || mins < 0 || mins > 720) {
+        return res.status(400).json({ ok: false, error: 'off_after must be 0 (cancel) to 720 minutes' });
+      }
+      clearAcTimer(recordId);                       // one pending off per unit
+      if (mins > 0) {
+        const t = {
+          id: 't' + (++timerSeq), kind: 'ac', recordId,
+          scope: 'device:' + recordId,
+          label: (entry.record.device_name || 'AC').trim() + ' in ' + entry.room,
+          at: Date.now() + mins * 60000,
+        };
+        armTimer(t);
+        timer = timerView(t);
+        sent.push('off in ' + mins + 'm');
+      } else {
+        sent.push('timer off');
+      }
+      saveState();
+    }
+
     if (!sent.length) return res.status(400).json({ ok: false, error: 'Nothing to change' });
-    res.json({ ok: true, record_id: recordId, sent });
+    res.json({
+      ok: true, record_id: recordId, sent, timer,
+      // "will send", not "will switch off": there is no feedback channel here.
+      spoken: timer ? 'the hub will send off in ' + spokenMins(Math.round(timer.seconds_left / 60)) : undefined,
+    });
   } catch (err) {
     console.error(`ac ${recordId} failed:`, err.message);
     res.status(502).json({ ok: false, error: err.message });
@@ -3382,13 +3437,52 @@ function loadState() {
   try {
     const saved = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     for (const [id, at] of Object.entries(saved.lit_since || {})) litSince.set(Number(id), at);
+    restoreAcTimers(saved.ac_timers || []);
   } catch { /* first run */ }
 }
 
 function saveState() {
   try {
-    fs.writeFileSync(STATE_PATH, JSON.stringify({ lit_since: Object.fromEntries(litSince) }, null, 2));
+    fs.writeFileSync(STATE_PATH, JSON.stringify({
+      lit_since: Object.fromEntries(litSince),
+      /* Only the AC timers. A sleep timer is deliberately *not* kept — this file
+         already says why, and it still holds: a forgotten one switching the
+         house off hours later is worse than one that quietly lapses.
+         An auto-off is the opposite case. It exists precisely so a machine that
+         nobody is watching does not run all night, and the watchdog restarts the
+         service after two failed health checks — so in memory alone the feature
+         would evaporate exactly when it was doing its job, silently. */
+      ac_timers: [...timers.values()]
+        .filter((t) => t.kind === 'ac')
+        .map((t) => ({ id: t.id, recordId: t.recordId, label: t.label, at: t.at })),
+    }, null, 2));
   } catch (err) { console.error('could not save state:', err.message); }
+}
+
+/* Bring back the ones that have not come due yet, and only those.
+ *
+ * A timer whose moment passed while the process was down is dropped rather than
+ * fired late. It would be acting on a belief formed before the restart: this is
+ * infrared, the hub cannot see the unit, and an off sent two hours late lands on
+ * whatever the room is doing then — including an air conditioner somebody has
+ * since started with its own remote. The left-on advisory still covers that case,
+ * which is the right instrument for it: it nudges rather than acts. */
+function restoreAcTimers(saved) {
+  let back = 0, stale = 0, highest = 0;
+  for (const t of saved) {
+    const n = Number(String(t.id || '').replace(/^t/, ''));
+    if (Number.isFinite(n)) highest = Math.max(highest, n);
+    if (!(t.at > Date.now())) { stale++; continue; }
+    armTimer({ id: t.id, kind: 'ac', recordId: t.recordId, scope: 'device:' + t.recordId, label: t.label, at: t.at });
+    back++;
+  }
+  // Or a fresh timer would be handed an id a restored one already holds.
+  if (highest > timerSeq) timerSeq = highest;
+  if (back || stale) {
+    console.log('ac timers: ' + back + ' still pending'
+      + (stale ? ', ' + stale + (stale === 1 ? ' had' : ' had') + ' already come due and '
+        + (stale === 1 ? 'was' : 'were') + ' dropped' : ''));
+  }
 }
 
 /** Called after every hub read: notice what came on and what went off. */
@@ -3472,7 +3566,13 @@ function sleepSteps(scope) {
 }
 
 function timerView(t) {
-  return { id: t.id, scope: t.scope, label: t.label, at: t.at, seconds_left: Math.max(0, Math.round((t.at - Date.now()) / 1000)) };
+  return {
+    id: t.id, scope: t.scope, label: t.label, at: t.at,
+    // Additive, so the sleep panel is untouched: an AC timer has to be findable
+    // by the tile it belongs to, which needs the kind and the record.
+    kind: t.kind || 'sleep', record_id: t.recordId != null ? t.recordId : null,
+    seconds_left: Math.max(0, Math.round((t.at - Date.now()) / 1000)),
+  };
 }
 
 /* Going to sleep, whether it was asked for now or forty-five minutes ago.
@@ -3500,7 +3600,52 @@ async function runTimer(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
+  if (t.kind === 'ac') { saveState(); await runAcOff(t); return; }
   await runSleep(t.scope, t.label);
+}
+
+/* Switch an air conditioner off because its timer ran down.
+ *
+ * It goes through acPower for one reason, and it is the reason this whole
+ * feature could not be built on the sleep timer's scope grammar: **the step
+ * path cannot command an IR air conditioner at all.** Proven against the live
+ * hub on 2026-08-21 by watching its own log. Asking /do to switch ASHU's AC off
+ * had the hub report
+ *
+ *     Sending Operation on   on channel id      <- no device, no channel
+ *
+ * while /api/ac on the same unit sent
+ *
+ *     Sending Operation on 193 on channel id 10
+ *
+ * and the /do reply was a cheerful ok:true, sent:1, "Ac in Ashu Room off". So a
+ * bare record is silently dropped and reported as success. An AC has to be
+ * addressed by its command string, which is what acPower does and what
+ * setRecords/sendSteps do not. */
+async function runAcOff(t) {
+  const entry = devices.get(t.recordId);
+  if (!entry) { console.log('ac timer: record ' + t.recordId + ' is gone'); return; }
+  const name = (entry.record.device_name || 'AC').trim();
+  try {
+    await acPower(entry, false);
+    /* "sent", never "switched off". This is infrared: the hub blasts a code and
+       hears nothing back, so what we know is what was sent. */
+    console.log('ac timer: sent off to ' + name + ' in ' + entry.room);
+  } catch (err) {
+    console.error('ac timer: ' + name + ' would not take it:', err.message);
+  }
+  pushSnapshot(true);
+}
+
+/* One AC timer per unit, and asking for a second replaces the first — two
+   pending offs on one machine is not a thing anybody means. */
+function clearAcTimer(recordId) {
+  for (const t of timers.values()) {
+    if (t.kind === 'ac' && t.recordId === recordId) {
+      clearTimeout(t.handle);
+      timers.delete(t.id);
+    }
+  }
 }
 
 function armTimer(t) {
@@ -5391,6 +5536,15 @@ const HTML = /* html */ `<!doctype html>
      the extra height the name lands on top of them. */
   .tile.climate { height: calc(var(--tile-h) + 106px); }
   .tile.climate .tile-body { padding-bottom: 164px; }
+  /* A fourth row, and only while the machine is running. The card grows for it
+     rather than the row being squeezed in beside the fan speeds: this drawer is
+     absolutely positioned at the foot, so the body's reservation has to grow by
+     exactly the same amount or the name lands on top of the controls — the trap
+     this file already records for the tunable tiles. Caption plus chips plus the
+     drawer gap measures 46px. */
+  .tile.climate.on { height: calc(var(--tile-h) + 152px); }
+  .tile.climate.on .tile-body { padding-bottom: 210px; }
+  .autooff[hidden] { display: none; }
   .pulls { display: flex; gap: 7px; }
   /* Stop is narrower and quieter: it is the exception, not a third destination. */
   .pull.halt { flex: 0 0 auto; padding-left: 12px; padding-right: 12px; color: var(--faint); }
@@ -8780,6 +8934,7 @@ function paintTile(tile, d) {
     body.setAttribute('aria-pressed', String(d.status));
     body.setAttribute('aria-label', pretty(d.name) + ', ' + title(d.room) + ', ' + readWord(d));
   }
+  if (d.is_ac) paintAcTimer(tile, d);
 }
 
 /* What a circuit is, in the hub's own terms — the id is the thing you would
@@ -9491,7 +9646,96 @@ function climateDrawer(d) {
   // "Fan auto" does not fit inside a button this narrow.
   wrap.appendChild(segRow(d, 'mode', ['cool', 'heat', 'dry', 'auto'], ['Cool', 'Heat', 'Dry', 'Auto'], 'Mode'));
   wrap.appendChild(segRow(d, 'fan', ['auto', 'low', 'medium', 'high'], ['Auto', 'Low', 'Med', 'High'], 'Fan'));
+  wrap.appendChild(acAutoRow(d));
   return wrap;
+}
+
+/* Auto-off, which only exists while the machine is running.
+ *
+ * The ask was a dropdown offered every time the unit is switched on. This is
+ * that, minus the modal: the row appears when the AC comes on and goes when it
+ * goes off, so the options arrive exactly when they are wanted without anything
+ * to dismiss — and unlike a prompt, it keeps showing what is armed, which a
+ * prompt cannot do. Deciding twenty minutes later is the normal case anyway.
+ *
+ * Chips rather than a select, because that is what the two rows above it are and
+ * what the sleep bar is: one tap instead of three, and a native select on iOS is
+ * a scroll wheel. Four of them, to match Mode and Fan — beyond three hours the
+ * left-on advisory is the right instrument, since it nudges rather than acts. */
+const AC_OFF_CHOICES = [[60, '1H'], [120, '2H'], [180, '3H'], [0, 'NONE']];
+
+function acAutoRow(d) {
+  const group = document.createElement('div');
+  group.className = 'autooff';
+  const cap = document.createElement('div');
+  cap.className = 'seg-label';
+  group.appendChild(cap);
+
+  const row = document.createElement('div');
+  row.className = 'segs';
+  for (const [mins, label] of AC_OFF_CHOICES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'seg';
+    b.textContent = label;
+    b.dataset.mins = String(mins);
+    b.setAttribute('aria-label', mins
+      ? pretty(d.name) + ' off after ' + label
+      : pretty(d.name) + ' no auto off');
+    b.onclick = async () => {
+      for (const other of row.children) {
+        other.classList.remove('sent');
+        other.setAttribute('aria-pressed', 'false');
+      }
+      b.classList.add('sent');
+      b.setAttribute('aria-pressed', 'true');
+      try {
+        const r = await fetch('/api/ac', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ record_id: d.record_id, off_after: mins }),
+        }).then(x => x.json());
+        if (!r.ok) throw new Error(r.error || 'the hub would not take it');
+        note(mins ? r.spoken + '.' : 'auto off cancelled.');
+        loadAuto();                       // so the caption picks up the countdown
+      } catch (err) {
+        note(err.message);
+        loadAuto();                       // put the chips back to the truth
+      }
+    };
+    row.appendChild(b);
+  }
+  group.appendChild(row);
+  return group;
+}
+
+// The armed timer for one air conditioner, if there is one.
+const acTimerFor = (id) => (auto.timers || []).find(t => t.kind === 'ac' && t.record_id === id);
+
+const leftWord = (secs) => {
+  const m = Math.max(0, Math.round(secs / 60));
+  return m >= 60 ? Math.floor(m / 60) + 'H ' + String(m % 60).padStart(2, '0') + 'M' : m + 'M';
+};
+
+/* Kept in step by paintTile rather than rebuilt, since the tile is painted in
+   place and a rebuilt row would drop the press the finger is still on. */
+function paintAcTimer(tile, d) {
+  const group = tile.querySelector('.autooff');
+  if (!group) return;
+  // Only while it is running: an auto-off for a machine that is off is nothing.
+  group.hidden = !d.status;
+  const t = acTimerFor(d.record_id);
+  group.querySelector('.seg-label').textContent = t
+    ? 'AUTO OFF · ' + leftWord(t.seconds_left) + ' LEFT'
+    : 'AUTO OFF';
+  // Whichever is armed reads as chosen, NONE when nothing is.
+  const want = t ? null : '0';
+  for (const b of group.querySelectorAll('.seg')) {
+    const on = t
+      ? Math.abs(Number(b.dataset.mins) * 60 - t.seconds_left) < 90 && Number(b.dataset.mins) > 0
+      : b.dataset.mins === want;
+    b.classList.toggle('sent', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
 }
 
 function stepButton(glyph, what) {
@@ -11464,6 +11708,10 @@ async function loadAuto() {
     drawNudges();
     drawTimers();
     drawSettings();
+    /* The air conditioners too: their auto-off countdown lives in auto.timers,
+       so a tile painted before this arrived is showing a stale one. This is the
+       only thing that moves them between hub reads. */
+    for (const d of state.devices) if (d.is_ac) paint(d);
   } catch { /* the next pass picks it up */ }
 }
 
