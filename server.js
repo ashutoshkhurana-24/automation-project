@@ -4021,6 +4021,59 @@ const HTML = /* html */ `<!doctype html>
      token is not what is wrong with it. */
   .dark .tile[data-room]::before { background: none; }
 
+  /* Blur behind an opaque pane is work that nothing can see.
+     Once --paper and --paper-2 went solid (above), every pane made of them was
+     compositing a 22px backdrop-filter under a wall it could not be seen
+     through. So those panes drop it after seven.
+
+     Three things about this, all of which cost a wrong turn first.
+
+     It is **not** a blanket clearing of the --lens token, which was the obvious
+     version and is wrong: six things on the board are still genuinely
+     translucent in dark and need the blur to be legible — .plate, .back, .cut,
+     .seek-toggle, .glance and #secrooms sit at .78, and a room .tab has **no
+     background at all**, so it is the blur alone that makes it a control.
+     Clearing the token would have shown sharp photograph through every one.
+
+     The list is what was measured, not what the sheet appeared to say. Alpha
+     here is viewport-dependent — .plate takes --paper on a phone and --pane on a
+     wide screen, so it is opaque at 375px and translucent at 1280 — and the only
+     way to know was to ask the live page at both widths for the computed
+     background behind every backdrop-filter it had. Anything translucent at
+     *either* width is left alone, as is anything not observed on the two views
+     sampled.
+
+     One trap in checking it, worth more than the rule itself. The first audit
+     written here asked "is any element in the list translucent?" and reported
+     the five thumb-bar buttons at .78, which read as a regression and had the
+     bar taken back out. It was a false positive: on a phone those buttons carry
+     **no backdrop-filter at all**, so there was never a blur there to remove.
+     The question that actually means something is the other way round — for
+     every element that *is* blurred, is its background opaque? — because only
+     then is the blur both present and pointless. Asked that way the bar is safe
+     at both widths and is back in the list.
+
+     Specificity carries it: all 28 rules that set the lens are a bare class or
+     id, so one .dark selector beats every one of them wherever it sits,
+     including inside a media query. No ordering to maintain.
+
+     Expected gain, stated honestly: about 29 of the 50 composited layers on the
+     house view, on phones and desktops. **Not** on the doorbell tablet, which is
+     in plain mode and has the lens cleared already — and that matters, because
+     the one measurement this repo holds on the subject says removing
+     backdrop-filter from WebView 113 made scrolling *worse* (42ms against 27ms),
+     the blur being what earns each pane its own cached layer. That device cannot
+     be reached by this rule, so that result does not apply to it; on hardware
+     with a real GPU it should be invisible either way. It could not be measured
+     here — a hidden automation tab pauses requestAnimationFrame, so there was no
+     honest frame number to be had. If it ever feels worse, this rule is the
+     revert. */
+  .dark #main, .dark .tile, .dark .cue, .dark .sched, .dark .saycard,
+  .dark #whatsnext, .dark #sectimer, .dark #secsync, .dark #sechouse,
+  .dark .nudge, .dark .quick, .dark .quick button {
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+
   .dark .tile.on .chip {
     background: color-mix(in oklab, var(--base) 84%, var(--tint));
     color: color-mix(in oklab, var(--ink) 88%, var(--tint));
