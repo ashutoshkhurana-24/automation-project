@@ -3855,11 +3855,25 @@ const HTML = /* html */ `<!doctype html>
        reverse. A pane is 72% dark over a photograph, so where the picture is
        bright — the limestone, the sky — the composite comes up and white type on
        it loses its contrast; the unlit cards over the mountain were the dimmest
-       thing on the board. Held at .86 the pane is very nearly its own colour and
-       the reading no longer depends on which part of the picture it happens to
-       be sitting on. The blur and the remaining 14% are what keep it glass. */
-    --paper:   rgba(24,27,32,.86);
-    --paper-2: rgba(18,21,25,.90);
+       thing on the board. Held at .86 the pane was very nearly its own colour
+       already and the reading no longer depended on which part of the picture it
+       sat on.
+
+       That last 14% is now gone too, at the user's request (2026-08-21): a dark
+       pane over a photograph is a *gradient*, however slight the alpha, because
+       the picture behind it has one. Every unlit card on the board carried its
+       own diagonal grey-to-black wash and no two matched, which is what "grey
+       black ombre on tiles" was. Opaque, an unlit card is one flat colour.
+
+       Worth knowing that this only ever showed on the **unlit** cards: a lit one
+       already mixes its tint into the opaque --base, so it had no ombre to lose,
+       and the two kinds now agree instead of the dark half of the board being
+       the glassy half. The photograph is untouched and still carries the page,
+       the gutters and the header's surround — it is the panes that stopped
+       being windows, which is what a pane full of type should never have been.
+       Same move plain mode makes, and for a related reason. */
+    --paper:   var(--paper-solid);
+    --paper-2: var(--paper-2-solid);
     --sheet:   #171a1f;
     --field:   #0d1014;
     --paper-solid:   #191c21;
@@ -3991,6 +4005,22 @@ const HTML = /* html */ `<!doctype html>
       color-mix(in srgb, var(--tint) 10%, transparent) calc(40% + var(--fill) * 42%),
       color-mix(in srgb, var(--tint) 3%, transparent) calc(68% + var(--fill) * 32%));
   }
+  /* The room card's diagonal wash does not survive being inverted, and it is
+     the thing the user meant by "grey black ombre on tiles" (2026-08-21).
+     On paper it is a cream sheen at half alpha fading out by 72% — light
+     soaked into the card. After seven the same declaration is a pale film laid
+     across a dark pane, so every unlit card on the board carried its own
+     diagonal grey-to-black and no two matched, because the angle is fixed
+     while each card sits somewhere different behind it.
+     It is removed rather than re-tinted: the ask was a single dark background,
+     and the card is already told apart from the ground by its rim. The lit
+     signal is untouched — that is .tile-fill, which has its own dark stops
+     right above and is what a lit card actually glows with.
+     Same family as the specular lip and the lit border: a value chosen as a
+     fraction of white cannot be carried over by swapping a token, because the
+     token is not what is wrong with it. */
+  .dark .tile[data-room]::before { background: none; }
+
   .dark .tile.on .chip {
     background: color-mix(in oklab, var(--base) 84%, var(--tint));
     color: color-mix(in oklab, var(--ink) 88%, var(--tint));
