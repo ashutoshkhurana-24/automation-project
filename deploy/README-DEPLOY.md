@@ -161,10 +161,17 @@ back to the previous `server.js` if it did not. That last part matters when you
 are deploying from away: a broken startup otherwise leaves the house with no
 dashboard, nobody near the box, and a watchdog restarting the wreck for ever.
 
-It also runs the backtick audit, which `node --check` cannot do for you: the
-frontend lives in a template literal, so a stray backtick inside it can stay
-syntactically valid and take the page down at runtime instead. That has shipped
-three times.
+It also runs two checks `node --check` cannot do for you, both about the same
+blind spot: the frontend lives inside a template literal, so the server parses
+whatever nonsense is in there. The backtick audit catches a stray backtick that
+stays syntactically valid and takes the page down at runtime — that has shipped
+three times. And the page's own script is **extracted and parsed separately**,
+with its `${...}` holes plugged, because a duplicate top-level declaration in
+there is a SyntaxError that leaves the server parsing, the page serving 200, and
+the whole app dead in the browser. Not hypothetical: a second `offAfterWord` got
+past both `node --check` and a 200 on 2026-08-21, and the only symptom was a page
+with no `window.state`. Verified to refuse, and to leave the hub's `server.js`
+byte-identical when it does.
 
 ### From away
 

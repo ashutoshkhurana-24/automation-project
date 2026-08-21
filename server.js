@@ -2308,9 +2308,14 @@ app.post('/api/ac', async (req, res) => {
       clearAcTimer(recordId);                       // one pending off per unit
       if (mins > 0) {
         const t = {
-          id: 't' + (++timerSeq), kind: 'ac', recordId,
+          id: 't' + (++timerSeq), kind: 'ac', recordId, minutes: mins,
           scope: 'device:' + recordId,
           label: (entry.record.device_name || 'AC').trim() + ' in ' + entry.room,
+          /* From now, deliberately — not from whenever the unit came on. Someone
+             setting an auto-off on a machine that has run for three hours means
+             "and off in two more", not "off an hour ago". There is also no
+             honest alternative: the AC is infrared, so how long it has really
+             been running is not a thing the hub can be asked. */
           at: Date.now() + mins * 60000,
         };
         armTimer(t);
@@ -3454,7 +3459,7 @@ function saveState() {
          would evaporate exactly when it was doing its job, silently. */
       ac_timers: [...timers.values()]
         .filter((t) => t.kind === 'ac')
-        .map((t) => ({ id: t.id, recordId: t.recordId, label: t.label, at: t.at })),
+        .map((t) => ({ id: t.id, recordId: t.recordId, label: t.label, at: t.at, minutes: t.minutes })),
     }, null, 2));
   } catch (err) { console.error('could not save state:', err.message); }
 }
@@ -3473,7 +3478,8 @@ function restoreAcTimers(saved) {
     const n = Number(String(t.id || '').replace(/^t/, ''));
     if (Number.isFinite(n)) highest = Math.max(highest, n);
     if (!(t.at > Date.now())) { stale++; continue; }
-    armTimer({ id: t.id, kind: 'ac', recordId: t.recordId, scope: 'device:' + t.recordId, label: t.label, at: t.at });
+    armTimer({ id: t.id, kind: 'ac', recordId: t.recordId, scope: 'device:' + t.recordId,
+      label: t.label, at: t.at, minutes: t.minutes });
     back++;
   }
   // Or a fresh timer would be handed an id a restored one already holds.
@@ -3571,6 +3577,11 @@ function timerView(t) {
     // Additive, so the sleep panel is untouched: an AC timer has to be findable
     // by the tile it belongs to, which needs the kind and the record.
     kind: t.kind || 'sleep', record_id: t.recordId != null ? t.recordId : null,
+    /* What was *asked for*, alongside what is left. The control has to show the
+       duration someone chose and go on showing it: driven off seconds_left it
+       would drift out of the list within a minute and the dropdown would fall
+       blank on a timer that is running perfectly well. */
+    minutes: t.minutes != null ? t.minutes : null,
     seconds_left: Math.max(0, Math.round((t.at - Date.now()) / 1000)),
   };
 }
@@ -3724,6 +3735,10 @@ app.delete('/api/timers/:id', (req, res) => {
   if (!t) return res.status(404).json({ ok: false, error: 'No such timer' });
   clearTimeout(t.handle);
   timers.delete(t.id);
+  /* An AC timer lives on disk, so forgetting it has to be written down too —
+     without this, cancelling one from the sleep panel dropped it from memory
+     only and the next restart brought it back to life. */
+  if (t.kind === 'ac') saveState();
   res.json({ ok: true });
 });
 
@@ -5545,6 +5560,29 @@ const HTML = /* html */ `<!doctype html>
   .tile.climate.on { height: calc(var(--tile-h) + 152px); }
   .tile.climate.on .tile-body { padding-bottom: 210px; }
   .autooff[hidden] { display: none; }
+  /* A select rather than the chip rows above it, because half-hour steps to
+     seven hours is fourteen choices. Styled off --field like the sheets' own
+     inputs, with the native arrow kept: it is the one affordance that says a
+     list will open, and nothing here draws a better one.
+     16px, not the 12px the chips use — under 16px iOS zooms the whole page on
+     focus, which this file has now recorded three times. */
+  .acoff {
+    width: 100%; appearance: none; -webkit-appearance: none;
+    font: 500 16px/1 var(--sans); color: var(--ink);
+    background: var(--field); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 30px 8px 11px; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--soft) 50%),
+                      linear-gradient(135deg, var(--soft) 50%, transparent 50%);
+    background-position: calc(100% - 17px) 55%, calc(100% - 12px) 55%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    transition: border-color .25s, color .25s;
+  }
+  .acoff:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* Armed is said by the control as well as by the caption and the reading: a
+     timer set by accident and never noticed is the failure worth designing out. */
+  .autooff.armed .acoff { border-color: color-mix(in oklab, var(--accent) 60%, var(--line)); }
+  .autooff.armed .seg-label { color: var(--accent); }
   .pulls { display: flex; gap: 7px; }
   /* Stop is narrower and quieter: it is the exception, not a third destination. */
   .pull.halt { flex: 0 0 auto; padding-left: 12px; padding-right: 12px; color: var(--faint); }
@@ -8953,7 +8991,14 @@ function stateWord(d) {
   // An air conditioner is infrared and cannot be read back, so this one stays
   // hedged however much plainer 'ON' would be. Saying 'ON' about a unit the
   // hub cannot hear would be the dashboard inventing a fact.
-  if (d.is_ac) return (d.status ? 'HUB SENT ON' : 'HUB SENT OFF');
+  if (d.is_ac) {
+    if (!d.status) return 'HUB SENT OFF';
+    /* An armed auto-off belongs in the reading, not only in the control that set
+       it. A timer nobody can see is a trap, and this is the one line that is
+       read from across the room — and on the board, without opening the card. */
+    const t = acTimerFor(d.record_id);
+    return 'HUB SENT ON' + (t ? ' · OFF IN ' + leftWord(t.seconds_left) : '');
+  }
   if (!d.status) return 'OFF';
   /* A television is the one thing here that genuinely answers, so its reading
      is plain fact and needs no hedge: it says what is playing and how loud.
@@ -9662,7 +9707,13 @@ function climateDrawer(d) {
  * what the sleep bar is: one tap instead of three, and a native select on iOS is
  * a scroll wheel. Four of them, to match Mode and Fan — beyond three hours the
  * left-on advisory is the right instrument, since it nudges rather than acts. */
-const AC_OFF_CHOICES = [[60, '1H'], [120, '2H'], [180, '3H'], [0, 'NONE']];
+/* Half-hour steps to seven hours, which is fourteen choices — so this is a
+   select and not the chip row the other two are. Fourteen chips would be four
+   cramped lines; a list this long is exactly what a dropdown is for.
+   Default is No timer, always: an auto-off is something asked for, never
+   something that happens to a machine because it was switched on. */
+const AC_OFF_STEP = 30;
+const AC_OFF_MAX = 420;
 
 function acAutoRow(d) {
   const group = document.createElement('div');
@@ -9671,40 +9722,42 @@ function acAutoRow(d) {
   cap.className = 'seg-label';
   group.appendChild(cap);
 
-  const row = document.createElement('div');
-  row.className = 'segs';
-  for (const [mins, label] of AC_OFF_CHOICES) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'seg';
-    b.textContent = label;
-    b.dataset.mins = String(mins);
-    b.setAttribute('aria-label', mins
-      ? pretty(d.name) + ' off after ' + label
-      : pretty(d.name) + ' no auto off');
-    b.onclick = async () => {
-      for (const other of row.children) {
-        other.classList.remove('sent');
-        other.setAttribute('aria-pressed', 'false');
-      }
-      b.classList.add('sent');
-      b.setAttribute('aria-pressed', 'true');
-      try {
-        const r = await fetch('/api/ac', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ record_id: d.record_id, off_after: mins }),
-        }).then(x => x.json());
-        if (!r.ok) throw new Error(r.error || 'the hub would not take it');
-        note(mins ? r.spoken + '.' : 'auto off cancelled.');
-        loadAuto();                       // so the caption picks up the countdown
-      } catch (err) {
-        note(err.message);
-        loadAuto();                       // put the chips back to the truth
-      }
-    };
-    row.appendChild(b);
+  const sel = document.createElement('select');
+  sel.className = 'acoff';
+  sel.setAttribute('aria-label', 'Switch ' + pretty(d.name) + ' off automatically after');
+  for (let m = 0; m <= AC_OFF_MAX; m += AC_OFF_STEP) {
+    const o = document.createElement('option');
+    o.value = String(m);
+    // Reusing the schedules' own wording rather than a second one: 90 reads as
+    // "1.5 hours" there and must read the same here. It gives '' for nothing.
+    o.textContent = m ? offAfterWord(m) : 'No timer';
+    sel.appendChild(o);
   }
-  group.appendChild(row);
+
+  sel.onchange = async () => {
+    const mins = Number(sel.value);
+    try {
+      const r = await fetch('/api/ac', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ record_id: d.record_id, off_after: mins }),
+      }).then(x => x.json());
+      if (!r.ok) throw new Error(r.error || 'the hub would not take it');
+      /* Said three ways on purpose, because an auto-off nobody noticed setting
+         is worse than none: the toast names the unit and the hour it will go,
+         the caption under the control counts down, and the card's own reading
+         carries it so it is visible from the board without opening anything. */
+      note(mins
+        ? pretty(d.name) + ' in ' + title(d.room) + ': ' + r.spoken + '.'
+        : 'auto off cancelled for ' + pretty(d.name) + '.');
+      if (mins) tick_haptic(9);          // the same tick a confirmed command gives
+      loadAuto();
+    } catch (err) {
+      note(err.message);
+      loadAuto();                       // put the control back to the truth
+    }
+  };
+
+  group.appendChild(sel);
   return group;
 }
 
@@ -9724,18 +9777,13 @@ function paintAcTimer(tile, d) {
   // Only while it is running: an auto-off for a machine that is off is nothing.
   group.hidden = !d.status;
   const t = acTimerFor(d.record_id);
+  const sel = group.querySelector('.acoff');
+  // Never while the list is open, or the choice moves under the finger.
+  if (sel && sel !== document.activeElement) sel.value = t ? String(t.minutes) : '0';
+  group.classList.toggle('armed', !!t);
   group.querySelector('.seg-label').textContent = t
-    ? 'AUTO OFF · ' + leftWord(t.seconds_left) + ' LEFT'
+    ? 'AUTO OFF IN ' + leftWord(t.seconds_left)
     : 'AUTO OFF';
-  // Whichever is armed reads as chosen, NONE when nothing is.
-  const want = t ? null : '0';
-  for (const b of group.querySelectorAll('.seg')) {
-    const on = t
-      ? Math.abs(Number(b.dataset.mins) * 60 - t.seconds_left) < 90 && Number(b.dataset.mins) > 0
-      : b.dataset.mins === want;
-    b.classList.toggle('sent', on);
-    b.setAttribute('aria-pressed', String(on));
-  }
 }
 
 function stepButton(glyph, what) {
@@ -11918,10 +11966,12 @@ function drawTimers() {
   const host = el('#timerrunning');
   host.innerHTML = '';
   for (const t of auto.timers) {
-    const mins = Math.max(1, Math.round(t.seconds_left / 60));
+    /* Hours once it is over an hour. This list is shared with the air
+       conditioners' auto-off, where seven hours is a normal choice and "in 420
+       min" is not something anybody says. */
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = '<span><b></b> in ' + mins + ' min</span>';
+    row.innerHTML = '<span><b></b> in ' + leftWord(t.seconds_left).toLowerCase() + '</span>';
     row.querySelector('b').textContent = title(t.label);   // rooms read as they do everywhere else
     const x = document.createElement('button');
     x.type = 'button';

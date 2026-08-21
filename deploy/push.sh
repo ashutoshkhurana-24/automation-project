@@ -44,7 +44,35 @@ print(len(re.findall(r'(?<!\\\\)\`', s[s.index('const HTML'):])))
 ") || die "could not run the backtick audit"
 [ "$ticks" = "2" ] || die "$ticks unescaped backticks after 'const HTML' (expected 2) — the page would fail at runtime"
 
-say "  preflight ok (parses, $ticks backticks)"
+# And the page's own script, which is the half node --check cannot reach: it sees
+# one big template literal, not the JavaScript inside it. A duplicate top-level
+# declaration in there is a SyntaxError that leaves the server parsing perfectly,
+# the page serving 200, and the whole app dead in the browser — which is exactly
+# what shipped past both checks above on 2026-08-21 (a second offAfterWord). So
+# the literal is pulled out, its ${...} holes are plugged, and it is parsed too.
+page=$(mktemp -t neopage).js
+python3 - "$page" <<'EXTRACT' || die "could not extract the page script"
+import io, re, sys
+s = io.open('server.js', encoding='utf-8').read()
+body = re.search(r'<script>(.*)</script>', s[s.index('const HTML'):], re.S).group(1)
+body = body.replace('\\`', '`').replace('\\$', '\x00').replace('\\\\', '\\')
+out, i = [], 0
+while i < len(body):                      # swap each ${ ... } for a literal
+    if body[i:i+2] == '${':
+        d, j = 1, i + 2
+        while j < len(body) and d:
+            if body[j] == '{': d += 1
+            elif body[j] == '}': d -= 1
+            j += 1
+        out.append('null'); i = j
+    else:
+        out.append(body[i]); i += 1
+io.open(sys.argv[1], 'w', encoding='utf-8').write(''.join(out).replace('\x00', '$'))
+EXTRACT
+node --check "$page" || { rm -f "$page"; die "the page's own script does not parse — it would serve 200 and be dead in the browser"; }
+rm -f "$page"
+
+say "  preflight ok (server parses, page script parses, $ticks backticks)"
 
 # --- keep a way back ------------------------------------------------------
 # A remote deploy that breaks startup leaves the house with no dashboard and
