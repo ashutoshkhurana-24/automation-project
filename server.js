@@ -1007,6 +1007,16 @@ const TVS = [
 ];
 const YT_APP = 'youtube.leanback.v4';
 
+/* Where a set is put when the dashboard switches it on.
+   These sets boot into com.webos.app.livetv and there is no setting to change
+   that: the television's own settings service refuses us outright — every
+   getSystemSettings category answers 401, because a set grants exactly what was
+   asked for at pairing time and this key predates WRITE_SETTINGS being added.
+   Re-pairing would cost somebody a walk to the screen to accept a prompt, and
+   would still not prove such a setting exists. Doing it from here needs no
+   permission we do not already hold, and works the same on all five. */
+const TV_START_APP = 'com.webos.app.home';
+
 /* The app list, kept on disk between restarts.
  *
  * It is read from the set on every successful connection, so this is never the
@@ -1290,6 +1300,35 @@ class TvLink {
     return { ok: true, spoken: this.said() + ' off' };
   }
 
+  /* Switched on from the dashboard, so it lands on the Home screen instead of
+     wherever it boots.
+     The launch is deliberately *backgrounded*: setPower returns as soon as the
+     magic packet is away, and a set takes about nine seconds before it will
+     accept a socket, so awaiting it here would hang the tile's key for that
+     long and make it feel broken. The reply is unchanged.
+     And a set that was already on is left exactly as it is — that screen
+     belongs to whoever is watching it, which is this file's rule for cues and
+     schedules and holds no less when somebody presses the key by accident. */
+  async powerOn() {
+    const wasOn = this.power || !!this.tv;
+    const r = await this.setPower(true);
+    if (wasOn) return r;
+
+    const gen = this.gen, stamp = this.commandedAt;
+    (async () => {
+      for (let i = 0; i < 25 && !this.tv; i++) await new Promise((x) => setTimeout(x, 1000));
+      /* Anything newer owns the screen: another power command, or an app the
+         user picked while the set was still waking — in which case putting Home
+         up on top of it is the very hijack the rule above exists to prevent. */
+      if (!this.tv || gen !== this.gen || this.commandedAt !== stamp) return;
+      await this.tv.launch(TV_START_APP);
+      this.app = TV_START_APP;
+      pushSoon();
+    })().catch(() => { /* it woke, which was the ask; where it landed is not an error */ });
+
+    return r;
+  }
+
   async setVolume(v) {
     if (!this.tv) throw new Error('the television is not reachable');
     this.commandedAt = Date.now();
@@ -1524,7 +1563,7 @@ app.post('/api/tv/:id', async (req, res) => {
     if (b.button != null) return res.json(await t.press(b.button));
     if (b.app != null) return res.json(await t.launchApp(b.app));
     if (b.step != null) return res.json(await t.stepVolume(Number(b.step)));
-    if (b.on != null) return res.json(await t.setPower(!!b.on));
+    if (b.on != null) return res.json(b.on ? await t.powerOn() : await t.setPower(false));
     if (b.mute != null) return res.json(await t.setMute(b.mute));
     if (b.volume != null) return res.json(await t.setVolume(Number(b.volume)));
     return res.status(400).json({ ok: false, error: 'nothing asked for' });
@@ -2448,7 +2487,7 @@ async function runTvStep(step) {
   try {
     if (step.youtube) { await t.playYoutube(step.youtube); did.push('a video'); }
     else if (step.tv_app) { await t.launchApp(step.tv_app); did.push('an app'); }
-    else { await t.setPower(true); did.push('switched on'); }
+    else { await t.powerOn(); did.push('switched on'); }
     // After the screen, so a set does not announce itself at the old volume.
     if (step.volume != null) { await t.setVolume(Number(step.volume)); did.push('volume'); }
     if (step.toast) { await t.say(step.toast).catch(() => {}); did.push('a message'); }
