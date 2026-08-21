@@ -1027,6 +1027,58 @@ function saveTvApps(mac, apps) {
     fs.writeFileSync(TV_APPS_PATH, JSON.stringify(all, null, 2) + '\n');
   } catch (e) { console.error('could not cache the TV app list:', e.message); }
 }
+/* An address of last resort, for a server that is not on the house LAN.
+ *
+ * A set is found by SSDP, which is multicast and so link-local by definition —
+ * as is the ARP read behind it. Over a tunnel neither can work at all, so a dev
+ * server reached in over Tailscale starts knowing no address for any television
+ * and never learns one: every set reads as off, for ever, while control itself
+ * would have been fine, SSAP being ordinary TCP on 3001.
+ *
+ * The hub's own dashboard is on the LAN and already publishes every address it
+ * has found, so ask it:   TV_ORACLE=http://100.83.127.114:3000 npm start
+ *
+ * This is half of a setup and useless alone: an address is only worth having if
+ * it is routable, and 192.168.1.8 is not reachable over a tunnel unless the hub
+ * also advertises the LAN as a subnet route (ip_forward, then
+ * `tailscale set --advertise-routes=192.168.1.0/24`, then approve it). Without
+ * that route this returns a perfectly correct address that nothing can reach.
+ *
+ * Deliberately a fallback and not a first choice. SSDP is a set answering for
+ * itself; this is a second-hand report, no fresher than the other server's last
+ * sweep. So it is consulted only when our own sweep finds nothing, which makes
+ * it harmless to leave set on a machine that is on the LAN — and close to
+ * redundant there, since a set that is awake answers SSDP directly, and one
+ * that is cold answers nothing to anybody. Note that second half: a fully dark
+ * set is invisible to SSDP, so on the LAN a cold house yields no addresses at
+ * all and none are needed — power-on is a broadcast to the MAC and wants no
+ * address, and the set answers SSDP as soon as it is up.
+ *
+ * Unset, which is every install on the LAN including the hub itself, none of
+ * this runs.
+ *
+ * Wake-on-LAN is a broadcast and cannot cross a tunnel however the routing is
+ * arranged, so power-on is the one thing no amount of this restores. Ask the
+ * hub to do that one. */
+const TV_ORACLE = process.env.TV_ORACLE || '';
+
+/* Only an address, and only a plausible one: it is about to be interpolated
+   into a wss:// URL, so anything that is not a dotted quad is dropped rather
+   than handed to the WebSocket. */
+const looksLikeIp = (s) => typeof s === 'string' && /^\d{1,3}(\.\d{1,3}){3}$/.test(s);
+
+async function askOracle(id) {
+  try {
+    const r = await fetch(TV_ORACLE.replace(/\/+$/, '') + '/api/health',
+      { signal: AbortSignal.timeout(4000) });
+    // Deliberately not checking the status: /api/health answers 503 with a full
+    // body when the hub reader is struggling, and the addresses in it are still
+    // good. A page that is not ours fails on the parse instead.
+    const hit = ((await r.json()).tvs || []).find((t) => t.id === id);
+    return hit && looksLikeIp(hit.address) ? hit.address : null;
+  } catch (e) { return null; }
+}
+
 const TV_RETRY_MS = 20000;
 const TV_RETRY_MAX_MS = 160000;
 
@@ -1108,6 +1160,7 @@ class TvLink {
     const seen = await discoverTvs(5000).catch(() => []);
     const hit = seen.find((t) => !t.natted && t.macs.includes(this.mac));
     if (hit) this.ip = hit.ip;
+    else if (TV_ORACLE) this.ip = await askOracle(this.id);
     return this.ip;
   }
 

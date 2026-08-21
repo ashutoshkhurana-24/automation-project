@@ -536,6 +536,37 @@ The Archer was in **Router mode**, NATing `192.168.0.0/24` out of its WAN. So th
 
 Two things this leaves worth knowing: the tailnet was never a path (the hub runs Tailscale at `100.83.127.114` but advertises no routes and has `RouteAll: false`), and reserving the two televisions on that router would be sensible if their addresses moving ever becomes a nuisance — though keying by MAC already makes it harmless.
 
+## Working on this remotely, over Tailscale (2026-08-21)
+
+**The hub is already a tailnet node and always has been: `100.83.127.114`, `abneo`, online.** What was broken was only the *Mac* — `tailscale status` said `Logged out` / `NeedsLogin`, which is the whole reason the tailnet address did not answer. `tailscale login` on the Mac is the entire setup; nothing on the hub needs touching, because `sshd` binds `0.0.0.0:22` and the dashboard binds `*:3000` already. Also on that tailnet: the iPhone, and an Android node named `rk3566-u` — an RK3566 is the usual wall-panel SoC, so that is very likely the doorbell tablet.
+
+**Edit on the Mac, run on the hub. That is the answer, and the rest of this section is why.** The code has to run where the hardware is; the tunnel's job is to carry SSH and a browser, not device traffic.
+
+```bash
+scp server.js abneo@100.83.127.114:~/dashboard/ && ssh abneo@100.83.127.114 'sudo -n systemctl restart neo-dashboard'
+```
+
+**The hub's WebSocket ignores the `Host` header, so `ALLOWED_HOSTS` does not gate it.** Worth knowing because it is the opposite of the HTTP API, where a wrong `Host` gets the DisallowedHost debug page this file already records. Tested against the live hub by connecting to `192.168.1.3:8090` while claiming `Host: 100.83.127.114:8090`: handshake fine, full `site_config`, 88 devices — identical to the baseline. So `HUB_IP=100.83.127.114` genuinely works from off-LAN, and a remote dev server can drive every light in the house.
+
+**The televisions are the part that does not simply follow, and it splits three ways.** Saying "TVs will not work over Tailscale" is wrong — most of the surface is ordinary TCP:
+
+| what | transport | crosses a tunnel? |
+|---|---|---|
+| off, volume, mute, apps, YouTube, toasts, remote buttons | TCP `wss://ip:3001` | **yes** |
+| the app-icon proxy | TCP HTTPS to the set | **yes** |
+| finding a set's address | SSDP multicast + ARP | no |
+| power **on** | Wake-on-LAN, UDP broadcast | no |
+
+So control needs a *route*, and discovery needs replacing. Neither is exotic:
+
+- **The route.** The hub is not a subnet router yet — measured `net.ipv4.ip_forward = 0`. It is `sysctl -w net.ipv4.ip_forward=1` plus `sudo tailscale set --advertise-routes=192.168.1.0/24`, an approval in the admin console, and `--accept-routes` on the Mac. Use `tailscale set`, **not** `tailscale up --reset`, which would clobber the hub's working config. The catch is that accepting `192.168.1.0/24` collides with any café or hotel LAN on that very common prefix.
+- **Discovery: `TV_ORACLE`.** `/api/health` already publishes every set's live address, so the hub is an address oracle and `find()` asks it when its own SSDP sweep comes up empty. `TV_ORACLE=http://100.83.127.114:3000 npm start`. It is **half of a setup and useless alone** — an address is only worth having if it is routable, so without the subnet route above it hands back a perfectly correct address that nothing can reach.
+- **Power-on has no fix of this kind.** A magic packet is a broadcast; the hub's `bc_forwarding = 0`, so a directed broadcast to `192.168.1.255` dies there too. `wake(mac, broadcast)` in `tools/webos.js` does take a target address, so unicast is a one-argument change — but it only lands while the router still holds an ARP entry for a *sleeping* set, which is exactly why WoL is a broadcast in the first place. The reliable route is to ask the hub, which is on the LAN: `curl -X POST http://100.83.127.114:3000/api/tv/tv-ashu -d '{"on":true}'`. Note that this last point is what makes the whole subnet-route exercise poor value — once power-on goes through the hub anyway, so should the rest.
+
+**A cold set is invisible to everything, which is worth knowing before diagnosing any of the above.** Measured with all five off: zero answers to an 8s SSDP sweep *from the Mac, on the LAN*, TCP 3001 timing out to all four known addresses, and no ping from either machine. So "SSDP found nothing" is not evidence of a network fault — check whether the house is simply dark first. It also means a cold house yields no addresses to anybody and needs none: power-on is a broadcast to the MAC and wants no address, and the set answers SSDP as soon as it is up.
+
+**And `connected: true` in `/api/health` is not a live reading.** All five sets were cold and silent to ping from both machines while the hub still reported four of them `connected: true` — a TCP socket to a set that has powered off stays open from the sender's side until a write fails. `on` was correctly `false` throughout, so the board was right and only the diagnostic field was stale. Worth remembering, since the point of that field is to tell a broken link from a switched-off set.
+
 ## Curtains (solved 2026-08-13)
 
 **A curtain is the one device class that ignores `device_status` entirely — the hub reads the verb out of `opr_param`.** Sending a curtain record with `device_status` set does nothing at all, silently, which is why curtains never worked. From the vendor's own source on the box (`/home/abneo/abneo_controller/BMS_host/`), `operations.py` dispatches `device_type == 'RL'` + `app_type == 'C'` to `curtain_opr.curtain_relay_opr(record, opr_param)`, and that function acts on exactly four strings:
