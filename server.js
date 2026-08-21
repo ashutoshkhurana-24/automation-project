@@ -384,6 +384,12 @@ const itemLabel = (it) => it.tv
   : `${sentence(it.entry.record.device_name)} · ${sentence(it.entry.room)}`;
 const itemIsCurtain = (it) => !!it.entry
   && ((it.entry.record.app_type || '') === 'C' || it.entry.is_curtain);
+/* An air conditioner that is infrared, which is six of the seven. HOME THEATRE
+   496 is device_type RL — a real relay — so it is a plain switch and stays on
+   the setRecords path, which is correct for it. */
+const itemIsAc = (it) => !!it.entry
+  && (it.entry.record.app_type || '') === 'AC'
+  && it.entry.record.device_type === 'IR';
 
 /** The sentence a schedule reads as, used by the API and spoken back. */
 function scheduleSays(sch) {
@@ -478,12 +484,15 @@ async function runSchedule(sch) {
 async function fireTargets(items, want) {
   const records = [];
   const curtains = [];
+  const acs = [];
   const jobs = [];
   for (const it of items) {
     if (it.tv) {
       jobs.push(runTvStep({ record_id: it.tv.id, on: want.on, ...(want.tv || {}) }));
     } else if (itemIsCurtain(it)) {
       curtains.push(it.entry.record.record_id);
+    } else if (itemIsAc(it)) {
+      acs.push(it.entry);
     } else {
       records.push(it.entry.record);
     }
@@ -495,6 +504,20 @@ async function fireTargets(items, want) {
     const verb = want.on ? 'curtain_opr_o' : 'curtain_opr_c';
     jobs.push((async () => {
       for (const id of curtains) await sendToHub(id, {}, verb);
+    })());
+  }
+  /* An air conditioner goes through acPower, which is the only thing that
+     actually reaches one. setRecords would hand it a bare record with a
+     device_status and no command string, and the hub drops that silently while
+     still filing the status it was given — so the schedule reported success,
+     did nothing, and the dashboard then showed the unit off while it ran on.
+     One at a time, like the curtains: each is its own socket.
+     The hub resolves the channel from the command string, which is why this
+     cannot be folded into the batch — on is channel 11 and off is channel 10 on
+     the ASHU unit, and a bare record gives it nothing to resolve from. */
+  if (acs.length) {
+    jobs.push((async () => {
+      for (const entry of acs) await acPower(entry, want.on);
     })());
   }
   return Promise.all(jobs);
