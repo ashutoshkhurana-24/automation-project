@@ -6848,6 +6848,16 @@ const HTML = /* html */ `<!doctype html>
     #cuebody .cue { backdrop-filter: none; -webkit-backdrop-filter: none; }
     #cuebody #cues { display: block; overflow: visible; }
 
+    /* On a phone the landing page does not carry cues at all. Standing outside
+       every room, the useful cue is whichever this device last used — a guess —
+       and it was costing a row above the board the app opened to show. Inside a
+       room it is not a guess: the room names the cues, so the section stays
+       there, and the thumb bar's Cues button opens the rest of them.
+       From the landing page a cue is still reachable by name in the field.
+       Desktop keeps the whole library in its column either way: it has one, and
+       the column is not in front of anything. */
+    .index:not(.in-room) #seccues { display: none; }
+
     /* The section is a block again: .index-sec > div makes every index section a
        sideways rail, and the cues are the one that should not be. */
     #seccues #cues {
@@ -8188,6 +8198,14 @@ function go(view, room) {
      allOff() reads state.view when it fires; only the label lied, which on the
      one destructive control in the bar is the worst place for it. */
   readout();
+  /* The cue surface is grouped around the room you are in, so changing rooms has
+     to redraw it — nothing else did, and it kept the previous room's grouping
+     until some other event came round. */
+  drawCues();
+  /* And a board starts at its top. Boards are dealt in as a new screen, so
+     arriving at whatever depth the last one happened to be scrolled to reads as
+     a page that failed to change — landing, in practice, at the very bottom. */
+  if (!same) window.scrollTo(0, 0);
   for (const t of document.querySelectorAll('#tabs .tab')) {
     if (t.dataset.room) tabState(t, t.dataset.room); else houseTabState(t);
   }
@@ -8431,6 +8449,10 @@ function drawField() {
   if (fieldEl) fieldEl.classList.toggle('in-room', inRoomView);
   const quick = el('#quick');
   if (quick) quick.classList.toggle('in-room', inRoomView);
+  /* The index needs to know too: on a phone the cue section shows only inside a
+     room, and .field and #quick were the only two things carrying this. */
+  const index = document.querySelector('.index');
+  if (index) index.classList.toggle('in-room', inRoomView);
   // A timer fired from a room means that room, not the whole house.
   drawRoomSay();
   stack.classList.toggle('as-house', state.view === 'house' && !state.q);
@@ -9959,6 +9981,18 @@ function rememberCue(id) {
    places reads as two different cues. */
 function cueGroups() {
   const here = state.view === 'room' && !state.q ? state.room : null;
+
+  /* Standing in a room, that room is the entire subject: its cues, and nothing
+     else. The grouped library belongs to the house view, where no room is the
+     subject — offered inside one it is a list of mostly other people's rooms,
+     which is the thing that made a cue hard to get to in the first place.
+     A cue counts as this room's if it touches it at all, so one spanning the
+     house appears here as well as there. */
+  if (here) {
+    const mine = cues.filter((c) => cueRooms(c).includes(here));
+    return mine.length ? [{ label: title(here), cues: mine, note: 'what' }] : [];
+  }
+
   const byId = new Map(cues.map((c) => [c.id, c]));
   const used = new Set();
   const groups = [];
@@ -10052,30 +10086,56 @@ function drawCues() {
   const inSheet = host.parentElement && host.parentElement.id === 'cuebody';
   const shortcut = !inSheet && window.matchMedia('(max-width: 860px)').matches;
 
+  const groups = cueGroups();
+  if (!groups.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'No cues for ' + title(state.room || 'the house')
+      + ' yet. Set it the way you like it, then save that as a cue.';
+    host.appendChild(p);
+    return;
+  }
+
   const grid = document.createElement('div');
   grid.className = 'cuegrid' + (shortcut ? ' shortcut' : '');
 
   if (shortcut) {
-    /* What this device last used, which for a phone means what its owner uses.
-       Before anything has been fired there is no history to go on, so it falls
-       back to the head of the ordinary order rather than showing an empty row. */
+    /* In a room the row is that room's own cues, in the same order the sheet
+       will show them. On the house view it is what this device last used —
+       which for a phone means what its owner uses — falling back to the head of
+       the ordinary order before anything has been fired, rather than showing an
+       empty row. */
+    const here = state.view === 'room' && !state.q ? state.room : null;
     const recents = cueRecents().map((id) => cues.find((c) => c.id === id)).filter(Boolean);
-    const show = (recents.length ? recents : cues).slice(0, 2);
-    for (const cue of show) grid.appendChild(cueCard(cue));
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'cue allcues';
-    more.innerHTML = '<span class="cue-name">All cues</span><span class="cue-note"></span>';
-    more.querySelector('.cue-note').textContent = cues.length + ' saved';
-    more.setAttribute('aria-label', 'All ' + cues.length + ' cues');
-    more.onclick = openCues;
-    grid.appendChild(more);
+    const pool = here ? groups[0].cues : (recents.length ? recents : cues);
+    const show = pool.slice(0, 2);
+    for (const cue of show) grid.appendChild(cueCard(cue, here ? 'what' : 'what'));
+
+    /* The door says what it opens. On the house view that is the whole library,
+       so it always appears — it is the only way in from there. In a room the
+       sheet holds that room and nothing else, so it appears only when there is
+       more of that room than the row is showing, and it must not claim to be
+       "all cues" when it is not. */
+    if (!here || pool.length > show.length) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'cue allcues';
+      more.innerHTML = '<span class="cue-name"></span><span class="cue-note"></span>';
+      const rest = pool.length - show.length;
+      more.querySelector('.cue-name').textContent = here ? 'More' : 'All cues';
+      more.querySelector('.cue-note').textContent = here
+        ? rest + ' more' : cues.length + ' saved';
+      more.setAttribute('aria-label', here
+        ? rest + ' more cues in ' + title(here) : 'All ' + cues.length + ' cues');
+      more.onclick = openCues;
+      grid.appendChild(more);
+    }
     host.appendChild(grid);
     markScrollX(host);
     return;
   }
 
-  for (const group of cueGroups()) {
+  for (const group of groups) {
     const head = document.createElement('div');
     head.className = 'group-label';
     head.textContent = group.label;
@@ -12272,6 +12332,11 @@ function closeCues() {
   hideScrim(el('#cuescrim'), () => {
     const home = el('#seccues');
     home.insertBefore(el('#cues'), el('#newcue'));
+    /* The node's two homes draw different amounts of the same list now — the
+       library in the sheet, a shortcut row on the board — so putting it back is
+       not enough, it has to be redrawn for the home it landed in. Without this
+       the whole library came back with it and sat on the house board. */
+    drawCues();
   });
 }
 
