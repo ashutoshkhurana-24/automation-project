@@ -4482,41 +4482,62 @@ const HTML = /* html */ `<!doctype html>
   /* the room's load, in the room's own light — the only colour in this column */
   .tab-load { display: none; }
 
-  .cue-wrap { position: relative; margin-bottom: 6px; }
-  /* Sorted to the top is only half a signal — without a mark the boundary
-     between "touches this room" and the rest is invisible. A rim rather than a
-     tint, which is how the rest of this page says a thing is the chosen one. */
-  .cue-wrap.here .cue {
-    border-color: color-mix(in oklab, var(--ink) 30%, transparent);
-    background: var(--paper-2);
+  /* Cues are a grid, not a column. A list one card per row is fine at four and
+     is a scrolling errand at fifteen — and the names alone are a poor index,
+     since half a library tends to be variations on one another. Two or three
+     across puts the whole thing on one screen, and the glow does the finding.
+     Groups are laid in the same grid and span it, so a heading and the cards
+     under it cannot come apart. */
+  .cuegrid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    gap: 8px; align-content: start;
   }
-  /* A rule between the two groups, so the promotion reads as an order and not
-     as a handful of cards that happen to look slightly different. */
-  .cue-wrap.here + .cue-wrap:not(.here) {
-    margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--line);
-  }
+  .cuegrid .group-label { margin: 6px 0 1px; }
+  .cuegrid .group-label:first-child { margin-top: 0; }
+  .cue-wrap { position: relative; }
   .cue {
-    position: relative; width: 100%; display: block; text-align: left; cursor: pointer;
-    padding: 10px 34px 11px 12px; border-radius: 12px;
+    position: relative; overflow: hidden; isolation: isolate;
+    width: 100%; height: 100%; min-height: 68px;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
+    text-align: left; cursor: pointer;
+    padding: 10px 30px 10px 12px; border-radius: 12px;
     background: var(--pane); border: 1px solid var(--edge); color: var(--ink);
     backdrop-filter: var(--lens); -webkit-backdrop-filter: var(--lens);
     box-shadow: inset 0 1px 0 var(--lip);
     font: 400 13.5px/1.3 var(--sans); transition: background .18s, border-color .18s, transform .16s;
   }
+  /* The text has to clear the fill, which is a sibling behind it rather than a
+     background on the card — the same arrangement .tile uses, and the same trap
+     it records: a static box has no z-index and falls underneath. */
+  .cue-name, .cue-note { position: relative; z-index: 1; }
+  /* Two lines, not one with an ellipsis. A cue's name is often a common stem
+     and a distinguishing tail, and truncating takes the tail — the half that
+     tells two of them apart. */
+  .cue-name {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; line-height: 1.25;
+  }
+  /* A cue with nothing lit in it has no glow to be recognised by, so it keeps
+     the plain pane rather than pretending to a light it does not make. */
+  .cue .tile-fill { border-radius: inherit; }
   .cue:hover { background: var(--pane-up); border-color: var(--edge-up); }
   .cue:active { transform: scale(.99); }
   .cue:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
   .cue.firing { border-color: var(--edge-up); animation: breathe 1.4s ease-in-out infinite; }
   @keyframes breathe { 50% { opacity: .55; } }
   .cue-note {
-    display: block; margin-top: 2px; font-size: 12px; color: var(--faint);
+    display: block; font-size: 11.5px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .cue-swatch { display: block; height: 2px; margin-top: 9px; border-radius: 1px;
-                background: rgba(255,255,255,.08); }
-  .cue-swatch i { display: block; height: 100%; border-radius: 1px; opacity: .85; }
+  /* The one card in the grid that is a door rather than a cue: no light of its
+     own, and a dashed edge so it never reads as something that can be fired. */
+  .cue.allcues {
+    border-style: dashed; background: none; color: var(--soft);
+    box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  .cue.allcues:hover { background: var(--pane); color: var(--ink); }
   .cue-edit {
-    position: absolute; top: 9px; right: 9px; width: 22px; height: 22px; padding: 0;
+    position: absolute; top: 7px; right: 7px; z-index: 2; width: 22px; height: 22px; padding: 0;
     display: grid; place-items: center; cursor: pointer; opacity: 0;
     background: none; border: 0; border-radius: 6px; color: var(--faint);
     transition: opacity .18s, color .18s, background .18s;
@@ -6821,25 +6842,33 @@ const HTML = /* html */ `<!doctype html>
     #planbody #schedlist { display: block; }
     #planbody .sched { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
-    /* The same override, for the same reason. On the house view the cues are a
-       sideways rail of chips, and the rule that makes that work sets .cue to
-       width:auto **unscoped** — so it followed the list into this sheet and
-       shrink-wrapped every card to the width of its own name. In a sheet a cue
-       is a row again. */
-    #cuebody .cue { width: 100%; flex: none; min-width: 0; }
+    /* The width override this needed is gone with the rail: .cue is no longer
+       set to width:auto anywhere, so nothing follows the list into the sheet.
+       In the sheet the grid simply has more room and takes another column. */
     #cuebody .cue { backdrop-filter: none; -webkit-backdrop-filter: none; }
+    #cuebody #cues { display: block; overflow: visible; }
 
-    /* A cue on a phone is a chip: the name is the whole target. The reading and
-       the colour swatch are detail for a screen with room to spare. The name
-       must not wrap, or the chip grows taller than the card it replaced. */
-    #seccues .cue-note, #seccues .cue-swatch { display: none; }
-    #seccues .cue {
-      min-width: 0; white-space: nowrap;
-      padding-top: 11px; padding-right: 32px; padding-bottom: 11px; padding-left: 13px;
+    /* The section is a block again: .index-sec > div makes every index section a
+       sideways rail, and the cues are the one that should not be. */
+    #seccues #cues {
+      display: block; overflow: visible;
+      margin-left: 0; margin-right: 0; padding-left: 0; padding-right: 0;
     }
-    #seccues .cue-name { font-size: 13px; }
-    /* the pencil rides beside the name rather than above it on a one-line chip */
-    #seccues .cue-edit { top: 50%; right: 5px; transform: translateY(-50%); }
+    /* Three across in one row: two cues and the door to the rest. One row is
+       what the old rail cost, so the house board is no further down the screen
+       than it was — the difference is that both of these are the ones this
+       phone actually uses, rather than the two that happen to be first. */
+    .cuegrid.shortcut { grid-template-columns: repeat(3, 1fr); gap: 7px; }
+    .cuegrid.shortcut .cue { min-height: 60px; padding: 8px 9px; }
+    .cuegrid.shortcut .cue-name { font-size: 12.5px; }
+    .cuegrid.shortcut .cue-note { font-size: 10.5px; }
+    /* No pencil on the shortcut row: editing is what the sheet is for, and at
+       this size the pencil would sit on top of the name. */
+    .cuegrid.shortcut .cue-edit { display: none; }
+    .cuegrid.shortcut .cue { padding-right: 9px; }
+    /* Create lives in the sheet's own foot on a phone. As a fourth cell here it
+       made every card in the row narrower than its own name. */
+    #seccues .newcue { display: none; }
 
     /* the bar carries the notch inset itself, so its glass reaches the top edge */
     .plate {
@@ -6877,29 +6906,21 @@ const HTML = /* html */ `<!doctype html>
     .index-sec > div::-webkit-scrollbar { display: none; }
     /* A phone is not a small desktop: the rails carry more per screen, so the
        house itself starts near the top instead of below a stack of furniture. */
-    .tab, .cue { width: auto; flex: 0 0 auto; min-width: 116px; margin-bottom: 0; }
+    /* Rooms are still a rail. Cues are not: a sideways rail shows two and a
+       half of them at a time and gives no way to tell which half of the library
+       you are looking at, which is the whole reason it was hard to get to the
+       one you wanted. */
+    .tab { width: auto; flex: 0 0 auto; min-width: 116px; margin-bottom: 0; }
     .tab { padding: 8px 12px; font-size: 13px; }
-    .cue { padding: 9px 11px; }
     .cue-name { font-size: 13px; }
     .cue-edit { opacity: 1; }
-    /* "+ Create a cue" is a sibling of the rail rather than a member of it, so
-       it dropped onto a line of its own under the chips and cost another 50px
-       on the screen that has none. It joins the rail as the chip at the end. */
-    #seccues { display: flex; align-items: center; gap: 8px; }
-    #seccues #cues { flex: 1 1 auto; min-width: 0; }
-    /* Pinned beside a rail that fades at its right edge, the full label read as
-       though it were sitting on top of a half-erased chip. At the end of a row
-       of named cues the plus needs no sentence. The label stays in the
-       accessibility tree — font-size does not remove it — so it is still
-       announced as "Create a cue". */
-    /* Scoped to the cue rail. The schedules list is not a rail — a lone plus
-       floating under it says nothing about what it adds. */
-    #seccues .newcue {
-      flex: 0 0 auto; width: auto; margin-top: 0; padding: 0;
-      min-width: 40px; height: 38px; border-radius: 999px;
-      font-size: 0; display: grid; place-items: center;
-    }
-    #seccues .newcue::before { content: '+'; font-size: 19px; line-height: 1; }
+    /* A block, not a flex row: the row was built to seat the plus chip beside
+       the rail, and both are gone. */
+    #seccues { display: block; }
+    /* The plus chip went with the rail it belonged to. It was the last item in
+       a scrolling row; as a fourth cell in a three-across grid it made every
+       card narrower than its own name, and Create already has a full-width
+       button at the foot of the sheet that All cues opens. */
     #secsched .newcue { width: 100%; margin-top: 2px; padding: 11px 13px; font-size: 13px; }
 
     /* ── the field, on a phone ───────────────────────────────────────────
@@ -8226,7 +8247,30 @@ const saysFor = (w) => /^\\d{1,3}$/.test(w) ? 'to ' + Number(w) + '%'
  * at once is the thing you actually want: a lamp that comes on at the level
  * *and* the colour you meant, not the level and then, a second later, the
  * colour. */
+/* A cue by name, so the field reaches a saved picture of the house the same way
+   it already reaches a circuit — which is the second path into a library that is
+   mostly browsed: you know the name, so type it.
+   Deliberately tried *after* the room grammar and only on a unique match, so a
+   cue can never shadow a circuit command. */
+function parseCueCommand(q) {
+  const typed = q.trim().toLowerCase();
+  if (typed.length < 2) return null;
+  const exact = cues.find((c) => (c.name || '').toLowerCase() === typed);
+  const hits = exact ? [exact]
+    : cues.filter((c) => (c.name || '').toLowerCase().startsWith(typed));
+  if (hits.length !== 1) return null;
+  return { path: '/do/cue/' + hits[0].id, cue: hits[0].id, says: 'Set ' + hits[0].name };
+}
+
 function parseCommand(q) {
+  const circuit = parseRoomCommand(q);
+  // A working circuit command always wins; its complaint only stands if no cue
+  // answers to the same words.
+  if (circuit && !circuit.bad) return circuit;
+  return parseCueCommand(q) || circuit;
+}
+
+function parseRoomCommand(q) {
   if (!grammar) return null;
   const w = q.trim().toLowerCase().split(/\\s+/).filter(Boolean);
   if (w.length < 2 || w.length > 4) return null;
@@ -8294,6 +8338,9 @@ function nextWords(q) {
 }
 
 async function runCommand(cmd) {
+  // The same memory the cards write, so a cue fired by typing still surfaces in
+  // Recent. Without this the two ways in would build different histories.
+  if (cmd.cue) rememberCue(cmd.cue);
   const row = el('#cmdrow');
   if (row) row.classList.add('running');
   try {
@@ -9868,11 +9915,120 @@ async function loadCues() {
 
 /* Does this cue name a circuit in that room? Read off the steps rather than the
    cue's note, which is a phrase for reading ("2 rooms") and not a list. */
-function touchesRoom(cue, room) {
-  return (cue.steps || []).some((st) => {
+/* Which rooms a cue acts on, read off its steps.
+   A cue's name is free text and means whatever somebody typed, so every
+   grouping below is derived from the steps instead — the one part of a cue that
+   cannot drift from what it actually does. */
+function cueRooms(cue) {
+  return [...new Set((cue.steps || []).map((st) => {
     const d = deviceOf(st.record_id);
-    return d && d.room === room;
-  });
+    return d ? d.room : null;
+  }).filter(Boolean))];
+}
+
+/* What a cue does, without saying where: the heading above it already says
+   where, and a tile has room for one line. */
+function cueWhat(cue) {
+  const steps = cue.steps || [];
+  if (!steps.length) return 'nothing yet';
+  const on = steps.filter((st) => st.on !== false).length;
+  const off = steps.length - on;
+  if (!on) return 'all off';
+  return on + ' on' + (off ? ' \u00b7 ' + off + ' off' : '');
+}
+
+/* There are no accounts in this house, so the device is the person: a phone
+   belongs to one of us and the wall panel belongs to everybody. Remembering
+   what was fired *on this device* is the whole of the personalisation, and it
+   needs no login and no server state — which is exactly why it is localStorage
+   and not settings.json, which every browser would share. */
+const CUE_RECENT_KEY = 'neo-cue-recent';
+function cueRecents() {
+  try { return JSON.parse(localStorage.getItem(CUE_RECENT_KEY) || '[]'); }
+  catch { return []; }
+}
+function rememberCue(id) {
+  try {
+    localStorage.setItem(CUE_RECENT_KEY,
+      JSON.stringify([id, ...cueRecents().filter((x) => x !== id)].slice(0, 8)));
+  } catch { /* private mode: the grouping simply has no memory */ }
+}
+
+/* The library in the order somebody standing here would want it.
+   Every cue appears exactly once — in a grid this small the same card in two
+   places reads as two different cues. */
+function cueGroups() {
+  const here = state.view === 'room' && !state.q ? state.room : null;
+  const byId = new Map(cues.map((c) => [c.id, c]));
+  const used = new Set();
+  const groups = [];
+  /* The note is what each card in the group says under its name, and it is
+     whatever the heading above it is not saying: the room, where the heading
+     does not name one, and otherwise what the cue actually does. Saying both
+     twice is how the old list came to carry a line nobody read. */
+  const take = (label, list, note) => {
+    const items = list.filter((c) => c && !used.has(c.id));
+    if (!items.length) return;
+    items.forEach((c) => used.add(c.id));
+    groups.push({ label, cues: items, note });
+  };
+
+  // Capped, so it stays a shortcut instead of becoming a second full list.
+  take('Recent', cueRecents().map((id) => byId.get(id)).filter(Boolean).slice(0, 3), 'what');
+  // Standing in a room, that room is the subject; on the house view it is not.
+  if (here) take(title(here), cues.filter((c) => cueRooms(c).includes(here)), 'what');
+  take('Several rooms', cues.filter((c) => cueRooms(c).length > 1), 'what');
+  /* One pooled group rather than a heading per room. Grouping by every room
+     sounds tidier and is worse in practice: most rooms own one or two cues, so
+     it produced a heading above a single card and half an empty row beside it —
+     more scrolling than the flat list it replaced. Pooled, the cards sit
+     shoulder to shoulder and each one says which room it belongs to, since that
+     is the thing the heading is no longer saying.
+     Sorted by room, so they still cluster where the eye expects them. */
+  const order = rooms();
+  take('One room', cues.filter((c) => cueRooms(c).length === 1)
+    .sort((a, b) => order.indexOf(cueRooms(a)[0]) - order.indexOf(cueRooms(b)[0])), 'where');
+  take('Everything else', cues, 'what');   // steps pointing at circuits we cannot resolve
+  return groups;
+}
+
+/* One cue, as the light it makes.
+   cuePreview already worked out a cue's average brightness and colour
+   temperature for a 2px swatch; given the whole card those two numbers turn the
+   library into something you read by looking rather than by reading — the dark
+   warm one is Movie Night whatever it has been named. It borrows .tile-fill
+   outright, so a cue and a circuit glow from one definition and cannot drift
+   apart between the two themes. */
+function cueCard(cue, note) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cue-wrap';
+
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'cue' + (firing === cue.id ? ' firing' : '');
+  const look = cuePreview(cue);
+  b.style.setProperty('--tint', look.colour);
+  b.style.setProperty('--fill', (look.brightness / 100).toFixed(3));
+  b.innerHTML = '<span class="tile-fill"></span>' +
+                '<span class="cue-name"></span><span class="cue-note"></span>';
+  b.querySelector('.cue-name').textContent = cue.name;
+  b.querySelector('.cue-note').textContent = note === 'where'
+    ? (cueRooms(cue).map(title).join(', ') || cueWhat(cue))
+    : cueWhat(cue);
+  b.setAttribute('aria-label', 'Set ' + cue.name + ' \u2014 ' + cueNote(cue));
+  b.onclick = () => fire(cue);
+  wrap.appendChild(b);
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'cue-edit';
+  edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg>';
+  edit.setAttribute('aria-label', 'Edit ' + cue.name);
+  edit.onclick = () => openSheet(cue);
+  wrap.appendChild(edit);
+  return wrap;
 }
 
 function drawCues() {
@@ -9887,46 +10043,47 @@ function drawCues() {
     host.appendChild(p);
     return;
   }
-  /* Standing in a room, the cues that touch it are the only ones worth reaching
-     for, and they were scattered through a list ordered by when each was made.
-     A stable sort, so within the two halves nothing is shuffled — and only in a
-     room, because on the house view no room is the subject and promoting some
-     cues over others would be inventing a preference. */
-  const here = state.view === 'room' && !state.q ? state.room : null;
-  const order = here
-    ? [...cues].sort((a, b) => (touchesRoom(b, here) ? 1 : 0) - (touchesRoom(a, here) ? 1 : 0))
-    : cues;
-  for (const cue of order) {
-    const wrap = document.createElement('div');
-    wrap.className = 'cue-wrap' + (here && touchesRoom(cue, here) ? ' here' : '');
+  /* Two homes wanting two different amounts of the same list. In the desktop
+     column and in the sheet this is the whole library, grouped. On the phone's
+     house board it is a shortcut row instead: that board is what the app was
+     opened to look at, and a full library stacked above it pushes the house
+     itself below the fold — which is the complaint the rail had in the first
+     place, and it is not fixed by making the rail taller. */
+  const inSheet = host.parentElement && host.parentElement.id === 'cuebody';
+  const shortcut = !inSheet && window.matchMedia('(max-width: 860px)').matches;
 
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'cue' + (firing === cue.id ? ' firing' : '');
-    b.innerHTML = '<span class="cue-name"></span><span class="cue-note"></span>' +
-                  '<span class="cue-swatch"><i></i></span>';
-    b.querySelector('.cue-name').textContent = cue.name;
-    b.querySelector('.cue-note').textContent = cueNote(cue);
-    const look = cuePreview(cue);
-    const fill = b.querySelector('.cue-swatch i');
-    fill.style.width = look.brightness + '%';
-    fill.style.background = look.colour;
-    b.setAttribute('aria-label', 'Set ' + cue.name + ' — ' + cueNote(cue));
-    b.onclick = () => fire(cue);
-    wrap.appendChild(b);
+  const grid = document.createElement('div');
+  grid.className = 'cuegrid' + (shortcut ? ' shortcut' : '');
 
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'cue-edit';
-    edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-      '<path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg>';
-    edit.setAttribute('aria-label', 'Edit ' + cue.name);
-    edit.onclick = () => openSheet(cue);
-    wrap.appendChild(edit);
-
-    host.appendChild(wrap);
+  if (shortcut) {
+    /* What this device last used, which for a phone means what its owner uses.
+       Before anything has been fired there is no history to go on, so it falls
+       back to the head of the ordinary order rather than showing an empty row. */
+    const recents = cueRecents().map((id) => cues.find((c) => c.id === id)).filter(Boolean);
+    const show = (recents.length ? recents : cues).slice(0, 2);
+    for (const cue of show) grid.appendChild(cueCard(cue));
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'cue allcues';
+    more.innerHTML = '<span class="cue-name">All cues</span><span class="cue-note"></span>';
+    more.querySelector('.cue-note').textContent = cues.length + ' saved';
+    more.setAttribute('aria-label', 'All ' + cues.length + ' cues');
+    more.onclick = openCues;
+    grid.appendChild(more);
+    host.appendChild(grid);
+    markScrollX(host);
+    return;
   }
+
+  for (const group of cueGroups()) {
+    const head = document.createElement('div');
+    head.className = 'group-label';
+    head.textContent = group.label;
+    grid.appendChild(head);
+    for (const cue of group.cues) grid.appendChild(cueCard(cue, group.note));
+  }
+  host.appendChild(grid);
+
   /* The cue list is drawn after watchScroll has already measured, and it is
      the thing that decides how far the column runs — so both the column and
      the rail have to be re-read here or neither draws its fade on load. */
@@ -11122,6 +11279,9 @@ function cuePreview(cue) {
 
 async function fire(cue) {
   if (firing) return;
+  // Recorded before the hub is asked, not after: what somebody reached for is
+  // worth remembering whether or not every circuit in it took.
+  rememberCue(cue.id);
   firing = cue.id;
   drawCues();
   note(cue.name + ' — setting ' + cue.devices + ' circuits…', true);
