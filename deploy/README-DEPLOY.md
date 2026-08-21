@@ -149,16 +149,55 @@ In your iPhone shortcuts, replace the Mac's address with the hub's:
 
 ## Updating later
 
-Rebuild on the Mac, copy, unpack over the top, restart:
+Almost every change is `server.js` alone, so use the script:
+
+```bash
+bash deploy/push.sh
+```
+
+It syntax-checks on the Mac, copies `server.js` **and nothing else**, checks it
+again on the hub, restarts, and then confirms the page really came up — rolling
+back to the previous `server.js` if it did not. That last part matters when you
+are deploying from away: a broken startup otherwise leaves the house with no
+dashboard, nobody near the box, and a watchdog restarting the wreck for ever.
+
+It also runs the backtick audit, which `node --check` cannot do for you: the
+frontend lives in a template literal, so a stray backtick inside it can stay
+syntactically valid and take the page down at runtime instead. That has shipped
+three times.
+
+### From away
+
+Pass the hub's tailnet address, or set `NEO_HOST`:
+
+```bash
+bash deploy/push.sh 100.83.127.114
+```
+
+Nothing else needs configuring — `sshd` and the dashboard both already bind all
+interfaces. See the Tailscale section of `../CLAUDE.md` for what does and does
+not reach the house over that tunnel (short version: lights yes, televisions
+mostly, switching a television *on* no).
+
+`NEO_PORT`, `NEO_DIR` and `NEO_SVC` override the port, directory and unit name.
+
+### The whole bundle, when data/ or node_modules changed
 
 ```bash
 scp dashboard-nas-bundle.tar.gz abneo@192.168.1.3:~/
 ssh abneo@192.168.1.3 'tar -xzf ~/dashboard-nas-bundle.tar.gz -C ~/dashboard && sudo systemctl restart neo-dashboard'
 ```
 
-`scenes.json` in the bundle would overwrite cues edited on the hub — if you edit
-cues on the hub, pull its `scenes.json` back before rebuilding, or drop it from
-the bundle in `build-bundle.sh`.
+**Check `scenes.json` first.** The bundle packs it, so this overwrites the
+house's real cues with whatever local testing left behind — and editing a cue in
+a local test server is enough to leave residue. Compare the two mtimes before
+you do it; the hub's should be the newer one if anybody has edited cues there:
+
+```bash
+stat -f '%Sm local' scenes.json; ssh abneo@192.168.1.3 'stat -c "%y hub" ~/dashboard/scenes.json'
+```
+
+`push.sh` avoids the whole question by never copying it.
 
 ## Uninstalling — leaves the hub exactly as found
 
