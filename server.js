@@ -2263,7 +2263,7 @@ app.post('/api/ac', async (req, res) => {
          somebody has since started with its own remote, which the hub cannot
          see. Only cancel when no new timer is being asked for in the same
          breath, or "off, then on again in a moment" would drop the new one. */
-      if (!on && offAfter == null) { clearAcTimer(recordId); saveState(); }
+      if (!on && offAfter == null) clearAcTimer(recordId);
     }
     if (mode != null) {
       if (!AC_MODES.includes(mode)) {
@@ -2327,7 +2327,6 @@ app.post('/api/ac', async (req, res) => {
       } else {
         sent.push('timer off');
       }
-      saveState();
     }
 
     if (!sent.length) return res.status(400).json({ ok: false, error: 'Nothing to change' });
@@ -3445,7 +3444,6 @@ function loadState() {
   try {
     const saved = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     for (const [id, at] of Object.entries(saved.lit_since || {})) litSince.set(Number(id), at);
-    restoreAcTimers(saved.ac_timers || []);
   } catch { /* first run */ }
 }
 
@@ -3453,16 +3451,12 @@ function saveState() {
   try {
     fs.writeFileSync(STATE_PATH, JSON.stringify({
       lit_since: Object.fromEntries(litSince),
-      /* Only the AC timers. A sleep timer is deliberately *not* kept — this file
-         already says why, and it still holds: a forgotten one switching the
-         house off hours later is worse than one that quietly lapses.
-         An auto-off is the opposite case. It exists precisely so a machine that
-         nobody is watching does not run all night, and the watchdog restarts the
-         service after two failed health checks — so in memory alone the feature
-         would evaporate exactly when it was doing its job, silently. */
-      ac_timers: [...timers.values()]
-        .filter((t) => t.kind === 'ac')
-        .map((t) => ({ id: t.id, recordId: t.recordId, label: t.label, at: t.at, minutes: t.minutes })),
+      /* No timers of any kind. An AC auto-off used to be kept here, on the
+         argument that the watchdog would otherwise evaporate one; the user's
+         call is that it must not have a memory at all — a restart comes up with
+         No timer, always, so nothing is ever armed that nobody armed. Which
+         also makes it consistent with the sleep timer beside it, and leaves the
+         left-on advisory as the thing that catches a machine left running. */
     }, null, 2));
   } catch (err) { console.error('could not save state:', err.message); }
 }
@@ -3475,25 +3469,6 @@ function saveState() {
  * whatever the room is doing then — including an air conditioner somebody has
  * since started with its own remote. The left-on advisory still covers that case,
  * which is the right instrument for it: it nudges rather than acts. */
-function restoreAcTimers(saved) {
-  let back = 0, stale = 0, highest = 0;
-  for (const t of saved) {
-    const n = Number(String(t.id || '').replace(/^t/, ''));
-    if (Number.isFinite(n)) highest = Math.max(highest, n);
-    if (!(t.at > Date.now())) { stale++; continue; }
-    armTimer({ id: t.id, kind: 'ac', recordId: t.recordId, scope: 'device:' + t.recordId,
-      label: t.label, at: t.at, minutes: t.minutes });
-    back++;
-  }
-  // Or a fresh timer would be handed an id a restored one already holds.
-  if (highest > timerSeq) timerSeq = highest;
-  if (back || stale) {
-    console.log('ac timers: ' + back + ' still pending'
-      + (stale ? ', ' + stale + (stale === 1 ? ' had' : ' had') + ' already come due and '
-        + (stale === 1 ? 'was' : 'were') + ' dropped' : ''));
-  }
-}
-
 /** Called after every hub read: notice what came on and what went off. */
 function trackLit() {
   let changed = false;
@@ -3614,7 +3589,7 @@ async function runTimer(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
-  if (t.kind === 'ac') { saveState(); await runAcOff(t); return; }
+  if (t.kind === 'ac') { await runAcOff(t); return; }
   await runSleep(t.scope, t.label);
 }
 
@@ -3738,10 +3713,6 @@ app.delete('/api/timers/:id', (req, res) => {
   if (!t) return res.status(404).json({ ok: false, error: 'No such timer' });
   clearTimeout(t.handle);
   timers.delete(t.id);
-  /* An AC timer lives on disk, so forgetting it has to be written down too —
-     without this, cancelling one from the sleep panel dropped it from memory
-     only and the next restart brought it back to life. */
-  if (t.kind === 'ac') saveState();
   res.json({ ok: true });
 });
 
