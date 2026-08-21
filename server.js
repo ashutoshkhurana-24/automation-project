@@ -5454,20 +5454,15 @@ const HTML = /* html */ `<!doctype html>
      else reserves the corner for it and a long name would simply run under it.
      Wrapping is the safety valve: the state drops to its own line rather than
      the name being cut, since a truncated name is the worse failure. */
+  /* 56px clears the key and nothing else. It was 80 to reserve the corner for a
+     big display-type level as well, which is gone: on a compact COB card that
+     number sat hard against the two vertical rails, and the level is in the
+     reading anyway. */
   .headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px;
-              min-width: 0; padding-right: 80px; }
+              min-width: 0; padding-right: 56px; }
   .headline .roomname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .headline .state { margin-top: 0; flex: 0 0 auto; }
   .headline .state::before { content: '\\00b7\\00a0'; color: var(--faint); }
-  /* A dimmer's level is the thing you glance at, so it goes where every other
-     measurement on this board lives — the corner, in the same numerals as the
-     ceiling card above it, clear of the key which owns the corner itself. */
-  .tile-num {
-    position: absolute; z-index: 2; top: 12px; right: 44px;
-    font-family: var(--display); font-size: 26px; line-height: 1;
-    color: var(--faint); transition: color .25s;
-  }
-  .tile.on .tile-num { color: var(--ink); }
   /* A lit circuit's reading is ink, not grey. This rule used to say --soft and
      sat *after* the one that said ink, so the state line quietly lost — the
      same half-live-CSS trap as the search field and --base before it. */
@@ -7014,12 +7009,8 @@ const HTML = /* html */ `<!doctype html>
       top: auto; bottom: 13px; left: 14px; right: auto; width: 22px; height: 22px;
     }
     .tiles .tile.cobmember .tile-body { padding-bottom: 46px; }
-    /* The rails own the right of a compact card, so the number takes the top of
-       the left column rather than the corner — and the wiring address goes,
-       which is the same trade this card already makes everywhere else: the
-       rails say the detail and the id stays in the tooltip and on the full
-       card. Without that, four things were stacked in 86px of face. */
-    .tiles .tile.cobmember .tile-num { top: 11px; left: 13px; right: auto; font-size: 20px; }
+    /* The wiring address goes: the rails say the detail and the id stays in the
+       tooltip and on the full card. */
     .tiles .tile.cobmember .idline { display: none; }
     /* And the name keeps its line. 'COB 1 · ON' wants about 82px and the face
        is 72px wide once the rails have theirs, so side by side the name — the
@@ -8699,7 +8690,7 @@ function circuitTile(d, compact) {
        rides the name, which leaves two lines where there were three. */
     : d.is_dimmable
     ? '<span class="headline"><span class="roomname"></span><span class="state"></span></span>' +
-      '<span class="idline"></span><span class="tile-num"></span>'
+      '<span class="idline"></span>'
     : '<span class="roomname"></span><span class="idline"></span><span class="state"></span>';
   body.querySelector('.roomname').textContent = pretty(d.name).toUpperCase();
   if (!d.is_tv) body.querySelector('.idline').textContent = idLine(d);
@@ -8934,13 +8925,8 @@ function paintTile(tile, d) {
   // How much light this circuit is making drives the glow, not just the fill.
   tile.style.setProperty('--lit', (level / 100).toFixed(3));
   tile.querySelector('.tile-fill').style.setProperty('--fill', (level / 100).toFixed(3));
-  /* With the level in the corner the reading must not say it again, and the
-     warmth strip already carries its own word — so a dimmer's reading is the
-     one word the board is scanned for and nothing else. */
-  const num = tile.querySelector('.tile-num');
-  if (num) num.textContent = d.status ? d.level + '%' : '';
   const st = tile.querySelector('.state');
-  if (st) st.textContent = num ? (d.status ? 'ON' : 'OFF') : stateWord(d);
+  if (st) st.textContent = stateWord(d);
 
   /* The screen shows what is on it. This is the one tile on the board that can
      say more than a level — so it carries the set's own app art, which is
@@ -9027,7 +9013,10 @@ function stateWord(d) {
   // neither of them the thing you are scanning the board for, which is simply
   // which circuits are awake.
   if (d.is_fan) return 'ON';
-  if (d.is_dimmable) return 'ON · ' + d.level + '%' + (d.is_tunable ? ' · ' + warmthWord(d.tune).toUpperCase() : '');
+  /* No warmth word. The strip beside it already reads AMBER · 81, and on a
+     compact COB card the long form wrapped the line — which is what the corner
+     number was invented to avoid before the number itself was dropped. */
+  if (d.is_dimmable) return 'ON · ' + d.level + '%';
   return 'ON';
 }
 
