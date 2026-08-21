@@ -5098,8 +5098,12 @@ const HTML = /* html */ `<!doctype html>
        made a duration easier to reach than the room's own cues, and every one
        of them is in the sleep panel, one tap further in. */
     nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
+    /* grid, not flex. An id beats .quick button, so saying flex here to reveal
+       the button also replaced the grid that stacks every other one of them, and
+       Cues alone drew its glyph beside its word. #qfind looks right only because
+       nothing ever sets a display on it. */
     nav.quick #qcues { display: none; }
-    nav.quick.in-room #qcues { display: flex; }
+    nav.quick.in-room #qcues { display: grid; }
     nav.quick.in-room #qfind { display: none; }
     nav.quick #qoff span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
                         text-transform: uppercase; }
@@ -6483,6 +6487,16 @@ const HTML = /* html */ `<!doctype html>
      where the most lit one is the largest. Everything here is scoped to wide
      screens — the phone layout is deliberately untouched. */
   @media (min-width: 861px) {
+    /* A dimmer's name belongs at the top of its card, beside the level.
+       .tile-body is justify-content: flex-end, so its text sits just above the
+       strips reserved at the foot — which was right while the wiring address was
+       the bottom line and the name rode above it. With the address gone the name
+       inherited that slot and came down onto the sliders, overlapping the first
+       one by 3px. Only above 860px: on a phone the address was already hidden,
+       so nothing moved there, and the number sits at the card's top-left where
+       the name would collide with it. */
+    .tile.dims .tile-body { justify-content: flex-start; }
+
     .shell {
       max-width: 1500px;
       /* 104px of it was clearance for a pill that floated over the page. The
