@@ -348,25 +348,51 @@ function scheduleTarget(sch) {
     return scene ? { kind: 'cue', scene, label: scene.name } : null;
   }
   if (sch.target?.kind === 'device') {
-    /* A television is addressed by our own name for it, so it has to be looked
-       for before Number() turns 'tv-living' into NaN. */
-    const id = sch.target.record_id;
-    if (typeof id === 'string' && tvs.has(id)) {
-      const tv = tvs.get(id);
-      // Not through sentence(): it title-cases, and turned TV into Tv.
-      return { kind: 'device', tv, label: `${tv.name} · ${sentence(tv.room)}` };
+    /* One schedule can name several circuits, so this resolves a list. One
+       stored before that carried a single record_id and still loads, which is
+       what targetIds is for. Anything that has since been removed from the
+       house is dropped rather than failing the whole schedule — a schedule for
+       four lamps should still run when the installer took one away. */
+    const items = [];
+    for (const id of targetIds(sch.target)) {
+      /* A television is addressed by our own name for it, so it has to be
+         looked for before Number() turns 'tv-living' into NaN. */
+      if (typeof id === 'string' && tvs.has(id)) { items.push({ tv: tvs.get(id) }); continue; }
+      const entry = devices.get(Number(id));
+      if (entry) items.push({ entry });
     }
-    const entry = devices.get(Number(id));
-    return entry ? { kind: 'device', entry, label: `${sentence(entry.record.device_name)} · ${sentence(entry.room)}` } : null;
+    if (!items.length) return null;
+    const where = [...new Set(items.map(itemRoom))];
+    const label = items.length === 1 ? itemLabel(items[0])
+      : items.length + ' circuits · ' + (where.length === 1
+        ? sentence(where[0]) : where.length + ' rooms');
+    // entry and tv still name the first, for the single-circuit callers.
+    return { kind: 'device', items, entry: items[0].entry, tv: items[0].tv, label };
   }
   return null;
 }
+
+/* A device target holds record_ids; one written before it could hold several
+   holds record_id. Both read the same way through here. */
+const targetIds = (target) => Array.isArray(target?.record_ids) ? target.record_ids
+  : (target?.record_id != null ? [target.record_id] : []);
+
+const itemRoom = (it) => (it.tv ? it.tv.room : it.entry.room);
+const itemLabel = (it) => it.tv
+  // Not through sentence() for the name: it title-cases, and turned TV into Tv.
+  ? `${it.tv.name} · ${sentence(it.tv.room)}`
+  : `${sentence(it.entry.record.device_name)} · ${sentence(it.entry.room)}`;
+const itemIsCurtain = (it) => !!it.entry
+  && ((it.entry.record.app_type || '') === 'C' || it.entry.is_curtain);
 
 /** The sentence a schedule reads as, used by the API and spoken back. */
 function scheduleSays(sch) {
   const t = scheduleTarget(sch);
   const what = t ? t.label : 'something that no longer exists';
-  const isCurtain = t?.entry?.record && ((t.entry.record.app_type || '') === 'C' || t.entry.is_curtain);
+  /* Open/close only when the whole selection is curtains. Mixed with a lamp
+     the pair is on/off, and each curtain in it still closes on off — which is
+     what runSchedule does per circuit. */
+  const isCurtain = !!t?.items?.length && t.items.every(itemIsCurtain);
   let verb = sch.target?.kind === 'cue' ? 'run'
     : isCurtain ? ((sch.action === 'close' || sch.action === 'off') ? 'close' : 'open')
     : (sch.action === 'off' ? 'switch off' : 'switch on');
@@ -419,28 +445,59 @@ async function runSchedule(sch) {
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return fireCue(t.scene);
   if (t.kind === 'device') {
-    /* Through the same runner a cue uses, so the rule that a set already being
-       watched is left alone holds for a schedule too — which matters more here,
-       since nobody is standing at the dashboard when this fires. */
-    if (t.tv) {
-      return runTvStep({
-        record_id: t.tv.id,
-        on: !(sch.action === 'off' || sch.action === 'close'),
-        tv_app: sch.tv_app, youtube: sch.youtube, volume: sch.volume, toast: sch.toast,
-      });
-    }
-    const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
-    if (isCurtain) {
-      const verb = (sch.action === 'close' || sch.action === 'off') ? 'curtain_opr_c' : 'curtain_opr_o';
-      return sendToHub(t.entry.record.record_id, {}, verb);
-    }
     const isOff = sch.action === 'off' || sch.action === 'close';
-    return setRecords([t.entry.record], {
+    return fireTargets(t.items, {
       on: !isOff,
       level: isOff ? 0 : (sch.level != null ? sch.level : 100),
       tune: isOff ? null : (sch.tune != null ? sch.tune : null),
+      tv: { tv_app: sch.tv_app, youtube: sch.youtube, volume: sch.volume, toast: sch.toast },
     });
   }
+}
+
+/* Send one action to every circuit a schedule names.
+ *
+ * Three kinds and three ways, which is why this exists rather than a loop:
+ *  - plain circuits go in **one** setRecords call, which is one shared socket
+ *    with the verify-and-resend behind it. This file's own measurements say a
+ *    command per socket, fired together, is dropped most of the time — so a
+ *    schedule for five lamps must not be five sends.
+ *  - a curtain ignores device_status entirely and needs its verb in opr_param,
+ *    and two of them go one after the other rather than at once.
+ *  - a screen goes through runTvStep, so the rule that a set somebody is
+ *    watching is left alone holds here too — which matters more for a schedule
+ *    than anywhere else, nobody being at the dashboard when it fires.
+ * The screens and the batch start together, as applyScene does, because a set
+ * taking nine seconds to wake must not hold up the lamps.
+ *
+ * Not fixed here, and worth knowing before someone schedules one: an air
+ * conditioner is IR and setRecords cannot command it — it is handed a bare
+ * record with no command string and the hub drops it silently. That is the same
+ * as this path has always done with a single AC; multi-select only makes it
+ * easier to include one by accident. See the protocol note above. */
+async function fireTargets(items, want) {
+  const records = [];
+  const curtains = [];
+  const jobs = [];
+  for (const it of items) {
+    if (it.tv) {
+      jobs.push(runTvStep({ record_id: it.tv.id, on: want.on, ...(want.tv || {}) }));
+    } else if (itemIsCurtain(it)) {
+      curtains.push(it.entry.record.record_id);
+    } else {
+      records.push(it.entry.record);
+    }
+  }
+  if (records.length) {
+    jobs.push(setRecords(records, { on: want.on, level: want.level, tune: want.tune }));
+  }
+  if (curtains.length) {
+    const verb = want.on ? 'curtain_opr_o' : 'curtain_opr_c';
+    jobs.push((async () => {
+      for (const id of curtains) await sendToHub(id, {}, verb);
+    })());
+  }
+  return Promise.all(jobs);
 }
 
 /* Put out whatever this schedule lit, once its time is up.
@@ -454,14 +511,7 @@ async function runScheduleOff(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return clearCue(t.scene);
-  if (t.kind === 'device') {
-    if (t.tv) return runTvStep({ record_id: t.tv.id, on: false });
-    const isCurtain = (t.entry.record.app_type || '') === 'C' || t.entry.is_curtain;
-    if (isCurtain) {
-      return sendToHub(t.entry.record.record_id, {}, 'curtain_opr_c');
-    }
-    return setRecords([t.entry.record], { on: false });
-  }
+  if (t.kind === 'device') return fireTargets(t.items, { on: false, level: 0, tune: null });
 }
 
 /** The records a cue actually lights — the ones it names at a level above zero. */
@@ -897,7 +947,7 @@ function stateSignature() {
   parts.push('tv:' + tvSignature());
   parts.push('sch:' + schedules.map(s =>
     `${s.id}${s.name || ''}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}` +
-    `${s.off_after || 0}${s.target?.id ?? s.target?.record_id}`).join(','));
+    `${s.off_after || 0}${s.target?.id ?? targetIds(s.target).join('.')}`).join(','));
   return parts.join('|');
 }
 let lastSignature = '';
@@ -2625,22 +2675,37 @@ function readSchedule(body, base) {
   if (!days.length) return { error: 'a schedule with no days would never run — pick at least one' };
 
   const target = body?.target ?? base?.target;
-  let devEntry = null;
   let devTv = null;
+  const chosen = [];           // {id, entry?|tv?} in the order they were picked
   if (target?.kind === 'cue') {
     if (!scenes.some(sc => sc.id === target.id)) return { error: `no cue with id ${target.id}` };
   } else if (target?.kind === 'device') {
-    if (typeof target.record_id === 'string' && tvs.has(target.record_id)) {
-      devTv = tvs.get(target.record_id);
-    } else {
-      devEntry = devices.get(Number(target.record_id));
-      if (!devEntry) return { error: `no device with record_id ${target.record_id}` };
+    const ids = targetIds(target);
+    if (!ids.length) return { error: 'pick at least one circuit' };
+    /* Every id has to resolve now. Dropping an unknown one silently would save
+       a schedule that quietly does less than it says — scheduleTarget forgives a
+       circuit removed from the house *later*, which is a different thing. */
+    for (const raw of ids) {
+      if (typeof raw === 'string' && tvs.has(raw)) { chosen.push({ id: raw, tv: tvs.get(raw) }); continue; }
+      const entry = devices.get(Number(raw));
+      if (!entry) return { error: `no device with record_id ${raw}` };
+      chosen.push({ id: Number(raw), entry });
+    }
+    // The single-circuit callers below still want these.
+    devTv = chosen[0].tv || null;
+    if (chosen.length > 1 && chosen.some((c) => c.tv) && chosen.some((c) => c.entry)) {
+      /* A screen's extras (an app, a link, a volume, a message) belong to one
+         set, and there is no sensible way to read them across a mixed list. */
+      return { error: 'a screen has to be scheduled on its own, not alongside circuits' };
     }
   } else {
-    return { error: 'target must be {kind:"cue",id} or {kind:"device",record_id}' };
+    return { error: 'target must be {kind:"cue",id} or {kind:"device",record_ids:[...]}' };
   }
 
-  const isCurtain = !!(devEntry && ((devEntry.record.app_type || '') === 'C' || devEntry.is_curtain));
+  /* Open/close only when every circuit chosen is a curtain. Mixed with a lamp
+     the pair is on/off, and each curtain still closes on off. */
+  const isCurtain = chosen.length > 0
+    && chosen.every((c) => c.entry && ((c.entry.record.app_type || '') === 'C' || c.entry.is_curtain));
   let action = String(body?.action ?? base?.action ?? (isCurtain ? 'open' : 'on'));
   if (isCurtain) {
     if (action === 'on') action = 'open';
@@ -2686,8 +2751,9 @@ function readSchedule(body, base) {
       days,
       target: target.kind === 'cue'
         ? { kind: 'cue', id: target.id }
-        // A screen keeps its own id as a string; Number() would make it NaN.
-        : { kind: 'device', record_id: devTv ? devTv.id : Number(target.record_id) },
+        // A screen keeps its own id as a string; Number() would make it NaN,
+        // which is why the ids were normalised one at a time above.
+        : { kind: 'device', record_ids: chosen.map((c) => c.id) },
       action,
       level,
       tune,
@@ -10275,18 +10341,18 @@ function schedWhat(sch) {
     const cue = cues.find(c => c.id === sch.target.id);
     return 'Run ' + (cue ? cue.name : sch.target.id);
   }
-  const d = state.devices.find(x => x.record_id === Number(sch.target?.record_id));
-  const where = d ? pretty(d.name) + ' · ' + title(d.room) : 'a circuit';
-  if (d?.is_curtain) {
+  const list = schedDevices(sch.target);
+  const where = list.length ? schedTargetWords(sch.target) : 'a circuit';
+  if (allCurtains(list)) {
     return (sch.action === 'close' || sch.action === 'off' ? 'Close ' : 'Open ') + where;
   }
   const isOff = sch.action === 'off' || sch.action === 'close';
   let verb = isOff ? 'Switch off ' : 'Switch on ';
   let extra = '';
-  if (!isOff && d) {
+  if (!isOff && list.length) {
     const parts = [];
-    if (d.is_dimmable && sch.level != null) parts.push(sch.level + '%');
-    if (d.is_tunable && sch.tune != null) parts.push(warmthWord(sch.tune));
+    if (list.some((x) => x.is_dimmable) && sch.level != null) parts.push(sch.level + '%');
+    if (list.some((x) => x.is_tunable) && sch.tune != null) parts.push(warmthWord(sch.tune));
     if (parts.length) extra = ' (' + parts.join(', ') + ')';
   }
   return verb + where + extra;
@@ -10398,6 +10464,55 @@ function schedSlider(label, key, draft, d, word, warm) {
 let schedPick = null;       // null | 'rooms' | 'circuits'
 let schedPickRoom = null;
 
+/* A schedule can name several circuits. Reads either shape, so one saved before
+   it could — carrying a single record_id — still opens for editing. */
+const schedIds = (target) => Array.isArray(target?.record_ids) ? target.record_ids
+  : (target?.record_id != null ? [target.record_id] : []);
+const schedDevices = (target) => schedIds(target).map(deviceOf).filter(Boolean);
+const allCurtains = (list) => list.length > 0 && list.every((d) => d.is_curtain);
+
+/* What the chosen circuits are called, together. The room is said once when
+   they share one, because "3 circuits · Ashu Room, Ashu Room, Ashu Room" is not
+   a sentence anybody wants. */
+function schedTargetWords(target) {
+  const list = schedDevices(target);
+  if (!list.length) return 'Choose circuits';
+  if (list.length === 1) return pretty(list[0].name) + ' \u00b7 ' + title(list[0].room);
+  const where = [...new Set(list.map((d) => d.room))];
+  return list.length + ' circuits \u00b7 '
+    + (where.length === 1 ? title(where[0]) : where.length + ' rooms');
+}
+
+/* Add or take away one circuit.
+ *
+ * A screen is the exception and has to stand alone: its extras — an app, a
+ * link, a volume — belong to one set, and there is no reading them across a
+ * list. The server refuses the mix, so the picker must not offer it; choosing a
+ * screen replaces the selection, and choosing anything else replaces a screen.
+ *
+ * Brightness and warmth deliberately survive a circuit being added, unlike the
+ * old single-pick behaviour that cleared them every time: adding a fourth lamp
+ * to a schedule set at 30% means at 30%, and having to set it again each time
+ * would be the checklist fighting the person using it. */
+function toggleSchedCircuit(d) {
+  const ids = schedIds(schedDraft.target);
+  const key = String(d.record_id);
+  const had = ids.some((x) => String(x) === key);
+  const isScreen = (id) => typeof id === 'string';
+  let next = had ? ids.filter((x) => String(x) !== key) : [...ids, d.record_id];
+  if (!had && (isScreen(d.record_id) || next.some(isScreen))) next = [d.record_id];
+
+  schedDraft.target = { kind: 'device', record_ids: next };
+  const list = schedDevices(schedDraft.target);
+  if (!list.length || !list.some((x) => x.is_tv)) {
+    schedDraft.tv_app = null; schedDraft.youtube = null;
+    schedDraft.volume = null; schedDraft.toast = null;
+  }
+  // Only the vocabulary changes with the selection, never the direction.
+  const off = schedDraft.action === 'close' || schedDraft.action === 'off';
+  schedDraft.action = allCurtains(list) ? (off ? 'close' : 'open') : (off ? 'off' : 'on');
+}
+
 /** The rooms, then a room's circuits, drawn into the schedule sheet. */
 function drawSchedPicker() {
   const box = el('#schedpicker');
@@ -10421,25 +10536,35 @@ function drawSchedPicker() {
   }
 
   box.appendChild(backButton('Rooms', () => { schedPick = 'rooms'; drawSchedSheet(); }));
+
+  /* A checklist, since a schedule can name several circuits: tapping toggles
+     and the picker stays open, so choosing five is five taps rather than five
+     round trips through the form. Done is the way back — and a tick that cannot
+     be unticked is the one thing a tick promises, which is the lesson the cue
+     editor already recorded. */
+  const chosen = schedIds(schedDraft.target).map(String);
+  const done = document.createElement('button');
+  done.type = 'button';
+  done.className = 'sheet-btn go schedpickdone';
+  done.textContent = chosen.length
+    ? 'Done \u00b7 ' + chosen.length + (chosen.length === 1 ? ' circuit' : ' circuits')
+    : 'Done';
+  done.onclick = () => { schedPick = null; drawSchedSheet(); };
+  box.appendChild(done);
+
   for (const d of inRoom(schedPickRoom)) {
-    const mine = String(schedDraft.target?.record_id) === String(d.record_id);
+    const mine = chosen.includes(String(d.record_id));
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'pick' + (mine ? ' in' : '');
+    b.setAttribute('aria-pressed', String(mine));
     b.innerHTML = '<span class="what"></span><span class="count"></span>';
     b.querySelector('.what').textContent = pretty(d.name);
-    b.querySelector('.count').textContent = mine ? 'this one' : '';
+    b.querySelector('.count').textContent = mine ? 'chosen' : '';
     b.onclick = () => {
       /* The id stays a string for a television and a number for a hub circuit,
          which is the difference the server keys everything off. */
-      schedDraft.target = { kind: 'device', record_id: d.record_id };
-      // A circuit chosen afresh loses the last one's settings, which belonged
-      // to a different lamp.
-      delete schedDraft.level; delete schedDraft.tune;
-      schedDraft.tv_app = null; schedDraft.youtube = null;
-      schedDraft.volume = null; schedDraft.toast = null;
-      schedDraft.action = d.is_curtain ? 'open' : 'on';
-      schedPick = null;
+      toggleSchedCircuit(d);
       drawSchedSheet();
     };
     box.appendChild(b);
@@ -10503,12 +10628,11 @@ function drawSchedSheet() {
     syncSchedTarget();
   }
 
-  const targetDev = kind === 'device' && schedDraft.target?.record_id != null
-    ? deviceOf(schedDraft.target.record_id) : null;
-  el('#schedcircuitwhat').textContent = targetDev
-    ? pretty(targetDev.name) + ' \u00b7 ' + title(targetDev.room)
-    : 'Choose a circuit';
-  const isCurtain = !!targetDev?.is_curtain;
+  const targetDevs = kind === 'device' ? schedDevices(schedDraft.target) : [];
+  const targetDev = targetDevs[0] || null;      // the screen fields still want one
+  el('#schedcircuitwhat').textContent = kind === 'device'
+    ? schedTargetWords(schedDraft.target) : 'Choose circuits';
+  const isCurtain = allCurtains(targetDevs);
 
   /* Action buttons: Open/Close for curtains, On/Off for circuits */
   el('#schedaction').hidden = kind !== 'device';
@@ -10539,16 +10663,25 @@ function drawSchedSheet() {
   if (controls) {
     controls.innerHTML = '';
     const isLit = schedDraft.action === 'on' || schedDraft.action === 'open';
-    const showControls = kind === 'device' && targetDev && !isCurtain && isLit && (targetDev.is_dimmable || targetDev.is_tunable);
+    /* Offered when *any* of the chosen circuits can take it, and applied to
+       those that can — a plain switch in the selection simply comes on. */
+    const anyDim = targetDevs.some((d) => d.is_dimmable);
+    const anyTune = targetDevs.some((d) => d.is_tunable);
+    const showControls = kind === 'device' && targetDevs.length && !isCurtain && isLit && (anyDim || anyTune);
     controls.hidden = !showControls;
     if (showControls) {
-      if (targetDev.is_dimmable) {
-        if (schedDraft.level == null) schedDraft.level = targetDev.level > 0 ? targetDev.level : 100;
-        controls.appendChild(schedSlider('Brightness', 'level', schedDraft, targetDev, (v) => v + '%'));
+      /* Sized off the first circuit that can actually take the setting, not off
+         the first one chosen — pick a plain switch and then a dimmer, and keying
+         these on the first would hide the slider the second one needs. */
+      if (anyDim) {
+        const lamp = targetDevs.find((d) => d.is_dimmable);
+        if (schedDraft.level == null) schedDraft.level = lamp.level > 0 ? lamp.level : 100;
+        controls.appendChild(schedSlider('Brightness', 'level', schedDraft, lamp, (v) => v + '%'));
       }
-      if (targetDev.is_tunable) {
-        if (schedDraft.tune == null) schedDraft.tune = targetDev.tune != null ? targetDev.tune : 80;
-        controls.appendChild(schedSlider('Warmth', 'tune', schedDraft, targetDev, warmthWord, true));
+      if (anyTune) {
+        const lamp = targetDevs.find((d) => d.is_tunable);
+        if (schedDraft.tune == null) schedDraft.tune = lamp.tune != null ? lamp.tune : 80;
+        controls.appendChild(schedSlider('Warmth', 'tune', schedDraft, lamp, warmthWord, true));
       }
     }
     /* A screen has no level, so it falls outside showControls above and brings
@@ -10593,13 +10726,15 @@ function schedPreview() {
   if (!schedDraft.target) return 'Pick something for it to do.';
   if (!schedDraft.days.length) return 'Pick at least one day, or it will never run.';
   const d = schedDraft.target.kind === 'device'
-    ? deviceOf(schedDraft.target.record_id) : null;
+    ? deviceOf(schedIds(schedDraft.target)[0]) : null;
+  const many = schedDevices(schedDraft.target);
   let what = '';
   if (schedDraft.target.kind === 'cue') {
     what = 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue');
-  } else if (d?.is_curtain) {
+  } else if (allCurtains(many)) {
     const verb = (schedDraft.action === 'close' || schedDraft.action === 'off') ? 'close ' : 'open ';
-    what = verb + pretty(d.name) + ' in ' + title(d.room);
+    what = verb + (many.length === 1
+      ? pretty(d.name) + ' in ' + title(d.room) : schedTargetWords(schedDraft.target));
   } else if (d?.is_tv) {
     const off = schedDraft.action === 'off' || schedDraft.action === 'close';
     const bits = [];
@@ -10613,15 +10748,17 @@ function schedPreview() {
     const isOff = schedDraft.action === 'off' || schedDraft.action === 'close';
     const verb = isOff ? 'switch off ' : 'switch on ';
     let extra = '';
-    if (!isOff && d) {
+    if (!isOff && many.length) {
       const parts = [];
-      if (d.is_dimmable && schedDraft.level != null) parts.push(schedDraft.level + '%');
-      if (d.is_tunable && schedDraft.tune != null) parts.push(warmthWord(schedDraft.tune));
+      if (many.some((x) => x.is_dimmable) && schedDraft.level != null) parts.push(schedDraft.level + '%');
+      if (many.some((x) => x.is_tunable) && schedDraft.tune != null) parts.push(warmthWord(schedDraft.tune));
       if (parts.length) extra = ' at ' + parts.join(', ');
     }
-    what = verb + (d ? pretty(d.name) + ' in ' + title(d.room) : 'a circuit') + extra;
+    what = verb + (many.length === 1
+      ? pretty(d.name) + ' in ' + title(d.room)
+      : many.length ? schedTargetWords(schedDraft.target) : 'a circuit') + extra;
   }
-  const isCurtain = !!d?.is_curtain;
+  const isCurtain = allCurtains(many);
   const after = schedDraft.off_after
     ? ' Then ' + (isCurtain ? 'close' : 'off') + ' again after ' + offAfterWord(schedDraft.off_after) + '.' : '';
   return 'At ' + schedDraft.at + ', ' + what + '. ' + daysWord(schedDraft.days) + '.' + after;
@@ -10667,7 +10804,8 @@ el('#schedcircuit').onclick = () => {
 for (const b of el('#schedkind').querySelectorAll('.seg')) {
   b.onclick = () => {
     if ((schedDraft.target?.kind || 'cue') === b.dataset.kind) return;
-    schedDraft.target = b.dataset.kind === 'cue' ? { kind: 'cue', id: null } : { kind: 'device', record_id: null };
+    schedDraft.target = b.dataset.kind === 'cue'
+      ? { kind: 'cue', id: null } : { kind: 'device', record_ids: [] };
     // Nothing is chosen yet, so go where the choosing happens rather than
     // leaving a button that says "Choose a circuit" to be found.
     schedPick = b.dataset.kind === 'device' ? 'rooms' : null;
@@ -10722,7 +10860,9 @@ el('#planadd').onclick = () => openSchedSheet(null);
 el('#planscrim').addEventListener('click', (e) => { if (e.target === el('#planscrim')) closePlans(); });
 
 el('#schedsave').onclick = async () => {
-  if (!schedDraft.target || (!schedDraft.target.id && !schedDraft.target.record_id)) {
+  // record_ids, not record_id: the guard was still asking for the single-circuit
+  // shape and so refused to save every multi-circuit schedule.
+  if (!schedDraft.target || (!schedDraft.target.id && !schedIds(schedDraft.target).length)) {
     return note('Pick what this schedule should do.');
   }
   if (!schedDraft.days.length) return note('Pick at least one day.');

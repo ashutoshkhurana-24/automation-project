@@ -150,6 +150,20 @@ Consequences that follow from it, all deliberate: a screen step is **never retri
 
 Schedules get the same rooms → circuit picker instead of a ninety-item dropdown (`schedPick`), and both sheets draw the same rows so the house is not named two different ways.
 
+**A schedule names several circuits, not one (2026-08-22).** `target` is `{kind:'device', record_ids:[...]}`; `targetIds()` reads either shape so one saved with a single `record_id` still loads and still edits. The picker is a **checklist** for the same reason the cue editor is: tapping toggles and the sheet stays open, so five circuits is five taps rather than five round trips through the form, and Done carries the count. A tick that cannot be unticked is the one thing a tick promises.
+
+`fireTargets()` is where the three kinds part company, and it is why this is not a loop: **plain circuits go in one `setRecords` call** — one shared socket with verify-and-resend behind it, because this file's own measurements say a socket per command fired together is dropped most of the time, and a schedule for five lamps must not be five sends; a **curtain** needs its verb in `opr_param` and two of them go one after the other; a **screen** goes through `runTvStep`, so the rule about not taking a set off whoever is watching holds here too — which matters more for a schedule than anywhere else, nobody being at the dashboard when it fires. Screens and the batch start together, as `applyScene` does.
+
+Four decisions worth keeping:
+- **Open/close only when every circuit chosen is a curtain.** Mixed with a lamp the pair is on/off, and each curtain in the selection still closes on off — which is what the runner does per circuit anyway.
+- **A screen is scheduled on its own.** Its extras — an app, a link, a volume — belong to one set and cannot be read across a list, so the server refuses the mix and the picker replaces the selection rather than offering it.
+- **Brightness and warmth are offered when *any* chosen circuit can take them**, and the sliders are sized off the first circuit that actually can — key them on the first circuit *chosen* and picking a plain switch then a dimmer hides the slider the dimmer needs. They also survive a circuit being added, unlike the old single-pick behaviour that cleared them on every change: adding a fourth lamp to a schedule set at 30% means at 30%.
+- **An unknown id fails the whole save, but a circuit that disappears later is dropped.** Those are different things: saving something that quietly does less than it says is a bug, while a schedule for four lamps should still run when the installer takes one away.
+
+The trap this hit: **`#schedsave`'s own guard still asked for `target.record_id`**, so every multi-circuit schedule was refused with "Pick what this schedule should do" while the server was perfectly willing. Proven end to end afterwards on three of ASHU's COBs that were already on at 100%, so the room could not change: the hub's log showed all three commanded in the same second, `device id 19` channels 24, 6 and 7.
+
+**Not fixed, and worth knowing before somebody schedules one: an air conditioner still does nothing.** It is IR, `setRecords` hands it a bare record with no command string, and the hub drops it silently — exactly as this path has always done with a single AC. Multi-select only makes it easier to include one by accident.
+
 **A curtain does not go on and off.** The step editor had `['On', true], ['Off', false]` written into it rather than taken from the circuit, so a cue that closed a curtain read as switching it off — and `stepWord` said "off" for everything. `onOffWords(d)` and `stepWord(st, d)` take the vocabulary from the circuit now: open/close for a curtain, and for a screen what it will actually put on.
 
 **Two traps in the shared step editor.** `stepSlider` reached for `.sheet-step` to update the row's summary as the value moved, and on its own screen there is no such ancestor — it threw on the first drag until it was guarded. And its save callback takes a redraw flag: choosing an app has to clear the link field beside it, while a slider must never rebuild the control the finger is holding.
