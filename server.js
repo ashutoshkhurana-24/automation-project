@@ -5105,7 +5105,11 @@ const HTML = /* html */ `<!doctype html>
        is deliberately given over to the three sleep durations — a schedule is
        a house-level thing, and the room bar is already the one place where
        what you want is a duration and nothing else. */
-    nav.quick { grid-template-columns: 1.5fr 1fr 1fr 1fr; gap: 5px; }
+    /* Five on the landing page, four in a room. The landing page needs both
+       Find and Cues — what you are looking for could be anywhere, and the cue
+       you want is a tap rather than a name you have to remember typing — while
+       in a room Find gives way, because the room is the search. */
+    nav.quick { grid-template-columns: 1.35fr 1fr 1fr 1fr 1fr; gap: 5px; }
     /* Four across leaves the held control narrow enough that its count wrapped
        to a second line and took the whole bar with it. */
     nav.quick #qoff span { white-space: nowrap; }
@@ -5113,18 +5117,20 @@ const HTML = /* html */ `<!doctype html>
        — only its fourth button changes what it is. The house offers Find,
        because what you are looking for could be anywhere; a room offers Cues,
        because standing in one the thing you reach for is a picture of it you
-       have already saved.
-       The quick durations used to sit here, replacing the other three buttons
-       whenever you were in a room. They are gone: they were a fifth column that
-       made a duration easier to reach than the room's own cues, and every one
-       of them is in the sleep panel, one tap further in. */
+       have already saved. Both are offered on the landing page now, five across:
+       hiding the cue row from that board took the only tap to a cue with it, and
+       a name you have to remember typing is not a replacement for a button.
+       The quick durations used to sit here too, replacing the other three
+       buttons whenever you were in a room. They are gone, and the reason still
+       stands against bringing them back: they made a duration easier to reach
+       than the room's own cues, and every one of them is in the sleep panel,
+       one tap further in. */
     nav.quick.in-room { grid-template-columns: 1.5fr 1fr 1fr 1fr; }
-    /* grid, not flex. An id beats .quick button, so saying flex here to reveal
-       the button also replaced the grid that stacks every other one of them, and
-       Cues alone drew its glyph beside its word. #qfind looks right only because
-       nothing ever sets a display on it. */
-    nav.quick #qcues { display: none; }
-    nav.quick.in-room #qcues { display: grid; }
+    /* grid, not flex. An id beats .quick button, so saying flex here — which is
+       what this said while the button was being revealed per view — also
+       replaced the grid that stacks every other one of them, and Cues alone drew
+       its glyph beside its word. */
+    nav.quick #qcues { display: grid; }
     nav.quick.in-room #qfind { display: none; }
     nav.quick #qoff span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
                         text-transform: uppercase; }
