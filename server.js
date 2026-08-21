@@ -2217,8 +2217,11 @@ function acCommand(record, verb, arg) {
 /* Said out loud in a reply, so it has to read like speech: an hour is an hour,
    not 60 minutes, and one minute is not "1 minutes". */
 function spokenMins(m) {
-  if (m >= 60 && m % 60 === 0) return (m / 60) + (m === 60 ? ' hour' : ' hours');
-  return m + (m === 1 ? ' minute' : ' minutes');
+  if (m < 60) return m + (m === 1 ? ' minute' : ' minutes');
+  // Half hours are ordinary here, so 210 has to say three and a half hours
+  // rather than 210 minutes — which is what it said before, out loud, to Siri.
+  const h = m / 60;
+  return (Number.isInteger(h) ? h : h.toFixed(1)) + (m === 60 ? ' hour' : ' hours');
 }
 
 /* The one way an air conditioner is switched, shared by the endpoint and by a
