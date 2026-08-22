@@ -164,6 +164,19 @@ function decodeLevel(v) {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
 }
 
+/* The projector's twenty-two keys, and how to tell one. Declared up here rather
+   than beside the commands that use them, because deviceList() below reads them
+   and a const is not hoisted: sitting further down the file, the first call
+   that happened during startup would throw rather than answer. */
+const PRJ_KEYS = ['on', 'off', 'sigSource', 'computer', 'video', 'menu', 'confirm',
+  'up', 'down', 'left', 'right', 'quit', 'volAdd', 'volRed', 'mute',
+  'focusAdd', 'focusRed', 'picAdd', 'picRed', 'auto', 'pause', 'mcd'];
+
+const isPrjRecord = (rec) => (rec.app_type || '') === 'PRJ' && rec.device_type === 'IR';
+
+/** Which of the twenty-two this particular record actually carries. */
+const prjKeysOf = (rec) => PRJ_KEYS.filter((k) => rec[k] != null && rec[k] !== '');
+
 function deviceList() {
   return tvDeviceList().concat([...devices.values()]
     .filter(({ room, record }) => !shadowedByTv(record, room))
@@ -187,6 +200,11 @@ function deviceList() {
     // Only the IR units take mode, fan speed and a temperature; the Home
     // Theatre one is relay-wired and really is just a switch.
     is_ac: (record.app_type || '') === 'AC' && record.device_type === 'IR',
+    /* A remote, not a switch. One-way like the air conditioners, so nothing it
+       reports is a reading — and the keys are listed rather than assumed,
+       because another install's projector may not carry all twenty-two. */
+    is_projector: isPrjRecord(record),
+    prj_keys: isPrjRecord(record) ? prjKeysOf(record) : undefined,
     ac_temp: Number(record.ac_temp) || null,
     channel_open: String(record.channel_open || ''),
     channel_close: String(record.channel_close || ''),
@@ -2474,6 +2492,24 @@ async function setRecords(records, { on, level, tune }) {
   const wantTune = pct(tune);
   if (wantLevel == null && wantTune == null) throw new Error('Nothing to set — send on, level or tune');
 
+  /* An infrared projector leaves here first, for the reason the air conditioners
+     leave fireTargets: the batch sends a bare record and the hub reads the
+     device and the channel out of the command string, so a projector in a batch
+     is dropped without a word while the hub still files the status. Doing it
+     here rather than in each caller is what makes /do, the group tile and
+     switchOffMany all reach it. It has no level and no colour, so only the
+     on/off decision means anything — a warmth drag simply passes it by. */
+  const { prjs, rest } = splitProjectors(records);
+  let prjSent = 0;
+  if (prjs.length && wantLevel != null) {
+    for (const rec of prjs) {
+      const entry = devices.get(rec.record_id);
+      if (entry) { await prjPower(entry, wantLevel > 0); prjSent++; }
+    }
+  }
+  records = rest;
+  if (!records.length) return prjSent;
+
   const canTune = (rec) => rec.is_tunable === 'true' && rec.channel_id_tunable != null;
   // A colour asked for goes to every tunable lamp. With none asked for, the
   // colour of the hour fills in — but only for lamps that are coming on, so a
@@ -2488,7 +2524,9 @@ async function setRecords(records, { on, level, tune }) {
         // has been given one by hand, in which case that stands.
         || (decodeLevel(rec.device_status) === 0 && !handTuned.has(rec.record_id))));
 
-  let sent = 0;
+  // Starts at the projectors already sent, so a caller counting what went out
+  // is not told a projector press was nothing.
+  let sent = prjSent;
   if (colour != null && tunable.length) {
     sent += await sendBatchToHub(tunable.map((rec) => ({
       recordId: rec.record_id,
@@ -2659,6 +2697,106 @@ async function acPower(entry, on) {
   entry.record.device_status = String(on);
 }
 
+/* ── the projector ────────────────────────────────────────────────────────
+ *
+ * Record 512, HOME THEATRE, `app_type: PRJ`, `device_type: IR`. It is the one
+ * screen the hub itself knows, and it is a remote rather than a switch: the
+ * record carries twenty-two named keys and **the code for each key is the
+ * record's own field** — `record.on` is 168 on this unit, `record.menu` is 177.
+ * That is exactly what the hub's own `Device/areaComps.projIrMap` builds, so
+ * these names are its spelling, not ours.
+ *
+ * The payload is `IR_OPR <device_id_ir> <code>`, which is not inferred: the
+ * hub logs every command it receives, and its journal holds the vendor app's
+ * own presses — `'opr_param': 'IR_OPR 195 168'` twenty-three times, `195 169`
+ * four, `195 177` twice. Nothing varies between keys but the code.
+ *
+ * Why this had to be written at all: `BMS_host/operations.py` rewrites the
+ * command string only for an air conditioner (`get_opr_from_params`, which
+ * resolves the channel as `res[verb]` — the same named-field trick). A PRJ
+ * record's `opr_param` is passed to `ir_opr` untouched, and `ir_opr` splits it
+ * on spaces and reads device id and channel out of positions 1 and 2. So a bare
+ * record from `setRecords` arrives as the empty string and the hub logs
+ * `IR PARAMETER ISSS ` with nothing after it — proven against the live hub on
+ * 2026-08-22, beside the vendor app's own line for comparison. Worse, the hub
+ * still files the `device_status` it was handed, so the board then showed the
+ * projector on while it sat dark. The same trap the air conditioners had, and
+ * it reported `confirmed: true` while doing nothing at all.
+ *
+ * Also `device_id_ir`, not `device_id` — a projector record has no `device_id`
+ * at all, which is why acCommand's shape cannot be reused here.
+ */
+function prjCommand(record, key) {
+  return 'IR_OPR ' + record.device_id_ir + ' ' + record[key];
+}
+
+/* One key press. Power also writes the status, for the same reason acPower does:
+   it is the only record of what was asked for, and without it `outstanding()`
+   sees a projector step that never landed and resends it. Every other key
+   leaves the status alone — pressing Menu says nothing about whether the lamp
+   is on. */
+async function prjPress(entry, key) {
+  const rec = entry.record;
+  if (!isPrjRecord(rec)) throw new Error('not an infrared projector');
+  if (rec[key] == null || rec[key] === '') throw new Error('this projector has no ' + key + ' key');
+  const fields = key === 'on' ? { device_status: 'true' }
+    : key === 'off' ? { device_status: 'false' } : {};
+  await sendToHub(rec.record_id, fields, prjCommand(rec, key));
+  if (key === 'on' || key === 'off') rec.device_status = String(key === 'on');
+}
+
+const prjPower = (entry, on) => prjPress(entry, on ? 'on' : 'off');
+
+/* Pulls the infrared projectors out of a batch. Everything that commands hub
+   records in bulk has to do this, because a projector cannot ride a batch at
+   all: the batch carries a bare record and the hub needs the command string. */
+function splitProjectors(records) {
+  const prjs = [], rest = [];
+  for (const rec of records) (isPrjRecord(rec) ? prjs : rest).push(rec);
+  return { prjs, rest };
+}
+
+/* One key, by name, on the hub's projector. `on` and `off` are the two anyone
+   reaches for; the other twenty are the remote panel. */
+app.post('/api/projector', async (req, res) => {
+  const recordId = Number(req.body?.record_id);
+  const key = String(req.body?.key || '');
+  if (!Number.isInteger(recordId)) {
+    return res.status(400).json({ ok: false, error: 'record_id must be an integer' });
+  }
+  const entry = devices.get(recordId);
+  if (!entry || !isPrjRecord(entry.record)) {
+    return res.status(404).json({ ok: false, error: 'no infrared projector with that record_id' });
+  }
+  if (!prjKeysOf(entry.record).includes(key)) {
+    return res.status(400).json({ ok: false, error: 'key must be one of: ' + prjKeysOf(entry.record).join(', ') });
+  }
+  try {
+    await prjPress(entry, key);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: err.message });
+  }
+  pushSoon();
+  const name = sentence(entry.record.device_name);
+  /* Never "the projector is on" — infrared is one-way and the hub cannot hear
+     the machine, so all anyone knows is what was sent. The air conditioners
+     already say it this way. */
+  const spoken = key === 'on' ? name + ' switched on'
+    : key === 'off' ? name + ' switched off'
+    : name + ' — ' + prjWord(key);
+  res.json({ ok: true, record_id: recordId, key, sent: true, spoken });
+});
+
+/* What a key is called out loud. The record's own spelling is a wiring name;
+   nobody says "focusAdd". */
+function prjWord(key) {
+  return ({ on: 'on', off: 'off', sigSource: 'source', computer: 'computer', video: 'video',
+    menu: 'menu', confirm: 'OK', up: 'up', down: 'down', left: 'left', right: 'right',
+    quit: 'back', volAdd: 'volume up', volRed: 'volume down', mute: 'mute',
+    focusAdd: 'focus in', focusRed: 'focus out', picAdd: 'picture bigger',
+    picRed: 'picture smaller', auto: 'auto', pause: 'pause', mcd: 'freeze' })[key] || key;
+}
+
 app.post('/api/ac', async (req, res) => {
   const recordId = Number(req.body?.record_id);
   const { power, mode, fan, swing, temp, off_after: offAfter } = req.body || {};
@@ -2795,7 +2933,28 @@ function stepTarget(step) {
  */
 async function sendSteps(list) {
   // Off first, so a scene never briefly lights the whole room.
-  const order = [...list].sort((a, b) => (a.step.on === false ? 0 : 1) - (b.step.on === false ? 0 : 1));
+  let order = [...list].sort((a, b) => (a.step.on === false ? 0 : 1) - (b.step.on === false ? 0 : 1));
+
+  /* The projector cannot ride the batch — see splitProjectors. A cue naming one
+     used to be dropped in silence: "Movie Night" has carried a projector step
+     the whole time and has never once switched it on, while the hub filed the
+     status so the board claimed it had. Sent one at a time, before the lamps,
+     because a projector takes the best part of a minute to show a picture and
+     is the thing you want warming up first.
+     This does change what an existing cue does, deliberately and with the
+     user's say-so (2026-08-22): a step reading on in a cue called Movie Night
+     is plainly what was meant, it is fired by hand rather than at 3am, and no
+     schedule carries the projector. That is exactly the argument the air
+     conditioners fail, which is why they are still not done here. */
+  const prjSteps = order.filter(({ t }) => isPrjRecord(t.rec));
+  if (prjSteps.length) {
+    order = order.filter(({ t }) => !isPrjRecord(t.rec));
+    for (const { t } of prjSteps) {
+      const entry = devices.get(t.rec.record_id);
+      if (entry) await prjPower(entry, t.level > 0);
+    }
+  }
+  if (!order.length) return prjSteps.length;
 
   const tunes = order
     .filter(({ t }) => t.tune != null && t.level > 0)
@@ -2824,7 +2983,7 @@ async function sendSteps(list) {
     await sleep(SCENE_SETTLE_MS);
   }
 
-  return sendBatchToHub(order.map(({ step, t }) => ({
+  return prjSteps.length + await sendBatchToHub(order.map(({ step, t }) => ({
     recordId: step.record_id,
     fields: { device_status: encodeLevel(t.level) },
   })));
@@ -7010,6 +7169,10 @@ const HTML = /* html */ `<!doctype html>
   .tile.screen.on .tvmore { color: color-mix(in oklab, var(--ink) 62%, transparent); }
 
   /* ── the television, enlarged ─────────────────────────────────────────── */
+  /* The qualification under a projector's headline. Labelling type, not the
+     display serif the sentence above it uses. */
+  .tvsay small { display: block; margin-top: 9px; font: 400 12.5px/1.45 var(--sans);
+                 color: var(--faint); letter-spacing: 0; }
   .tvsheet .sheet-body { display: flex; flex-direction: column; gap: 18px; }
   /* The sentence, not a row of fields. This is the one place the panel talks,
      so it takes the display face and the number takes the accent — the same
@@ -7035,6 +7198,23 @@ const HTML = /* html */ `<!doctype html>
     transition: transform .24s cubic-bezier(.22,.94,.3,1), background .18s, border-color .18s;
   }
   .tvkey.wide { flex: 1 1 0; min-width: 0; }
+  /* A row of words rather than glyphs. The television's rows hold icons and the
+     odd short label, so four across is fine; a projector's say "Computer" and
+     "Focus +", and at 375px four across leaves 46px of text box inside a 74px
+     key — "Computer" overflowed its own button and "Focus +" wrapped onto two
+     lines, leaving one key in the row taller than the rest. A word row wraps to
+     a second line instead of crushing everything onto one. */
+  .tvrow.words { flex-wrap: wrap; }
+  .tvrow.words .tvkey { flex: 1 1 auto; min-width: 88px; white-space: nowrap; }
+  /* Two by two on a phone, not three-then-one. Left to wrap on its own the row
+     stranded "Freeze" and "Auto" alone across the full width, where a single
+     wide key reads as more important than the three above it. A grid keeps the
+     pairs even and gives each label about 159px at 375px, which "Computer"
+     fits with room to spare. */
+  @media (max-width: 860px) {
+    .tvrow.words { display: grid; grid-template-columns: 1fr 1fr; }
+    .tvrow.words .tvkey { min-width: 0; }
+  }
   .tvkey:hover { background: var(--paper); border-color: var(--ink); }
   .tvkey:active { transform: scale(.955); transition-duration: .06s; }
   .tvkey[disabled] { opacity: .4; cursor: default; }
@@ -8338,6 +8518,79 @@ const HTML = /* html */ `<!doctype html>
   </div>
 </div>
 
+<!-- ── the projector's remote ───────────────────────────────────────────────
+     The hub's own screen, and a remote rather than a switch: twenty-two named
+     keys, of which two are power. It borrows the television panel's classes
+     outright, because it is the same object — a grid of keys in a sheet — and
+     two sets of rules for one shape is how they drift apart.
+
+     Every key is one-way. There is no volume *strip* here for that reason: a
+     strip shows a level, and this machine has no level to show, only a pair of
+     keys that nudge one we cannot see. The television has a strip because it
+     genuinely answers.
+
+     Keys the record does not carry are removed at draw time rather than being
+     written out here, so another install's projector shows its own remote. -->
+<div class="scrim" id="prjscrim" hidden>
+  <div class="sheet tvsheet" role="dialog" aria-modal="true" aria-labelledby="prjsay">
+    <div class="sheet-head">
+      <div class="sheet-eyebrow" id="prjeyebrow">Projector</div>
+      <p class="tvsay" id="prjsay"></p>
+    </div>
+    <div class="sheet-body">
+      <div class="tvblock">
+        <div class="tvpad">
+          <button class="tvkey pad up ico"    type="button" data-prj="up"      data-ico="up"    aria-label="Up"></button>
+          <button class="tvkey pad left ico"  type="button" data-prj="left"    data-ico="left"  aria-label="Left"></button>
+          <button class="tvkey pad ok ico"    type="button" data-prj="confirm" data-ico="ok"    aria-label="Select"></button>
+          <button class="tvkey pad right ico" type="button" data-prj="right"   data-ico="right" aria-label="Right"></button>
+          <button class="tvkey pad down ico"  type="button" data-prj="down"    data-ico="down"  aria-label="Down"></button>
+        </div>
+        <div class="tvrow words">
+          <button class="tvkey wide" type="button" data-prj="menu">Menu</button>
+          <button class="tvkey wide ico" type="button" data-prj="quit" data-ico="back" aria-label="Back"></button>
+          <button class="tvkey wide ico" type="button" data-prj="pause" data-ico="pause" aria-label="Pause"></button>
+          <button class="tvkey wide" type="button" data-prj="mcd">Freeze</button>
+        </div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvlegend">Sound</div>
+        <div class="tvrow">
+          <button class="tvkey ico" type="button" data-prj="volRed" data-ico="minus" aria-label="Quieter"></button>
+          <button class="tvkey ico" type="button" data-prj="volAdd" data-ico="plus" aria-label="Louder"></button>
+          <button class="tvkey wide ico" type="button" data-prj="mute" data-ico="loud" aria-label="Mute"></button>
+        </div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvlegend">Where the picture comes from</div>
+        <div class="tvrow words">
+          <button class="tvkey wide" type="button" data-prj="sigSource">Source</button>
+          <button class="tvkey wide" type="button" data-prj="computer">Computer</button>
+          <button class="tvkey wide" type="button" data-prj="video">Video</button>
+          <button class="tvkey wide" type="button" data-prj="auto">Auto</button>
+        </div>
+      </div>
+
+      <div class="tvblock">
+        <div class="tvlegend">Focus and size</div>
+        <div class="tvrow words">
+          <button class="tvkey wide" type="button" data-prj="focusRed">Focus −</button>
+          <button class="tvkey wide" type="button" data-prj="focusAdd">Focus +</button>
+          <button class="tvkey wide" type="button" data-prj="picRed">Smaller</button>
+          <button class="tvkey wide" type="button" data-prj="picAdd">Bigger</button>
+        </div>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="sheet-btn go" id="prjon" type="button">Switch it on</button>
+      <button class="sheet-btn" id="prjoff" type="button">Switch it off</button>
+      <button class="sheet-btn" id="prjclose" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── the schedules, on a phone ─────────────────────────────────────────
      Under the house they sat below a board 555px tall, which is a long way to
      scroll for something you came to the app to change. The thumb bar carries
@@ -8740,6 +8993,7 @@ function tick() {
   // The set pushes its own changes, so a panel left open follows the actual
   // remote in somebody's hand rather than going stale.
   if (tvOpen && !el('#tvscrim').hidden) drawTv();
+  if (prjOpen && !el('#prjscrim').hidden) drawPrj();
   const cut = el('#cut');
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
@@ -9554,7 +9808,11 @@ function circuitTile(d, compact) {
     // A television's face opens its panel rather than switching it: the key in
     // the corner already switches it, and this is the one circuit in the house
     // with anywhere else to go.
-    body.onclick = d.is_tv ? () => openTv(d) : () => setDevice(d, !d.status);
+    body.onclick = d.is_tv ? () => openTv(d)
+      // The projector is the other circuit with somewhere to go: twenty-two
+      // keys will not fit on a tile, and its own key already switches it.
+      : d.is_projector ? () => openPrj(d)
+      : () => setDevice(d, !d.status);
   }
   body.className = 'tile-body';
   /* A television gets a screen. It goes inside the body as a flex child rather
@@ -9881,6 +10139,11 @@ function stateWord(d) {
     const t = acTimerFor(d.record_id);
     return 'HUB SENT ON' + (t ? ' · OFF IN ' + leftWord(t.seconds_left) : '');
   }
+  /* The projector is infrared too, and even weaker than an air conditioner: the
+     vendor's own record for it carries no status field at all, so the only
+     reason there is one to read is that we put it there. It says what was sent
+     and never claims to know, for the same reason. */
+  if (d.is_projector) return 'HUB SENT ' + (d.status ? 'ON' : 'OFF');
   if (!d.status) return 'OFF';
   /* A television is the one thing here that genuinely answers, so its reading
      is plain fact and needs no hedge: it says what is playing and how loud.
@@ -10229,6 +10492,99 @@ function openTv(d) {
 }
 
 function closeTv() { hideScrim(el('#tvscrim'), () => { tvOpen = null; }); }
+
+/* ── the projector's panel ────────────────────────────────────────────────
+ *
+ * The remote for the one screen the hub itself drives. Every key is a single
+ * infrared blast with nothing coming back, so there is no state to paint and
+ * nothing to keep in step — which is why this is a great deal shorter than
+ * drawTv, and why the sentence says what was *sent*.
+ */
+let prjOpen = null;
+const prjDev = () => state.devices.find((d) => String(d.record_id) === String(prjOpen));
+
+function openPrj(d) {
+  prjOpen = d.record_id;
+  el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  drawPrj();
+  el('#prjscrim').hidden = false;
+}
+
+function closePrj() { hideScrim(el('#prjscrim'), () => { prjOpen = null; }); }
+
+function drawPrj() {
+  const d = prjDev();
+  if (!d) return;
+  /* Never "it is on". Infrared is one-way and this record has no reading of its
+     own at all, so the honest sentence is about the hub and not the machine —
+     and it says the consequence out loud, because somebody has to know that a
+     press here cannot be confirmed and that the remote in the room is invisible
+     to us. */
+  el('#prjsay').innerHTML = 'The hub last sent <b>' + (d.status ? 'on' : 'off') + '</b>.'
+    /* The caveat is not in the display serif. That face is for the one line the
+       dashboard says out loud, and four lines of it made a footnote the loudest
+       thing on the panel — so the fact is said big and the qualification sits
+       under it in labelling type, which is what the rest of the board does. */
+    + '<small>Infrared is one-way, so that is what was asked for rather than what '
+    + 'the projector is doing. Anything done with its own remote is invisible here.</small>';
+
+  /* Only the keys this record carries. Ours has all twenty-two; another
+     install's projector may be a different unit with a shorter remote, and a
+     key that sends a code the record does not have would be a button that
+     silently does nothing. */
+  const has = new Set(d.prj_keys || []);
+  for (const b of el('#prjscrim').querySelectorAll('[data-prj]')) {
+    b.hidden = !has.has(b.dataset.prj);
+  }
+  /* A block whose every key has gone takes its legend with it, or the panel
+     grows an empty heading — the same reservation trap as a tile's foot. */
+  for (const block of el('#prjscrim').querySelectorAll('.tvblock')) {
+    const keys = [...block.querySelectorAll('[data-prj]')];
+    block.hidden = keys.length > 0 && keys.every((b) => b.hidden);
+  }
+  el('#prjon').hidden = !has.has('on');
+  el('#prjoff').hidden = !has.has('off');
+  paintIcons(el('#prjscrim'));
+}
+
+/* One key. It reports what it sent rather than what happened, and a failure is
+   said out loud: with no feedback channel, a press that never left the box
+   would otherwise be indistinguishable from a projector that ignored it. */
+async function prjSend(key) {
+  const d = prjDev();
+  if (!d) return;
+  try {
+    const r = await fetch('/api/projector', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record_id: d.record_id, key }),
+    }).then((x) => x.json());
+    if (!r.ok) return note(r.error || 'The projector command did not go');
+    if (key === 'on' || key === 'off') {
+      // Optimistic, exactly as a lamp is: the reading is our own record of what
+      // was sent, so there is nothing to wait for.
+      d.status = key === 'on';
+      d.level = key === 'on' ? 100 : 0;
+      // paint(d), not paint(): it repaints one tile from its device and throws
+      // on an undefined one — it is not the whole-board repaint the name suggests.
+      paint(d);
+      drawPrj();
+      note(r.spoken);
+    }
+    tick_haptic();
+  } catch (e) {
+    note('The projector command did not go: ' + e.message);
+  }
+}
+
+el('#prjscrim').addEventListener('click', (e) => {
+  if (e.target === el('#prjscrim')) closePrj();
+});
+el('#prjclose').onclick = closePrj;
+el('#prjon').onclick = () => prjSend('on');
+el('#prjoff').onclick = () => prjSend('off');
+for (const b of document.querySelectorAll('#prjscrim [data-prj]')) {
+  b.onclick = () => prjSend(b.dataset.prj);
+}
 
 function drawTv() {
   const d = tvDev();
@@ -12899,7 +13255,7 @@ el('#seekcancel').onclick = () => openSeek(false);
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     // Topmost first, and through the same closer a flick uses.
-    for (const id of ['tvscrim', 'schedscrim', 'cuescrim', 'planscrim', 'bgscrim', 'scrim']) {
+    for (const id of ['prjscrim', 'tvscrim', 'schedscrim', 'cuescrim', 'planscrim', 'bgscrim', 'scrim']) {
       const sc = el('#' + id);
       if (sc && !sc.hidden) { dismissSheet(sc); return; }
     }
@@ -13380,6 +13736,7 @@ function dismissSheet(scrim) {
     planscrim: closePlans,
     schedscrim: closeSchedSheet,
     tvscrim: closeTv,
+    prjscrim: closePrj,
   }[scrim.id];
   if (shut) shut(); else hideScrim(scrim);
 }
