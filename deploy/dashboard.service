@@ -21,7 +21,11 @@ Environment=HUB_PORT=8090
 # share the Wi-Fi. Then append ?key=... to the shortcut URLs.
 #Environment=SHORTCUT_KEY=change-me-to-a-long-random-string
 
-Restart=on-failure
+# always, not on-failure: the setup console's Restart button works by exiting
+# cleanly, which on-failure would treat as "it meant to stop" and leave the house
+# with no dashboard. The watchdog handles the other direction — a process that is
+# alive but not answering.
+Restart=always
 RestartSec=3
 
 # Keep us boxed in. ProtectHome is deliberately NOT set to full read-only —
