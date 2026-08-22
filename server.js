@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { execFile } = require('child_process');
 const express = require('express');
 const WebSocket = require('ws');
 
@@ -2210,10 +2211,32 @@ app.post('/api/setup/rediscover', async (req, res) => {
   }
 });
 
+/* Restart, without betting the house on the unit file.
+ *
+ * Exiting cleanly only comes back under Restart=always, and a unit written
+ * Restart=on-failure reads a clean exit as "it meant to stop" — which would take
+ * the dashboard down and leave it down, from a button labelled Restart. The unit
+ * on this hub is on-failure and cannot be changed without a password.
+ *
+ * So: ask systemd properly first, the same way deploy/push.sh does, since that
+ * one command is permitted without a password here. If that is not available,
+ * exit **non-zero**, which on-failure does restart. The reply says which
+ * happened rather than promising either. */
 app.post('/api/setup/restart', (req, res) => {
-  res.json({ ok: true, note: 'Restarting. Give it a few seconds and reload.' });
-  // systemd brings it back; run outside a service and this simply stops.
-  setTimeout(() => process.exit(0), 250);
+  const svc = process.env.NEO_SVC || 'neo-dashboard';
+  execFile('sudo', ['-n', 'systemctl', 'restart', svc], (err) => {
+    if (!err) return;                       // systemd is doing it; this process is going away
+    /* Could not ask. Fall on our sword with a failure code, which is the one
+       exit an on-failure unit will bring back. Outside a service manager this
+       simply stops, which is correct: nothing was there to restart it. */
+    console.error('restart: sudo systemctl unavailable (' + err.message + '), exiting non-zero instead');
+    setTimeout(() => process.exit(1), 200);
+  });
+  res.json({
+    ok: true,
+    note: 'Restarting. Give it a few seconds and reload. If the page never comes '
+        + 'back, this box has no service manager set to restart it — start it by hand.',
+  });
 });
 
 app.get('/api/health', (req, res) => {
