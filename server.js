@@ -1905,7 +1905,8 @@ app.get('/sw.js', (req, res) => {
 app.get('/manifest.webmanifest', (req, res) => {
   res.type('application/manifest+json').json({
     name: HOUSE_NAME,
-    short_name: 'The House',
+    // What sits under the icon on a home screen, where twelve characters fit.
+    short_name: HOUSE_SHORT,
     start_url: '/',
     display: 'standalone',
     background_color: '#12151a',
