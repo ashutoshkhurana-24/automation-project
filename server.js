@@ -176,6 +176,9 @@ function deviceList() {
     is_dimmable: record.is_dimmable === 'true',
     is_tunable: record.is_tunable === 'true',
     is_fan: record.isFan === 'true' || /\bFAN\b/i.test(String(record.device_name || '')),
+    /* Undefined unless this install has said otherwise, so the page falls back
+       to working it out exactly as it always did. */
+    kind: KIND_OVERRIDES[String(record.record_id)],
     // A curtain is two momentary relays, not a switch, and the hub keeps no
     // state for it — device_status stays "false" whatever you send.
     is_curtain: (record.app_type || '') === 'C',
@@ -1069,6 +1072,24 @@ const GROUPS = (config.groups || [])
     record_ids: g.record_ids.map(Number).filter(Number.isFinite),
   }));
 const groupsIn = (room) => GROUPS.filter((g) => g.room === roomKey(String(room)));
+
+/* What a circuit *is*, where this install says the hub is wrong or silent.
+ *
+ * Two things guess otherwise and both are worth overriding by hand. A fan is
+ * found by `isFan === 'true'` or the word FAN in its name — and on this hub the
+ * one actual fan reports isFan "false", so the name is doing the work, which
+ * fails the moment somebody's fan is called CEILING or EXHAUST. And an app_type
+ * this code has never seen falls through to `light`, so a geyser or a gate would
+ * be drawn as a lamp with a warm glow behind it.
+ * Keyed by record_id as a string, since that is what JSON gives you:
+ *   "kinds": { "448": "fan", "512": "screen" }
+ * One of light | fan | curtain | climate | screen. The console shows what was
+ * guessed and lets you correct it; anything not listed keeps the guess. */
+const KIND_NAMES = ['light', 'fan', 'curtain', 'climate', 'screen'];
+const KIND_OVERRIDES = Object.fromEntries(
+  Object.entries(config.kinds || {})
+    .filter(([, kind]) => KIND_NAMES.includes(String(kind)))
+    .map(([id, kind]) => [String(id), String(kind)]));
 const YT_APP = 'youtube.leanback.v4';
 
 /* Where a set is put when the dashboard switches it on.
@@ -3001,8 +3022,13 @@ function circuitsOf(roomName) {
     .filter(({ room }) => roomKey(room) === roomName)
     .map(({ record }) => record);
 
-  const isFan = (r) => r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || ''));
-  const isLight = (r) => (r.app_type || 'L') === 'L' && !isFan(r);
+  /* The same override the board honours, so /do/<room>/lights and the Lights
+     section of the board cannot disagree about whether a circuit is a fan. */
+  const declared = (r) => KIND_OVERRIDES[String(r.record_id)];
+  const isFan = (r) => declared(r) ? declared(r) === 'fan'
+    : (r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || '')));
+  const isLight = (r) => (declared(r) ? declared(r) === 'light'
+    : (r.app_type || 'L') === 'L') && !isFan(r);
 
   const groups = [
     { slug: 'all', label: 'everything', records: here.filter(r => (r.app_type || '') !== 'C') },
@@ -7817,6 +7843,8 @@ const BOARD_COLS = 4;
 const tileUnits = (d) => (d.is_tunable || d.is_ac || d.is_curtain) ? 2 : 1;
 
 const kindOf = (d) =>
+  // What the install declared, where it declared anything.
+  d.kind ? d.kind :
   d.app_type === 'C' ? 'curtain' :
   d.app_type === 'AC' ? 'climate' :
   (d.app_type === 'TV' || d.app_type === 'PRJ') ? 'screen' :
