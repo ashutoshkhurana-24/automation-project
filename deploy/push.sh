@@ -136,7 +136,13 @@ fi
 scp -q server.js "abneo@${HOST}:~/${DIR}/server.js" || die "copy failed"
 
 $SSH "
-  NODE=\$( [ -x /opt/nodejs/bin/node ] && echo /opt/nodejs/bin/node || echo node )
+  # /opt/nodejs is where the first install put it; \$HOME/nodejs is a per-user
+  # install, which needs no root and is what the second house has. Bare node
+  # last, for a box where it is on PATH.
+  for c in /opt/nodejs/bin/node \$HOME/nodejs/bin/node \$(command -v node); do
+    [ -x \"\$c\" ] && NODE=\$c && break
+  done
+  [ -n \"\${NODE:-}\" ] || { echo 'no node on the box'; exit 5; }
   \$NODE --check ~/${DIR}/server.js || exit 3
   sudo -n systemctl restart ${SVC} || exit 4
 " || die "the hub refused it — nothing restarted, server.js.prev still holds the old one"
