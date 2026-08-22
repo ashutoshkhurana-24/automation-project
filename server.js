@@ -148,8 +148,12 @@ loadDevices();
 
 // Rooms in a stable order, normalised for display.
 function roomKey(room) {
-  return room.trim().toUpperCase();
+  const raw = String(room).trim().toUpperCase();
+  return ROOM_RENAMES[raw] || raw;
 }
+
+var ROOM_RENAMES = {};
+var DEVICE_RENAMES = {};
 
 /**
  * Both brightness and colour temperature ride the same encoding: "false" is 0,
@@ -209,7 +213,7 @@ function deviceList() {
     .filter(({ room, record }) => !shadowedByTv(record, room))
     .map(({ room, record }) => ({
     record_id: record.record_id,
-    name: String(record.device_name || '').trim(),
+    name: DEVICE_RENAMES[String(record.record_id)] || String(record.device_name || '').trim(),
     room: roomKey(room),
     app_type: record.app_type || 'L',
     device_type: record.device_type || '',
@@ -1091,7 +1095,7 @@ function pushSoon() {
 
    Addresses are not identity: these are on DHCP and moved twice in one evening,
    so a set is found by MAC — last known address first, then SSDP. */
-const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId,
+const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId, ipForMac,
         readKeys: readTvKeys } = require('./tools/webos');
 
 /* Has somebody already accepted the prompt on this set? A key is the whole
@@ -1215,6 +1219,20 @@ function applyConfig() {
       record_ids: g.record_ids.map(Number).filter(Number.isFinite),
     }));
 
+  ROOM_RENAMES = {};
+  const rn = config.room_names || {};
+  for (const k of Object.keys(rn)) {
+    const to = String(rn[k]).trim().toUpperCase();
+    if (to) ROOM_RENAMES[String(k).trim().toUpperCase()] = to;
+  }
+
+  DEVICE_RENAMES = {};
+  const dn = config.device_names || {};
+  for (const k of Object.keys(dn)) {
+    const to = String(dn[k]).trim();
+    if (to) DEVICE_RENAMES[String(Number(k))] = to;
+  }
+
   KIND_OVERRIDES = {};
   const kinds = config.kinds || {};
   for (const id of Object.keys(kinds)) {
@@ -1321,6 +1339,29 @@ async function askOracle(id) {
 const TV_RETRY_MS = 20000;
 const TV_RETRY_MAX_MS = 160000;
 
+/* Is the panel actually showing something?
+ *
+ * This was `state === 'active'`, which reads every other state as off — and one
+ * of them is a set that is plainly on. Measured on a QNED70BLA: a television
+ * sitting in its screensaver reports **`state: "Screen Saver"`**, so the tile
+ * said OFF while the panel was lit and taking button presses.
+ *
+ * The states this hardware reports, and which of them mean the panel is lit:
+ *   Active          on
+ *   Screen Saver    on   — lit, showing the screensaver
+ *   Screen Off      off  — panel dark, network chip still answering
+ *   Active Standby  off
+ *   Suspend         off
+ *
+ * Anything unrecognised is treated as off, which is the conservative direction:
+ * claiming a set is on when it is not is the worse error, and a set that is
+ * genuinely on says so in one of the two forms above.
+ */
+function panelOn(state) {
+  const s = String(state || '').trim().toLowerCase();
+  return s === 'active' || s.replace(/\s+/g, '') === 'screensaver';
+}
+
 class TvLink {
   constructor(spec) {
     Object.assign(this, spec);
@@ -1398,8 +1439,16 @@ class TvLink {
     if (this.ip) return this.ip;
     const seen = await discoverTvs(5000).catch(() => []);
     const hit = seen.find((t) => !t.natted && t.macs.includes(this.mac));
-    if (hit) this.ip = hit.ip;
-    else if (TV_ORACLE) this.ip = await askOracle(this.id);
+    if (hit) { this.ip = hit.ip; return this.ip; }
+    /* SSDP first, the neighbour table second. A set in its screensaver answers
+       no M-SEARCH — measured: pingable, 3001 open, reporting "Screen Saver",
+       and absent from a twelve-second sweep — so discovery alone left a
+       configured television unfindable, and the tile read off for as long as it
+       screensavered. The kernel already knows the address from having talked to
+       it, and asking costs nothing. */
+    this.ip = await ipForMac(this.mac).catch(() => null);
+    if (this.ip) return this.ip;
+    if (TV_ORACLE) this.ip = await askOracle(this.id);
     return this.ip;
   }
 
@@ -1418,7 +1467,7 @@ class TvLink {
       // One subscription per thing the tile shows. Each fires immediately with
       // the current value, so there is no separate read to reconcile.
       tv.subscribe('ssap://com.webos.service.tvpower/power/getPowerState', (p) => {
-        this.power = (p.state || '').toLowerCase() === 'active';
+        this.power = panelOn(p.state);
         pushSoon();
       });
       tv.subscribe('ssap://audio/getVolume', (p) => {
@@ -2317,7 +2366,8 @@ app.get('/manifest.webmanifest', (req, res) => {
     short_name: HOUSE_SHORT,
     start_url: '/',
     display: 'standalone',
-    background_color: '#12151a',
+    // The night the icon is lit against, so the splash screen is the same room.
+    background_color: '#0d131b',
     theme_color: '#f3ede3',
     icons: [
       { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
@@ -2361,8 +2411,10 @@ app.get('/api/setup', (req, res) => {
          cased — ASHU ROOM beside Master Room — and GROUPS holds the uppercased
          key, so comparing against the raw name silently matched nothing and the
          console showed those rooms as having no group at all. */
-      name: String(r.device_name || '').trim(),
+      name: DEVICE_RENAMES[String(id)] || String(r.device_name || '').trim(),
+      hub_name: String(r.device_name || '').trim(),
       room: roomKey(entry.room),
+      hub_room: String(entry.room).trim().toUpperCase(),
       app_type: appType,
       device_type: String(r.device_type || ''),
       is_dimmable: r.is_dimmable === 'true',
@@ -2384,6 +2436,8 @@ app.get('/api/setup', (req, res) => {
        config.json the next time somebody pressed Save. So the fields show the
        file's own values and the overrides are reported separately, for the page
        to mention rather than adopt. */
+    room_names: config.room_names || {},
+    device_names: config.device_names || {},
     house_name: config.house_name || '',
     house_short: config.house_short || '',
     hub_ip: config.hub_ip || '',
@@ -2462,6 +2516,45 @@ app.post('/api/setup', (req, res) => {
     }
     next.kinds = clean;
     changed.push('kinds');
+  }
+
+  /* Renaming a room changes the key everything else is filed under — groups and
+     screens both hold a roomKey — so those are migrated in the same write.
+     Without that, renaming ROOM 1 to ASHU ROOM orphans its group silently. */
+  if (b.room_names !== undefined && b.room_names !== null) {
+    const hubRooms = new Set();
+    for (const { room } of devices.values()) hubRooms.add(String(room).trim().toUpperCase());
+    const clean = {};
+    const moved = {};
+    for (const k of Object.keys(b.room_names)) {
+      const from = String(k).trim().toUpperCase();
+      if (!hubRooms.has(from)) return res.status(400).json({ ok: false, error: 'no room ' + from });
+      const to = String(b.room_names[k] || '').trim().toUpperCase().slice(0, 30);
+      if (!to || to === from) continue;
+      clean[from] = to;
+      moved[roomKey(from)] = to;
+    }
+    next.room_names = clean;
+    if (Array.isArray(next.groups)) {
+      next.groups = next.groups.map((g) => (moved[g.room] ? { ...g, room: moved[g.room] } : g));
+    }
+    if (Array.isArray(next.televisions)) {
+      next.televisions = next.televisions.map((t) => (moved[t.room] ? { ...t, room: moved[t.room] } : t));
+    }
+    changed.push('room_names');
+  }
+
+  if (b.device_names !== undefined && b.device_names !== null) {
+    const clean = {};
+    for (const k of Object.keys(b.device_names)) {
+      const id = Number(k);
+      if (!devices.has(id)) continue;
+      const to = String(b.device_names[k] || '').trim().slice(0, 40);
+      if (!to || to === String(devices.get(id).record.device_name || '').trim()) continue;
+      clean[String(id)] = to;
+    }
+    next.device_names = clean;
+    changed.push('device_names');
   }
 
   if (Array.isArray(b.televisions)) {
@@ -4882,6 +4975,18 @@ const SETUP_HTML = /* html */ `<!doctype html>
   </section>
 
   <section>
+    <h2>Room names</h2>
+    <p class="why">The hub's own names, and what this dashboard should call them.
+       Renaming a room also moves its group and its screens, and changes its
+       <span class="id">/do</span> address. Blank keeps the hub's name.</p>
+    <div class="row"><button class="go" id="saverooms">Save room names</button></div>
+    <div class="note" id="n-rooms"></div>
+    <table id="roomnames"><thead><tr>
+      <th>On the hub</th><th>Call it</th><th>Circuits</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
     <h2>What each circuit is</h2>
     <p class="why">Two things are guesses. A fan is found by the word FAN in its name,
        because this hub's own flag is unreliable — so a fan called something else
@@ -4891,7 +4996,7 @@ const SETUP_HTML = /* html */ `<!doctype html>
     <div class="row"><button class="go" id="savekinds">Save kinds</button></div>
     <div class="note" id="n-kinds"></div>
     <table id="circuits"><thead><tr>
-      <th>Room</th><th>Circuit</th><th>Type</th><th>Guessed</th><th>Treat as</th>
+      <th>Room</th><th>On the hub</th><th>Call it</th><th>Type</th><th>Guessed</th><th>Treat as</th>
     </tr></thead><tbody></tbody></table>
   </section>
 
@@ -4960,6 +5065,7 @@ function load() {
         d.effective.hub_ip + ':' + d.effective.hub_port + ' on port ' + d.effective.port +
         '. The fields below are what is saved.', false);
     }
+    drawRoomNames();
     drawCircuits();
     drawGroups();
     drawScreens(null);
@@ -4979,13 +5085,38 @@ function drawCircuits() {
     sel += '</select>';
     tr.innerHTML =
       '<td><span class="rm">' + c.room + '</span></td>' +
-      '<td>' + c.name + ' <span class="id">#' + c.record_id + '</span></td>' +
+      '<td>' + c.hub_name + ' <span class="id">#' + c.record_id + '</span></td>' +
+      '<td><input class="nm" data-id="' + c.record_id + '" type="text" maxlength="40" value="' +
+        (c.name === c.hub_name ? '' : c.name.replace(/"/g, '&quot;')) +
+        '" placeholder="' + c.hub_name.replace(/"/g, '&quot;') + '"></td>' +
       '<td class="id">' + c.app_type + ' / ' + c.device_type +
         (c.is_dimmable ? ' · dim' : '') + (c.is_tunable ? ' · tune' : '') + '</td>' +
       '<td>' + c.guessed + '<br><span class="guess' +
         (c.guess_reason.indexOf('unknown') !== -1 || c.guess_reason.indexOf('FAN') !== -1 ? ' warn' : '') +
         '">' + c.guess_reason + '</span></td>' +
       '<td>' + sel + '</td>';
+    body.appendChild(tr);
+  });
+}
+
+function drawRoomNames() {
+  var body = el('roomnames').querySelector('tbody');
+  body.innerHTML = '';
+  var seen = {};
+  S.circuits.forEach(function (c) {
+    if (seen[c.hub_room]) { seen[c.hub_room].n++; return; }
+    seen[c.hub_room] = { hub: c.hub_room, shown: c.room, n: 1 };
+  });
+  Object.keys(seen).sort().forEach(function (k) {
+    var r = seen[k];
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><span class="rm">' + r.hub + '</span></td>' +
+      '<td><input class="rnm" data-hub="' + r.hub.replace(/"/g, '&quot;') +
+        '" type="text" maxlength="30" value="' +
+        (r.shown === r.hub ? '' : r.shown.replace(/"/g, '&quot;')) +
+        '" placeholder="' + r.hub.replace(/"/g, '&quot;') + '"></td>' +
+      '<td class="id">' + r.n + '</td>';
     body.appendChild(tr);
   });
 }
@@ -5062,13 +5193,29 @@ el('savehub').onclick = function () {
   post('/api/setup', { hub_ip: el('hip').value, hub_port: el('hport').value, port: Number(el('wport').value) })
     .then(function (r) { note('n-hub', r.ok ? r.note : r.error, !r.ok); });
 };
+el('saverooms').onclick = function () {
+  var names = {};
+  Array.prototype.forEach.call(el('roomnames').querySelectorAll('input.rnm'), function (inp) {
+    if (inp.value.trim()) names[inp.dataset.hub] = inp.value.trim();
+  });
+  post('/api/setup', { room_names: names }).then(function (r) {
+    note('n-rooms', r.ok ? r.note : r.error, !r.ok);
+    if (r.ok) load();
+  });
+};
+
 el('savekinds').onclick = function () {
   var kinds = {};
   Array.prototype.forEach.call(el('circuits').querySelectorAll('select'), function (sel) {
     if (sel.value) kinds[sel.dataset.id] = sel.value;
   });
-  post('/api/setup', { kinds: kinds }).then(function (r) {
+  var names = {};
+  Array.prototype.forEach.call(el('circuits').querySelectorAll('input.nm'), function (inp) {
+    if (inp.value.trim()) names[inp.dataset.id] = inp.value.trim();
+  });
+  post('/api/setup', { kinds: kinds, device_names: names }).then(function (r) {
     note('n-kinds', r.ok ? r.note : r.error, !r.ok);
+    if (r.ok) load();
     if (r.ok) load();
   });
 };

@@ -137,6 +137,44 @@ function macFor(ip) {
   });
 }
 
+/* The reverse of macFor: which address does the kernel currently associate with
+ * this MAC?
+ *
+ * SSDP is not enough on its own. A set sitting in its screensaver does not
+ * answer an M-SEARCH at all — measured on a QNED70BLA, which was pingable, had
+ * 3001 open and reported "Screen Saver", yet never appeared in a twelve-second
+ * sweep. With discovery as the only route the dashboard could never find it,
+ * so a configured television read as off for as long as it screensavered.
+ *
+ * The neighbour table needs no cooperation from the set: the box is on the same
+ * LAN, so the kernel already holds the mapping from having talked to it. Both
+ * forms are tried for the same reason macFor tries both.
+ */
+function ipForMac(mac) {
+  const want = norm(String(mac || ''));
+  if (!want) return Promise.resolve(null);
+  const IP_RE = /(\d{1,3}(?:\.\d{1,3}){3})/;
+  const scan = (out) => {
+    for (const line of String(out || '').split('\n')) {
+      const m = MAC_RE.exec(line);
+      if (!m || norm(m[1]) !== want) continue;
+      const ip = IP_RE.exec(line);
+      /* FAILED and INCOMPLETE entries name an address the kernel could not
+         reach, which is worse than no answer — it would be tried and time out
+         on every retry. */
+      if (ip && !/\b(FAILED|INCOMPLETE)\b/i.test(line)) return ip[1];
+    }
+    return null;
+  };
+  return new Promise((resolve) => {
+    execFile('ip', ['neigh'], (e, out) => {
+      const hit = !e && scan(out);
+      if (hit) return resolve(hit);
+      execFile('arp', ['-an'], (e2, out2) => resolve((!e2 && scan(out2)) || null));
+    });
+  });
+}
+
 class WebosTV {
   constructor(ip, opts) {
     this.ip = ip;
@@ -461,4 +499,4 @@ function discover(ms) {
   });
 }
 
-module.exports = { WebosTV, wake, readKeys, macFor, discover, youtubeId, KEYS };
+module.exports = { WebosTV, wake, readKeys, macFor, ipForMac, discover, youtubeId, KEYS };
