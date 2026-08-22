@@ -79,6 +79,43 @@ EXTRACT
 node --check "$page" || { rm -f "$page"; die "the page's own script does not parse — it would serve 200 and be dead in the browser"; }
 rm -f "$page"
 
+# And every OTHER page in the file, which is now the setup console. The check
+# above finds the one script after `const HTML` and stops; SETUP_HTML is declared
+# earlier, so a fatal error in it sailed through a green preflight and was
+# actually deployed once — /setup served 200 with a script that never ran, which
+# is the exact failure mode this whole section exists to catch. So: every
+# <script> in the file, not just the dashboard's.
+scripts=$(python3 - <<'ALL' || die "could not extract the page scripts"
+import io, re, sys, os, tempfile
+s = io.open('server.js', encoding='utf-8').read()
+paths = []
+for n, body in enumerate(re.findall(r'<script>(.*?)</script>', s, re.S)):
+    body = body.replace('\\`', '`').replace('\\$', '\x00').replace('\\\\', '\\')
+    out, i = [], 0
+    while i < len(body):                      # plug the ${...} holes
+        if body[i:i+2] == '${':
+            d, j = 1, i + 2
+            while j < len(body) and d:
+                if body[j] == '{': d += 1
+                elif body[j] == '}': d -= 1
+                j += 1
+            out.append('null'); i = j
+        else:
+            out.append(body[i]); i += 1
+    p = os.path.join(tempfile.gettempdir(), 'neoscript%d.js' % n)
+    io.open(p, 'w', encoding='utf-8').write(''.join(out).replace('\x00', '$'))
+    paths.append(p)
+print('\n'.join(paths))
+ALL
+)
+n=0
+for f in $scripts; do
+  n=$((n+1))
+  node --check "$f" || { die "page script $n does not parse — it would serve 200 and be dead in the browser"; }
+done
+rm -f $scripts
+say "  $n page scripts parse"
+
 say "  preflight ok (server parses, page script parses, $ticks backticks)"
 
 # --- keep a way back ------------------------------------------------------
