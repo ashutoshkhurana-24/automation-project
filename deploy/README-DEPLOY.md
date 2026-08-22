@@ -165,7 +165,20 @@ It also runs two checks `node --check` cannot do for you, both about the same
 blind spot: the frontend lives inside a template literal, so the server parses
 whatever nonsense is in there. The backtick audit catches a stray backtick that
 stays syntactically valid and takes the page down at runtime — that has shipped
-three times. And the page's own script is **extracted and parsed separately**,
+three times.
+
+**It parses every `<script>` in the file, not just the dashboard's, and that was
+learned the hard way.** The check used to find the one script after `const HTML`
+and stop — so when a second page arrived (`SETUP_HTML`, declared earlier) a fatal
+duplicate declaration inside it sailed through a green `preflight ok` and **was
+deployed**: `/setup` served 200 with a script that never ran, which is the precise
+failure this section exists to prevent. Proven by injecting `let S` beside
+`var S` and watching it ship, then recovered by redeploying. Verified since to
+refuse a break in *either* page while leaving the hub's `server.js`
+byte-identical, and to still deploy a clean file. It prints the count, so a page
+added later without a check is visible rather than silent.
+
+And the page's own script is **extracted and parsed separately**,
 with its `${...}` holes plugged, because a duplicate top-level declaration in
 there is a SyntaxError that leaves the server parsing, the page serving 200, and
 the whole app dead in the browser. Not hypothetical: a second `offAfterWord` got
