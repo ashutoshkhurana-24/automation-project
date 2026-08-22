@@ -15,6 +15,7 @@
  */
 
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
@@ -164,6 +165,32 @@ function decodeLevel(v) {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
 }
 
+/* ── a cinema ─────────────────────────────────────────────────────────────
+ * A declared pairing of one projector record and one receiver, so the two draw
+ * as a single card and come on together. Declared rather than guessed, for the
+ * same reason the ceiling groups are: "the screen and the sound in this room"
+ * is knowledge about the room, and inferring it from two devices happening to
+ * share one would be wrong the first time a house has a television and a
+ * soundbar in the same place.
+ *
+ * Up here rather than beside the receivers because deviceList() below reads it,
+ * and a const declared after its reader throws on the first early call. */
+const CINEMAS = (config.cinemas || [])
+  .filter((c) => c && c.id && c.room && (c.projector != null || c.avr));
+
+const CINEMA_OF = new Map();
+for (const c of CINEMAS) {
+  const seat = (member, role) => {
+    if (member == null || member === '') return;
+    CINEMA_OF.set(String(member), { id: c.id, name: c.name || 'Cinema', room: c.room, role });
+  };
+  seat(c.projector, 'screen');
+  seat(c.avr, 'sound');
+}
+/* Undefined for everything else, so a house with no cinema declared draws
+   exactly the tiles it always did. */
+const cinemaOf = (id) => CINEMA_OF.get(String(id));
+
 /* The projector's twenty-two keys, and how to tell one. Declared up here rather
    than beside the commands that use them, because deviceList() below reads them
    and a const is not hoisted: sitting further down the file, the first call
@@ -178,7 +205,7 @@ const isPrjRecord = (rec) => (rec.app_type || '') === 'PRJ' && rec.device_type =
 const prjKeysOf = (rec) => PRJ_KEYS.filter((k) => rec[k] != null && rec[k] !== '');
 
 function deviceList() {
-  return tvDeviceList().concat([...devices.values()]
+  return tvDeviceList().concat(avrDeviceList()).concat([...devices.values()]
     .filter(({ room, record }) => !shadowedByTv(record, room))
     .map(({ room, record }) => ({
     record_id: record.record_id,
@@ -205,6 +232,8 @@ function deviceList() {
        because another install's projector may not carry all twenty-two. */
     is_projector: isPrjRecord(record),
     prj_keys: isPrjRecord(record) ? prjKeysOf(record) : undefined,
+    // Which single card this circuit is drawn as part of, if any.
+    cinema: cinemaOf(record.record_id),
     ac_temp: Number(record.ac_temp) || null,
     channel_open: String(record.channel_open || ''),
     channel_close: String(record.channel_close || ''),
@@ -219,6 +248,7 @@ function deviceList() {
    deviceList() can be read in one piece. Before they are wired up it answers
    with nothing, which is what a dashboard with no televisions should show. */
 function tvDeviceList() { return TV_READY ? tvList() : []; }
+function avrDeviceList() { return AVR_READY ? avrList() : []; }
 
 /* The hub has its own television record — 517 "T.V", device_type LIP, app_type
  * TV, in ASHU ROOM — and it is the same set we now drive properly over SSAP.
@@ -241,6 +271,10 @@ function shadowedByTv(record, room) {
 // a const would — deviceList() must be safe to call before the televisions are
 // wired up, and reading a const too early throws rather than answering falsy.
 var TV_READY = false;
+/* Same reason as TV_READY: deviceList() must be safe to call before the
+   receivers are wired up, and a const read too early throws rather than
+   answering falsy. */
+var AVR_READY = false;
 
 // -------------------------------------------------------------------------- scenes
 
@@ -1007,6 +1041,10 @@ function stateSignature() {
      count as a change — otherwise editing one on a phone pushes nothing and the
      laptop keeps showing yesterday's list until something else moves. */
   parts.push('tv:' + tvSignature());
+  /* The receiver pushes its own changes, including ones made from its remote,
+     so its state has to count as house movement or a volume turned down in the
+     room never reaches the board. */
+  parts.push('avr:' + (AVR_READY ? avrSignature() : ''));
   parts.push('sch:' + schedules.map(s =>
     `${s.id}${s.name || ''}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}` +
     `${s.off_after || 0}${s.target?.id ?? targetIds(s.target).join('.')}`).join(','));
@@ -1103,6 +1141,34 @@ const TV_APP_ORDER = [
  * are the flaky half). `tools/setup.js` discovers candidates over SSDP and the
  * console maps them to rooms. */
 const TVS = (config.televisions || []).filter((t) => t && t.id && t.mac);
+
+/* ── the receivers, and the cinema they pair into ─────────────────────────
+ *
+ * A Denon AVR-X1700H in HOME THEATRE. **Not a hub device**: the hub has never
+ * heard of it — its own `devices_tbl` holds no AVR row and its twenty stored
+ * scenes reference only L, AC and PRJ — so this is spoken to directly, the way
+ * the televisions are, rather than through a record.
+ *
+ * `volume_max` is a safety ceiling, not a preference. Denon reports `MVMAX 98`
+ * and 98 on this unit is deafening; a slider that reaches it is one slipped
+ * thumb away from damaging speakers or ears. The dashboard slider spans 0 to
+ * this number, the unit's own scale, because that is what the front panel shows
+ * and what anybody here already thinks in. Raise it in config with your eyes
+ * open; the unit still accepts anything up to 98 from its own remote.
+ *
+ * A cinema is a declared pairing of one projector record and one receiver, so
+ * the two appear as a single card and come on together. Declared, not guessed,
+ * for the same reason the ceiling groups are: "the screen and the sound in this
+ * room" is knowledge about the room, and inferring it from two devices happening
+ * to share a room would be wrong the first time a house has a television and a
+ * soundbar in the same place. */
+const AVRS = (config.receivers || config.avrs || [])
+  .filter((a) => a && a.id && a.host)
+  .map((a) => ({ ...a, port: Number(a.port) || 23, volumeMax: Math.min(98, Number(a.volume_max) || 70) }));
+
+/* CINEMAS is declared further up, beside deviceList() which reads it — a const
+   is not hoisted, and this block sits eight hundred lines below that call. */
+
 
 /* Groups of identical fittings, declared by this install rather than found by
    matching names.
@@ -1599,6 +1665,249 @@ class TvLink {
     return { ok: true, spoken: this.said() + (on ? ' muted' : ' unmuted') };
   }
 }
+
+/* ── a Denon receiver ─────────────────────────────────────────────────────
+ *
+ * Denon's telnet protocol on port 23: one ASCII line per message, terminated by
+ * a carriage return, a trailing "?" making it a query. Everything below was
+ * measured against the AVR-X1700H in HOME THEATRE on 2026-08-22.
+ *
+ * **It answers, and it reports itself.** Three properties, all tested:
+ *  - It takes at least **five concurrent sessions**, all of them answering, so
+ *    holding a socket open here does not lock the HEOS app out of somebody's
+ *    phone. Older Denons allow exactly one — re-check this on other hardware
+ *    before assuming a persistent socket is polite.
+ *  - It **broadcasts**: a change on any session is reported on all of them.
+ *    Proven by holding one socket idle and querying from a second, which the
+ *    first one heard. So it tells us what its own remote just did, which makes
+ *    it — with the televisions — the second thing in this house whose state is
+ *    a reading rather than a belief. Do not poll it.
+ *  - **It listens in standby**, which is the whole answer to "is power-on
+ *    unreliable on Wi-Fi". It is not. An LG television needs a Wake-on-LAN
+ *    *broadcast* because its network chip dies with the panel, and that is what
+ *    makes waking one over Wi-Fi a coin toss. This unit keeps port 23 open in
+ *    standby (measured open at +3s, +5s and +8s after PWSTANDBY, answering
+ *    PWSTANDBY when asked) and takes PWON as an ordinary TCP command, with the
+ *    volume, input, mute and surround mode all identical afterwards. So it is
+ *    the most reliable device in the house: no broadcast, no magic packet, and
+ *    power confirmed rather than assumed. This depends on the unit's Network
+ *    Control being "Always On" — it already is here, and a unit set to "Off in
+ *    Standby" would behave like a television instead.
+ *
+ * One dead end worth recording: the legacy `/goform/` status endpoints are
+ * **403 on this firmware** (nginx, Gen 0002) and only `Deviceinfo.xml` answers,
+ * on port **8080** rather than 80 — so HTTP tells you the model and nothing
+ * about the state, and telnet is the channel for everything else.
+ *
+ * (A full-LAN sweep found nothing at this address earlier the same afternoon.
+ * That was not a scanning artefact: the unit was put on the Wi-Fi afterwards.)
+ */
+class AvrLink {
+  constructor(spec) {
+    Object.assign(this, spec);
+    this.sock = null;
+    this.online = false;
+    this.power = false;
+    this.volume = 0;
+    this.volMax = 98;         // replaced by the unit's own MVMAX
+    this.muted = false;
+    this.input = '';
+    this.mode = '';
+    this.buf = '';
+    /* The unit's own source list, discovered rather than hard-coded — this one
+       has GAME renamed to "PS5", which no built-in table would ever know.
+       srcNames is what SSFUN reports (code -> the owner's label) and srcUse is
+       what SSSOD reports as actually in use; TUNER and NET appear only in the
+       second, being built in rather than renameable inputs. */
+    this.srcNames = new Map();
+    this.srcUse = new Set();
+    this.srcRev = 0;
+    this.fails = 0;
+    this.nextTry = 0;
+    this.commandedAt = 0;
+  }
+
+  said() { return (this.room.replace(/ ROOM$/i, '') + ' ' + this.name).toLowerCase(); }
+
+  open() {
+    if (this.sock) return;
+    const sock = net.createConnection({ host: this.host, port: this.port });
+    this.sock = sock;
+    /* Long, because this socket is meant to sit idle for hours waiting to be
+       told something. The default would keep it, but being explicit is the
+       point: silence here is the normal state, not a stall. */
+    sock.setTimeout(0);
+    sock.on('connect', () => {
+      this.online = true;
+      this.fails = 0;
+      /* Ask for everything once. Paced, because the unit answers a burst by
+         dropping some of it — 300ms was measured as comfortable, and this runs
+         once per connection so there is nothing to save by hurrying. */
+      const ask = ['PW?', 'ZM?', 'MV?', 'MU?', 'SI?', 'MS?', 'SSFUN ?', 'SSSOD ?'];
+      /* The two source queries stream a dozen lines each and take about two
+         seconds between them, so they go last and are given room to finish. */
+      ask.forEach((q, i) => setTimeout(() => { try { sock.write(q + '\r'); } catch (_) {} }, i * 350));
+      setTimeout(() => pushSoon(), ask.length * 350 + 2500);
+    });
+    sock.on('data', (d) => {
+      this.buf += d.toString('latin1');
+      const parts = this.buf.split('\r');
+      this.buf = parts.pop();
+      let moved = false;
+      for (const line of parts) if (line && this.absorb(line.trim())) moved = true;
+      if (moved) pushSoon();
+    });
+    const drop = () => {
+      if (this.sock !== sock) return;
+      this.sock = null;
+      this.online = false;
+      this.fails++;
+      // A receiver that is unplugged is off, not broken — the same reading a
+      // television gets. Backed off so an absent unit is not a busy loop.
+      this.nextTry = Date.now() + Math.min(60000, 5000 * this.fails);
+      pushSoon();
+    };
+    sock.on('error', drop);
+    sock.on('close', drop);
+  }
+
+  /* One line from the unit. Returns whether anything we show actually changed,
+     so an idle socket carrying chatter we ignore does not push a frame. */
+  absorb(line) {
+    const was = [this.power, this.volume, this.muted, this.input, this.mode].join('|');
+    if (line === 'PWON') this.power = true;
+    else if (line === 'PWSTANDBY') this.power = false;
+    else if (line.startsWith('MVMAX')) this.volMax = Number(line.slice(5).trim()) || this.volMax;
+    else if (/^MV\d+$/.test(line)) {
+      /* Two digits normally and three for a half step: MV405 is 40.5, not 405.
+         The half has to be kept. Dropping the third digit was tried first and
+         it silently misreports the unit — MVUP moves in halves on this model,
+         so pressing louder took it from 40 to 40.5 and the dashboard went on
+         saying 40, which read as a button that did nothing. */
+      const raw = line.slice(2);
+      this.volume = raw.length > 2 ? Number(raw.slice(0, 2)) + 0.5 : Number(raw);
+    } else if (line === 'MUON') this.muted = true;
+    else if (line === 'MUOFF') this.muted = false;
+    else if (/^SI/.test(line)) this.input = line.slice(2).trim();
+    else if (/^MS/.test(line)) this.mode = line.slice(2).trim();
+    /* SSFUN<CODE> <Label> and SSSOD<CODE> USE|DEL. Split on the first space: an
+       input code can contain a slash — SAT/CBL is one code whose label is
+       "CBL/SAT" — but never a space, so the first space is the boundary. The
+       terminating "SSFUN END" has its space before the word, which is why END is
+       checked first rather than being read as a source called END. */
+    else if (/^SS(FUN|SOD)/.test(line)) {
+      const kind = line.slice(2, 5);
+      const rest = line.slice(5);
+      if (/^\s*END/.test(rest)) return false;
+      const sp = rest.indexOf(' ');
+      const code = (sp < 0 ? rest : rest.slice(0, sp)).trim();
+      const val = sp < 0 ? '' : rest.slice(sp + 1).trim();
+      if (!code) return false;
+      if (kind === 'FUN') this.srcNames.set(code, val || code);
+      else if (val === 'USE') this.srcUse.add(code);
+      else this.srcUse.delete(code);
+      this.srcRev++;
+      return false;   // the list is not the reading; the signature carries it
+    }
+    else return false;
+    return [this.power, this.volume, this.muted, this.input, this.mode].join('|') !== was;
+  }
+
+  /** Send, and let the unit's own reply be what updates the state. */
+  send(cmd) {
+    if (!this.sock || !this.online) {
+      // Nothing is listening, which for this unit means it is unplugged — it
+      // answers in standby. Opening now so the next press works.
+      this.nextTry = 0;
+      this.open();
+      return Promise.reject(new Error('the receiver is not answering'));
+    }
+    this.commandedAt = Date.now();
+    return new Promise((res, rej) => {
+      this.sock.write(cmd + '\r', (err) => (err ? rej(err) : res()));
+    });
+  }
+
+  setPower(on) {
+    /* ZMON as well as PWON: PW is the whole unit and ZM is the main zone, and a
+       two-zone receiver can be powered with its main zone still off, which
+       plays nothing and looks like a dead amplifier. Off is PWSTANDBY alone —
+       that puts the lot down. */
+    return on ? this.send('PWON').then(() => this.send('ZMON')) : this.send('PWSTANDBY');
+  }
+
+  setVolume(n) {
+    const v = Math.max(0, Math.min(this.ceiling(), Math.round(Number(n))));
+    // Two digits, zero padded: the unit ignores "MV7" and takes "MV07".
+    return this.send('MV' + String(v).padStart(2, '0'));
+  }
+
+  /* A whole point, by absolute value, rather than MVUP/MVDOWN. Those move in
+     half steps on this model, and a dashboard button that shifts the volume by
+     half a point reads as barely working — while the slider beside it moves in
+     whole ones, so the two controls would disagree about what a step is. The
+     unit is still free to sit on a half if somebody uses its own remote, and
+     the parser above keeps that. */
+  stepVolume(dir) { return this.setVolume(Math.round(this.volume) + (dir > 0 ? 1 : -1)); }
+  setMute(on) { return this.send(on ? 'MUON' : 'MUOFF'); }
+  setInput(code) { return this.send('SI' + String(code).toUpperCase()); }
+  setMode(m) { return this.send('MS' + String(m).toUpperCase()); }
+
+  /* The lower of what this install allows and what the unit admits to. */
+  ceiling() { return Math.min(this.volumeMax, this.volMax || 98); }
+
+  /* What can actually be selected, in the unit's own order, carrying the
+     owner's own labels. Anything SSSOD calls in use but SSFUN never named is a
+     built-in source (TUNER, NET) and is appended with its code as its name. */
+  sources() {
+    const out = [];
+    for (const [code, name] of this.srcNames) {
+      if (this.srcUse.size === 0 || this.srcUse.has(code)) out.push({ code, name });
+    }
+    for (const code of this.srcUse) {
+      if (!this.srcNames.has(code)) out.push({ code, name: code });
+    }
+    return out;
+  }
+
+  snapshot() {
+    return {
+      record_id: this.id, name: this.name, room: roomKey(this.room),
+      app_type: 'AVR', device_type: 'DIP', device_id: this.host, channel_id: '',
+      is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
+      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_tv: false, is_projector: false,
+      is_avr: true,
+      avr_online: this.online,
+      avr_volume: this.volume,
+      avr_volume_max: this.ceiling(),
+      avr_muted: this.muted,
+      avr_input: this.input,
+      avr_mode: this.mode,
+      avr_sources: this.sources(),
+      cinema: cinemaOf(this.id),
+      /* A receiver we cannot reach reads as off, like a television — but for a
+         better reason here, since this one answers in standby: silence means
+         unplugged or off at the wall, and either way it is not playing. */
+      status: this.online && this.power,
+      level: this.online && this.power ? 100 : 0,
+      tune: 0,
+    };
+  }
+}
+
+const avrs = new Map(AVRS.map((a) => [a.id, new AvrLink(a)]));
+const avrList = () => [...avrs.values()].map((a) => a.snapshot());
+const avrSignature = () => [...avrs.values()]
+  .map((a) => `${a.id}:${a.online ? 1 : 0}${a.power ? 1 : 0}:${a.volume}:${a.muted ? 1 : 0}:${a.input}:${a.mode}:${a.srcRev}`)
+  .join('|');
+
+setInterval(() => {
+  const now = Date.now();
+  for (const a of avrs.values()) if (!a.sock && now >= a.nextTry) a.open();
+}, 15000);
+AVR_READY = true;
+for (const a of avrs.values()) a.open();
 
 const tvs = new Map(TVS.map((t) => [t.id, new TvLink(t)]));
 const tvList = () => [...tvs.values()].map((t) => t.snapshot());
@@ -2785,6 +3094,145 @@ app.post('/api/projector', async (req, res) => {
     : key === 'off' ? name + ' switched off'
     : name + ' — ' + prjWord(key);
   res.json({ ok: true, record_id: recordId, key, sent: true, spoken });
+});
+
+/* ── the receiver's endpoint ──────────────────────────────────────────────
+ * Several settings in one request, deliberately, the way the air conditioner
+ * takes its power and its auto-off together: "on, on the Blu-ray input, at 45"
+ * is one intention, and three round trips can half-fail and leave the room
+ * playing the wrong thing at the wrong volume.
+ *
+ * Nothing here is optimistic. This unit answers, so the reply carries what it
+ * actually reported back rather than what was asked for — which is the whole
+ * difference between it and the projector beside it. */
+app.post('/api/avr', async (req, res) => {
+  const id = String(req.body?.id || req.body?.record_id || '');
+  const a = avrs.get(id);
+  if (!a) return res.status(404).json({ ok: false, error: 'no receiver with that id' });
+  const { on, volume, step, mute, input, mode } = req.body || {};
+
+  try {
+    /* Power first and last: coming on, everything else has to follow the unit
+       being awake; going off, there is no point setting a volume on something
+       about to sleep. */
+    if (on === true) { await a.setPower(true); await sleep(700); }
+    if (input != null) await a.setInput(input);
+    if (mode != null) await a.setMode(mode);
+    if (volume != null) await a.setVolume(volume);
+    if (step != null) await a.stepVolume(Number(step));
+    if (mute != null) await a.setMute(!!mute);
+    if (on === false) await a.setPower(false);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: err.message });
+  }
+
+  /* Wait for what was asked to actually come back, rather than for a fixed
+     interval. A flat 500ms was wrong: this unit takes about a second to change
+     input and report SI<new>, so the reply carried the *previous* input — ask
+     for TV and it answered BD, ask for BD and it answered TV. A reply that
+     claims to be a reading and is one command stale is worse than no reply,
+     because the whole point of this device is that it answers.
+     Gives up after two seconds and returns whatever it has, which is still the
+     truth as last reported rather than a guess. */
+  await avrSettle(a, () => {
+    if (on === true && !a.power) return false;
+    if (on === false && a.power) return false;
+    if (input != null && a.input !== String(input).toUpperCase()) return false;
+    if (mute != null && a.muted !== !!mute) return false;
+    if (volume != null && Math.round(a.volume) !== Math.max(0, Math.min(a.ceiling(), Math.round(Number(volume))))) return false;
+    return true;
+  });
+  pushSoon();
+  res.json({
+    ok: true, id: a.id, on: a.power, volume: a.volume, volume_max: a.ceiling(),
+    muted: a.muted, input: a.input, mode: a.mode, online: a.online,
+    spoken: avrSpoken(a, { on, volume, step, mute, input }),
+  });
+});
+
+/* Polls our own copy of the unit's state — which the socket is updating from
+   the unit's own pushes — until it matches, or the time is up. */
+async function avrSettle(a, ok, ms = 2000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (ok()) return true;
+    await sleep(120);
+  }
+  return false;
+}
+
+function avrSpoken(a, asked) {
+  /* Not through sentence(): it title-cases, which turned AVR into "Avr" — the
+     same trap the televisions' itemLabel already records for the word TV. */
+  const who = sentence(a.room.replace(/ ROOM$/i, '')) + ' ' + a.name;
+  if (asked.on === false) return who + ' off';
+  /* The source's own label, not its code: GAME is called PS5 on this unit, and
+     "on game" is not what anybody in the room calls it. */
+  const src = a.sources().find((x) => x.code === a.input);
+  const where = src ? src.name : a.input;
+  if (asked.on === true) return who + ' on, ' + where + ' at ' + a.volume;
+  if (asked.mute != null) return who + (a.muted ? ' muted' : ' unmuted');
+  if (asked.input != null) return who + ' on ' + where;
+  if (asked.volume != null || asked.step != null) return who + ' at ' + a.volume;
+  return who + ' unchanged';
+}
+
+/* ── one card, two machines ───────────────────────────────────────────────
+ * The screen and the sound come on together, because nobody has ever wanted
+ * one without the other — that is the whole reason they are drawn as one card.
+ *
+ * They are started **concurrently**, not in sequence: a projector takes the
+ * best part of a minute to show a picture and the receiver answers in about a
+ * second, so making the fast one wait for the slow one would add a second to
+ * every press for nothing. The same reasoning as applyScene starting the
+ * screens and the hub batch together.
+ *
+ * The reply reports the two halves separately and never merges them, because
+ * they are known to different standards: the receiver says what it is actually
+ * doing, and the projector can only say what the hub was told to send. A single
+ * combined "on" would quietly promote the guess to a fact. */
+app.post('/api/cinema', async (req, res) => {
+  const id = String(req.body?.id || '');
+  const c = CINEMAS.find((x) => x.id === id) || (id ? null : CINEMAS[0]);
+  if (!c) return res.status(404).json({ ok: false, error: 'no cinema with that id' });
+  const on = req.body?.on;
+  if (typeof on !== 'boolean') {
+    return res.status(400).json({ ok: false, error: 'on must be true or false' });
+  }
+
+  const jobs = [];
+  const out = { screen: null, sound: null };
+
+  if (c.projector != null) {
+    const entry = devices.get(Number(c.projector));
+    if (entry && isPrjRecord(entry.record)) {
+      jobs.push(prjPower(entry, on)
+        .then(() => { out.screen = on ? 'hub sent on' : 'hub sent off'; })
+        .catch((e) => { out.screen = 'failed: ' + e.message; }));
+    } else out.screen = 'no projector';
+  }
+  if (c.avr) {
+    const a = avrs.get(c.avr);
+    if (a) {
+      jobs.push(a.setPower(on)
+        .then(() => sleep(600))
+        .then(() => { out.sound = a.power ? 'on' : 'off'; })
+        .catch((e) => { out.sound = 'failed: ' + e.message; }));
+    } else out.sound = 'no receiver';
+  }
+  await Promise.all(jobs);
+  pushSoon();
+
+  const name = c.name || 'Cinema';
+  res.json({
+    ok: true, id: c.id, on, ...out,
+    /* Said out loud with the hedge kept: the projector half cannot be
+       confirmed, and a spoken reply that claims both are on would be the
+       dashboard inventing the half it cannot know. */
+    spoken: name + ' ' + (on ? 'on' : 'off')
+      + (out.screen && out.screen.startsWith('failed') ? ' — the projector did not go' : '')
+      + (out.sound && out.sound.startsWith('failed') ? ' — the receiver did not go' : ''),
+  });
 });
 
 /* What a key is called out loud. The record's own spelling is a wiring name;
@@ -6745,6 +7193,36 @@ const HTML = /* html */ `<!doctype html>
   }
   .sheet-add:hover { color: var(--ink); border-color: var(--edge-up); }
   .sheet-add:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 3px; }
+  /* ── the cinema card ────────────────────────────────────────────────────
+     Two readings on one face, and they must not look like one sentence: the
+     screen half is what the hub was told to send and the sound half is what the
+     receiver reports. Each is led by a small mono label so the eye can tell
+     which machine it is reading, the same treatment the category headings get. */
+  .tile.cinema .cineread { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .cinehalf { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .cinehalf[hidden] { display: none; }
+  .cinehalf i {
+    flex: 0 0 auto; font-style: normal; font-family: var(--mono);
+    font-size: 9px; letter-spacing: .14em; color: var(--faint);
+  }
+  .cinehalf b {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 500 11.5px/1.25 var(--sans); letter-spacing: .04em; color: var(--soft);
+  }
+  .tile.cinema.on .cinehalf b { color: var(--ink); }
+  /* A source that is selected has to say so — the same argument as .seg, which
+     had a hover and a focus ring and nothing at all for chosen. */
+  /* An even grid, not a growing flex row. Ten sources in a wrapping flex row
+     left the last one — NET — stretched alone across the full width, reading as
+     the most important source in the house. The same stranding the projector's
+     word rows hit. auto-fill so it stays right at any sheet width. */
+  #avrsources {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px;
+  }
+  #avrsources .tvkey { min-width: 0; }
+  #avrsources .tvkey.on {
+    background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500;
+  }
   .pick {
     width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 2px; cursor: pointer;
     background: none; border: 0; border-bottom: 1px solid rgba(255,213,160,.05);
@@ -8538,7 +9016,41 @@ const HTML = /* html */ `<!doctype html>
       <p class="tvsay" id="prjsay"></p>
     </div>
     <div class="sheet-body">
-      <div class="tvblock">
+      <!-- The receiver's half. Present only when this card is a cinema; a lone
+           projector opens the same panel with this block hidden.
+           It gets a real volume STRIP, unlike the projector's bare pair of
+           keys, because this machine reports its volume — the strip is showing
+           a reading rather than pretending to. -->
+      <div class="tvblock" id="avrblock">
+        <div class="tvlegend" id="avrlegend">Sound</div>
+        <!-- Each machine's own power lives with its own controls rather than in
+             the foot. Four power buttons down there, all looking alike, said
+             nothing about which was which — and the receiver had no power
+             control at all, which is half of "each controllable on its own". -->
+        <div class="tvrow words" id="avrpower">
+          <button class="tvkey wide" type="button" data-avr="on">Sound on</button>
+          <button class="tvkey wide" type="button" data-avr="off">Sound off</button>
+        </div>
+        <div class="strip dimstrip" id="avrvol">
+          <span class="strip-fill"></span><span class="strip-hand"></span>
+          <span class="strip-label">VOLUME</span>
+          <input type="range" class="slider dim" min="0" max="70" step="1" aria-label="Volume">
+        </div>
+        <div class="tvrow">
+          <button class="tvkey ico" type="button" data-avr="step-1" data-ico="minus" aria-label="Quieter"></button>
+          <button class="tvkey ico" type="button" data-avr="step1" data-ico="plus" aria-label="Louder"></button>
+          <button class="tvkey wide ico" type="button" id="avrmute" aria-label="Mute"></button>
+        </div>
+        <div class="tvlegend">Source</div>
+        <div class="tvrow words" id="avrsources"></div>
+      </div>
+
+      <div class="tvblock" id="prjblock">
+        <div class="tvlegend" id="prjlegend">Screen</div>
+        <div class="tvrow words" id="prjpower">
+          <button class="tvkey wide" type="button" data-prj="on">Screen on</button>
+          <button class="tvkey wide" type="button" data-prj="off">Screen off</button>
+        </div>
         <div class="tvpad">
           <button class="tvkey pad up ico"    type="button" data-prj="up"      data-ico="up"    aria-label="Up"></button>
           <button class="tvkey pad left ico"  type="button" data-prj="left"    data-ico="left"  aria-label="Left"></button>
@@ -8554,8 +9066,12 @@ const HTML = /* html */ `<!doctype html>
         </div>
       </div>
 
-      <div class="tvblock">
-        <div class="tvlegend">Sound</div>
+      <!-- The projector's own speaker. Hidden whenever a receiver is on this
+           panel: the sound in that room comes from the amplifier, and two
+           blocks both headed Sound is worse than not offering the one nobody
+           would use. -->
+      <div class="tvblock" id="prjsound">
+        <div class="tvlegend">Projector speaker</div>
         <div class="tvrow">
           <button class="tvkey ico" type="button" data-prj="volRed" data-ico="minus" aria-label="Quieter"></button>
           <button class="tvkey ico" type="button" data-prj="volAdd" data-ico="plus" aria-label="Louder"></button>
@@ -8584,8 +9100,11 @@ const HTML = /* html */ `<!doctype html>
       </div>
     </div>
     <div class="sheet-foot">
-      <button class="sheet-btn go" id="prjon" type="button">Switch it on</button>
-      <button class="sheet-btn" id="prjoff" type="button">Switch it off</button>
+      <!-- Both, then each. The pair is what anyone reaches for, so it leads;
+           the single-machine buttons are there for the times one of them is
+           already on, or one of them missed its command. -->
+      <button class="sheet-btn go" id="cineon" type="button">Both on</button>
+      <button class="sheet-btn" id="cineoff" type="button">Both off</button>
       <button class="sheet-btn" id="prjclose" type="button">Close</button>
     </div>
   </div>
@@ -8749,8 +9268,13 @@ const KINDS = {
   curtain: { label: 'Curtains', tint: 'var(--neutral)', on: 'open',    off: 'closed' },
   climate: { label: 'Climate',  tint: 'var(--cool)',    on: 'cooling', off: 'off' },
   screen:  { label: 'Screens',  tint: 'var(--neutral)', on: 'on',      off: 'off' },
+  /* A receiver makes no light, so it takes the neutral tint like the fan and
+     the curtain. Its own category, rather than being filed under Screens:
+     it is the sound in the room, and a house with an amplifier and no projector
+     should not have it sitting under a heading about screens. */
+  sound:   { label: 'Sound',    tint: 'var(--neutral)', on: 'on',      off: 'off' },
 };
-const KIND_ORDER = ['light', 'fan', 'curtain', 'climate', 'screen'];
+const KIND_ORDER = ['light', 'fan', 'curtain', 'climate', 'screen', 'sound'];
 /* A wide screen lays the board out in four columns. A category asks for the
    columns its circuits need and no more, so the small ones pack together. */
 const BOARD_COLS = 4;
@@ -8762,6 +9286,8 @@ const kindOf = (d) =>
   d.app_type === 'C' ? 'curtain' :
   d.app_type === 'AC' ? 'climate' :
   (d.app_type === 'TV' || d.app_type === 'PRJ') ? 'screen' :
+  // Before the fan test, or an AVR falls all the way through to 'light'.
+  d.is_avr ? 'sound' :
   d.is_fan ? 'fan' : 'light';
 
 const state = { devices: [], view: 'house', room: null, q: '', sync: null, schedules: [] };
@@ -8962,6 +9488,34 @@ function applySnapshot(snap) {
       continue;
     }
 
+    /* A receiver, merged on its own fields for the same reason a television is:
+       applySnapshot was written for hub circuits and skips a record whose
+       status, level and tune all match — so a volume or an input that had
+       changed was dropped and the page kept whatever it loaded with. It also
+       skips the settle-time guard below, because that guard exists for a hub
+       read describing the house seconds ago, whereas this unit pushes its own
+       changes as they happen. */
+    if (d.is_avr) {
+      const same = now.status === d.status && now.avr_volume === d.avr_volume
+        && now.avr_muted === d.avr_muted && now.avr_input === d.avr_input
+        && now.avr_mode === d.avr_mode && now.avr_online === d.avr_online
+        && (now.avr_sources || []).length === (d.avr_sources || []).length;
+      if (same) continue;
+      d.status = now.status;
+      d.level = now.level;
+      d.avr_volume = now.avr_volume;
+      d.avr_volume_max = now.avr_volume_max;
+      d.avr_muted = now.avr_muted;
+      d.avr_input = now.avr_input;
+      d.avr_mode = now.avr_mode;
+      d.avr_online = now.avr_online;
+      d.avr_sources = now.avr_sources;
+      paint(d);
+      if (avrOpen === d.record_id && !el('#prjscrim').hidden) drawCinema();
+      moved = true;
+      continue;
+    }
+
     // This snapshot was taken before we last commanded this circuit, so it
     // cannot know about that command. Wait for a read that does.
     if ((commandedAt.get(d.record_id) || 0) > (snap.synced_at || 0)) continue;
@@ -8993,7 +9547,7 @@ function tick() {
   // The set pushes its own changes, so a panel left open follows the actual
   // remote in somebody's hand rather than going stale.
   if (tvOpen && !el('#tvscrim').hidden) drawTv();
-  if (prjOpen && !el('#prjscrim').hidden) drawPrj();
+  if ((prjOpen || avrOpen) && !el('#prjscrim').hidden) drawCinema();
   const cut = el('#cut');
   if (cut && state.view === 'room') cut.disabled = !lit(inRoom(state.room)).length;
   const sub = el('#fieldsub');
@@ -9616,16 +10170,33 @@ function fillHouse(stack) {
    empty, three times over at the foot of every room. It asks for what it needs
    now, so the tail of a room packs into one row. */
 function fillRoom(stack, room) {
-  const items = inRoom(room);
+  const all = inRoom(room);
+  /* A declared cinema draws as one card, and its members do not also appear on
+     their own — one card is the whole point of declaring it. Grouped by the
+     cinema's id rather than by room, so a house could declare two. */
+  const cinemas = new Map();
+  for (const d of all) {
+    if (!d.cinema) continue;
+    if (!cinemas.has(d.cinema.id)) cinemas.set(d.cinema.id, { info: d.cinema, members: [] });
+    cinemas.get(d.cinema.id).members.push(d);
+  }
+  const paired = new Set();
+  for (const c of cinemas.values()) for (const m of c.members) paired.add(String(m.record_id));
+  const items = all.filter(d => !paired.has(String(d.record_id)));
+
   for (const kind of KIND_ORDER) {
     const group = items.filter(d => kindOf(d) === kind);
-    if (!group.length) continue;
+    /* The cinema card rides with the screens, and has to be able to create that
+       category on its own: pair the only projector in the room with the only
+       receiver and there is nothing left to make the heading appear. */
+    const cines = kind === 'screen' ? [...cinemas.values()] : [];
+    if (!group.length && !cines.length) continue;
     // The COBs lead the lights, on one control — they are a ceiling, not five
     // switches. Their own tiles stay below it for the times one lamp is the point.
     const cobs = kind === 'light' ? group.filter(isCob) : [];
     /* What the category costs in columns. The ceiling card spans whatever grid
        it is given, so a room with one counts as the whole board. */
-    const weight = (cobs.length > 1 ? BOARD_COLS : 0) +
+    const weight = (cobs.length > 1 ? BOARD_COLS : 0) + (cines.length * 2) +
                    group.reduce((n, d) => n + tileUnits(d), 0);
 
     const cat = document.createElement('section');
@@ -9641,6 +10212,7 @@ function fillRoom(stack, room) {
     stack.appendChild(cat);
 
     if (cobs.length > 1) box.appendChild(cobTile(room, cobs));
+    for (const c of cines) box.appendChild(cinemaTile(c));
     /* Whatever is on comes first. Walking into a room, the question is never
        "where is the bed spot" — it is "what is burning", and the answer was
        scattered through fourteen cards in installer order. A stable sort, so
@@ -9812,6 +10384,9 @@ function circuitTile(d, compact) {
       // The projector is the other circuit with somewhere to go: twenty-two
       // keys will not fit on a tile, and its own key already switches it.
       : d.is_projector ? () => openPrj(d)
+      // A receiver on its own — not paired into a cinema — opens the same
+      // panel showing only its half.
+      : d.is_avr ? () => openAvr(d)
       : () => setDevice(d, !d.status);
   }
   body.className = 'tile-body';
@@ -9923,6 +10498,109 @@ function slider(d, key) {
    ceiling of light that is nearly always wanted at one setting. This tile is
    that setting: one key, one brightness, one warmth, all of them together down
    a single socket. The individual tiles stay below it, so nothing is lost. */
+/* ── the cinema card ──────────────────────────────────────────────────────
+ *
+ * One card for the projector and the receiver, because nobody has ever wanted
+ * one of them without the other. Its key switches both; its face opens a panel
+ * where each is controlled on its own.
+ *
+ * The reading is the interesting part, and it is deliberately **two halves that
+ * are never merged**. The receiver answers — it reports its own volume, input
+ * and mute, including changes made from its remote — while the projector is
+ * infrared and can only say what the hub was told to send. A single combined
+ * "ON" would quietly promote the guess to a fact, so the screen half keeps the
+ * SENT hedge the projector tile already uses and the sound half states its
+ * reading plainly. That asymmetry is the whole reason this card is worth
+ * looking at rather than being a switch.
+ */
+function cinemaTile(c) {
+  const screen = c.members.find((m) => m.is_projector) || null;
+  const sound = c.members.find((m) => m.is_avr) || null;
+  /* Lit if either is running — something is happening in that room, and the
+     glow is about the room rather than about a quorum. */
+  const on = c.members.some((m) => m.status);
+  /* But the key means "make them both the same", which is the lesson the All
+     COBs key already recorded: switching off whenever *any* member was on made
+     a control called "all" do the opposite of what it offers. Here the receiver
+     is often on by itself with the projector dark, and pressing the cinema key
+     then put the music out instead of starting the film. So anything short of
+     both-on turns both on, and only a fully running cinema switches off. */
+  const allOn = c.members.length > 0 && c.members.every((m) => m.status);
+
+  const tile = document.createElement('div');
+  tile.className = 'tile enter screen cinema wide' + (on ? ' on' : '');
+  tile.dataset.cinema = c.info.id;
+  tile.title = c.info.name + ' — ' +
+    [screen && 'the projector', sound && 'the receiver'].filter(Boolean).join(' and ') +
+    ', together';
+  // The lit wash takes the receiver's cool colour rather than a lamp's amber:
+  // nothing here is a lamp, and a television in this house already glows cool.
+  tile.style.setProperty('--lit', on ? '1' : '0');
+  tile.style.setProperty('--tint', 'var(--cool)');
+
+  const fill = document.createElement('span');
+  fill.className = 'tile-fill';
+  tile.appendChild(fill);
+
+  const body = document.createElement('button');
+  body.type = 'button';
+  body.className = 'tile-body';
+  body.innerHTML =
+    '<span class="headline"><span class="roomname"></span></span>' +
+    '<span class="cineread"><span class="cinehalf screenhalf"></span>' +
+    '<span class="cinehalf soundhalf"></span></span>';
+  body.querySelector('.roomname').textContent = c.info.name.toUpperCase();
+  body.onclick = () => openCinema(c);
+  tile.appendChild(body);
+
+  const half = (node, lead, text) => {
+    const n = body.querySelector(node);
+    if (!text) { n.hidden = true; return; }
+    n.innerHTML = '<i></i><b></b>';
+    n.querySelector('i').textContent = lead;
+    n.querySelector('b').textContent = text;
+  };
+  half('.screenhalf', 'SCREEN', screen ? (screen.status ? 'HUB SENT ON' : 'HUB SENT OFF') : '');
+  half('.soundhalf', 'SOUND', sound ? soundRead(sound) : '');
+
+  const ring = document.createElement('button');
+  ring.type = 'button';
+  ring.className = 'ring';
+  ring.setAttribute('aria-label', (allOn ? 'Switch off ' : 'Switch on ') + c.info.name);
+  ring.onclick = (e) => { e.stopPropagation(); fireCinema(c, !allOn); };
+  tile.appendChild(ring);
+
+  return tile;
+}
+
+/* The receiver's own line. It answers, so this is a reading and needs no hedge —
+   and it says the source by the owner's own name, which is why the list is
+   fetched from the unit: GAME is called PS5 on this one. */
+function soundRead(a) {
+  if (!a.avr_online) return 'NOT ANSWERING';
+  if (!a.status) return 'OFF';
+  const src = (a.avr_sources || []).find((x) => x.code === a.avr_input);
+  return 'ON \u00b7 ' + (src ? src.name : a.avr_input || '?').toUpperCase()
+    + (a.avr_muted ? ' \u00b7 MUTED' : ' \u00b7 ' + a.avr_volume);
+}
+
+async function fireCinema(c, on) {
+  // Optimistic on both halves, then the receiver's own reply corrects its own.
+  for (const m of c.members) { m.status = on; m.level = on ? 100 : 0; }
+  paintCinema(c.info.id);
+  try {
+    const r = await fetch('/api/cinema', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: c.info.id, on }),
+    }).then((x) => x.json());
+    if (!r.ok) return note(r.error || 'The cinema did not switch');
+    note(r.spoken);
+    tick_haptic();
+  } catch (e) {
+    note('The cinema did not switch: ' + e.message);
+  }
+}
+
 function cobTile(room, members) {
   const dims = members.every(d => d.is_dimmable);
   const tunes = members.every(d => d.is_tunable);
@@ -10191,9 +10869,30 @@ function readWord(d) {
 
 const paint = (d) => {
   const tile = document.querySelector('.tile[data-id="' + d.record_id + '"]');
+  /* A circuit paired into a cinema has no tile of its own — the card stands for
+     both of them — so repaint that instead. Null-safe either way: a device can
+     also be off-screen simply because another room is showing. */
+  if (!tile) {
+    if (d.cinema) paintCinema(d.cinema.id);
+    return null;
+  }
   paintTile(tile, d);
   return tile;
 };
+
+/* Rebuilt rather than patched. The card carries two readings from two machines
+   and nothing else on the board looks like it, so a paint function for it would
+   be a second copy of cinemaTile's logic to keep in step. It is one small card. */
+function paintCinema(id) {
+  const tile = document.querySelector('.tile[data-cinema="' + id + '"]');
+  if (!tile) return;
+  const members = state.devices.filter((d) => d.cinema && d.cinema.id === id);
+  if (!members.length) return;
+  const fresh = cinemaTile({ info: members[0].cinema, members });
+  // Not a new card arriving, so it must not be dealt in again.
+  fresh.classList.remove('enter');
+  tile.replaceWith(fresh);
+}
 
 /* ──────────────────────────────────────────────────────────── switching */
 
@@ -10501,33 +11200,142 @@ function closeTv() { hideScrim(el('#tvscrim'), () => { tvOpen = null; }); }
  * drawTv, and why the sentence says what was *sent*.
  */
 let prjOpen = null;
+let avrOpen = null;
+let cineOpen = null;
 const prjDev = () => state.devices.find((d) => String(d.record_id) === String(prjOpen));
+const avrDev = () => state.devices.find((d) => String(d.record_id) === String(avrOpen));
 
-function openPrj(d) {
-  prjOpen = d.record_id;
-  el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
-  drawPrj();
+/* One panel, opened three ways: from a cinema card, from a lone projector, or
+   from a lone receiver. Whichever halves exist are shown and the rest is
+   hidden, so a house with only one of the two gets a panel about that one
+   rather than a heading over nothing. */
+function openCinema(c) {
+  const screen = c.members.find((m) => m.is_projector) || null;
+  const sound = c.members.find((m) => m.is_avr) || null;
+  cineOpen = c.info.id;
+  prjOpen = screen ? screen.record_id : null;
+  avrOpen = sound ? sound.record_id : null;
+  el('#prjeyebrow').textContent = title(c.info.room) + ' \u00b7 ' + c.info.name;
+  drawCinema();
   el('#prjscrim').hidden = false;
 }
 
-function closePrj() { hideScrim(el('#prjscrim'), () => { prjOpen = null; }); }
+function openPrj(d) {
+  cineOpen = null;
+  prjOpen = d.record_id;
+  avrOpen = null;
+  el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  drawCinema();
+  el('#prjscrim').hidden = false;
+}
 
-function drawPrj() {
+function openAvr(d) {
+  cineOpen = null;
+  prjOpen = null;
+  avrOpen = d.record_id;
+  el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  drawCinema();
+  el('#prjscrim').hidden = false;
+}
+
+function closePrj() {
+  hideScrim(el('#prjscrim'), () => { prjOpen = null; avrOpen = null; cineOpen = null; });
+}
+
+/* Draws whichever halves are open. Named for the panel rather than for the
+   projector now that it carries both. */
+function drawCinema() {
+  drawAvrHalf();
+  drawPrjHalf();
+  const both = !!(prjOpen && avrOpen);
+  el('#cineon').hidden = !both;
+  el('#cineoff').hidden = !both;
+  /* The two section headings only earn their place when there are two sections
+     to tell apart. Alone, the panel is about one machine and does not need to
+     say so twice. */
+  el('#prjlegend').hidden = !both;
+  el('#avrlegend').hidden = !both;
+  el('#prjsound').hidden = both;
+  paintIcons(el('#prjscrim'));
+}
+
+/* The receiver's half: a real strip, because it reports a real volume. */
+function drawAvrHalf() {
+  const block = el('#avrblock');
+  const a = avrDev();
+  block.hidden = !a;
+  if (!a) return;
+
+  const strip = el('#avrvol');
+  const input = strip.querySelector('input');
+  const max = a.avr_volume_max || 70;
+  input.max = String(max);
+  /* Skipped while a finger is on it, the invariant every strip here keeps: a
+     push landing mid-drag would yank the handle out from under the thumb. And
+     the unit pushes its own changes, so this happens more here than anywhere. */
+  if (input !== document.activeElement && !inFlight.has(a.record_id)) {
+    const v = Math.round(a.avr_volume || 0);
+    input.value = String(v);
+    // Percentage of the ceiling, since the strip is a bar and the scale is 0..max.
+    strip.style.setProperty('--at', ((v / max) * 100).toFixed(1) + '%');
+  }
+  strip.style.setProperty('--tint', 'var(--cool)');
+  strip.querySelector('.strip-label').textContent =
+    a.avr_muted ? 'MUTED' : 'VOLUME \u00b7 ' + a.avr_volume;
+  /* Nothing but power means anything on a receiver that is asleep or absent —
+     and power itself must stay live, or the one control you need when it is off
+     is the one that is greyed out. */
+  const dead = !(a.avr_online && a.status);
+  for (const b of el('#avrblock').querySelectorAll('button, input')) {
+    b.disabled = dead && !b.closest('#avrpower');
+  }
+  // Nothing at all reaches a receiver that is not answering, power included.
+  for (const b of el('#avrpower').querySelectorAll('button')) b.disabled = !a.avr_online;
+
+  // Shows what the unit is doing, not what the key will do — the same choice
+  // the television's mute key makes.
+  const mute = el('#avrmute');
+  mute.dataset.ico = a.avr_muted ? 'muted' : 'loud';
+  mute.setAttribute('aria-label', a.avr_muted ? 'Unmute' : 'Mute');
+  mute.classList.toggle('on', !!a.avr_muted);
+
+  /* The unit's own sources, under the owner's own names. Rebuilt only when the
+     list itself changes, so the chosen one can be re-marked without replacing
+     the row a finger may be on. */
+  const host = el('#avrsources');
+  const want = (a.avr_sources || []).map((x) => x.code).join(',');
+  if (host.dataset.list !== want) {
+    host.dataset.list = want;
+    host.innerHTML = '';
+    for (const src of a.avr_sources || []) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tvkey wide';
+      b.dataset.src = src.code;
+      b.textContent = src.name;
+      b.onclick = () => avrSend({ input: src.code });
+      host.appendChild(b);
+    }
+  }
+  for (const b of host.querySelectorAll('[data-src]')) {
+    const mine = b.dataset.src === a.avr_input;
+    b.classList.toggle('on', mine);
+    b.setAttribute('aria-pressed', String(mine));
+  }
+}
+
+function drawPrjHalf() {
   const d = prjDev();
-  if (!d) return;
-  /* Never "it is on". Infrared is one-way and this record has no reading of its
-     own at all, so the honest sentence is about the hub and not the machine —
-     and it says the consequence out loud, because somebody has to know that a
-     press here cannot be confirmed and that the remote in the room is invisible
-     to us. */
-  el('#prjsay').innerHTML = 'The hub last sent <b>' + (d.status ? 'on' : 'off') + '</b>.'
-    /* The caveat is not in the display serif. That face is for the one line the
-       dashboard says out loud, and four lines of it made a footnote the loudest
-       thing on the panel — so the fact is said big and the qualification sits
-       under it in labelling type, which is what the rest of the board does. */
-    + '<small>Infrared is one-way, so that is what was asked for rather than what '
-    + 'the projector is doing. Anything done with its own remote is invisible here.</small>';
-
+  for (const id of ['#prjblock', '#prjsound']) el(id).hidden = !d;
+  if (!d) {
+    // No projector on this panel at all: hide every block that belongs to one.
+    for (const b of el('#prjscrim').querySelectorAll('.tvblock')) {
+      if (b.querySelector('[data-prj]')) b.hidden = true;
+    }
+    el('#prjsay').innerHTML = panelSentence();
+    return;
+  }
+  el('#prjsay').innerHTML = panelSentence();
   /* Only the keys this record carries. Ours has all twenty-two; another
      install's projector may be a different unit with a shorter remote, and a
      key that sends a code the record does not have would be a button that
@@ -10537,14 +11345,94 @@ function drawPrj() {
     b.hidden = !has.has(b.dataset.prj);
   }
   /* A block whose every key has gone takes its legend with it, or the panel
-     grows an empty heading — the same reservation trap as a tile's foot. */
+     grows an empty heading — the same reservation trap as a tile's foot.
+     Scoped to blocks that actually hold projector keys: unscoped it also
+     evaluated the receiver's block, found no [data-prj] in it, and set
+     hidden = false — quietly overriding drawAvrHalf and showing a Sound
+     heading on a panel with no receiver behind it. */
   for (const block of el('#prjscrim').querySelectorAll('.tvblock')) {
     const keys = [...block.querySelectorAll('[data-prj]')];
-    block.hidden = keys.length > 0 && keys.every((b) => b.hidden);
+    if (!keys.length) continue;
+    block.hidden = keys.every((b) => b.hidden);
   }
-  el('#prjon').hidden = !has.has('on');
-  el('#prjoff').hidden = !has.has('off');
-  paintIcons(el('#prjscrim'));
+  // The on/off pair lives in the Screen block now, and the generic [data-prj]
+  // loop above has already hidden either of them the record cannot send.
+}
+
+/* The panel's headline, for all three shapes it opens in: a cinema, a lone
+   projector, a lone receiver.
+ *
+ * Written in one place because the interesting thing about the pair is the
+ * asymmetry between them, and that has to be said once rather than twice. It
+ * was two clauses at first, each with its own small paragraph, and on a cinema
+ * they stacked into three blocks of prose above the controls — the same mistake
+ * the projector panel already made once by putting its caveat in the display
+ * serif. The fact goes big; the qualification goes once, small. */
+function panelSentence() {
+  const d = prjDev();
+  const a = avrDev();
+  const soundWord = !a ? '' : !a.avr_online ? 'is not answering'
+    : a.status ? 'is on' : 'is in standby';
+  const src = a && (a.avr_sources || []).find((x) => x.code === a.avr_input);
+  const playing = a && a.status && a.avr_online
+    ? ', playing ' + (src ? src.name : a.avr_input) + ' at ' + a.avr_volume
+      + (a.avr_muted ? ', muted' : '')
+    : '';
+
+  let big;
+  if (d && a) {
+    big = 'The receiver <b>' + soundWord + '</b>' + playing
+      + '; the hub last sent <b>' + (d.status ? 'on' : 'off') + '</b> to the projector.';
+  } else if (a) {
+    big = 'The receiver <b>' + soundWord + '</b>' + playing + '.';
+  } else {
+    big = 'The hub last sent <b>' + (d && d.status ? 'on' : 'off') + '</b>.';
+  }
+
+  let note;
+  if (d && a) {
+    note = 'The receiver reports itself, including whatever its own remote does. '
+      + 'The projector is infrared and cannot answer, so its half is what was '
+      + 'asked for rather than what is happening.';
+  } else if (a) {
+    note = a.avr_online
+      ? 'It reports itself, including whatever its own remote does \u2014 so this is '
+        + 'a reading rather than a guess.'
+      : 'Unplugged, or off at the wall. It normally answers even in standby.';
+  } else {
+    note = 'Infrared is one-way, so that is what was asked for rather than what '
+      + 'the projector is doing. Anything done with its own remote is invisible here.';
+  }
+  return big + '<small>' + note + '</small>';
+}
+
+/* One change on the receiver. Unlike the projector this is confirmed, so the
+   reply is what the unit reported and the board is corrected from it rather
+   than from what was asked for. */
+async function avrSend(patch) {
+  const a = avrDev();
+  if (!a) return;
+  try {
+    const r = await fetch('/api/avr', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: a.record_id, ...patch }),
+    }).then((x) => x.json());
+    if (!r.ok) return note(r.error || 'The receiver did not take that');
+    a.status = r.on;
+    a.level = r.on ? 100 : 0;
+    a.avr_volume = r.volume;
+    a.avr_muted = r.muted;
+    a.avr_input = r.input;
+    a.avr_mode = r.mode;
+    a.avr_online = r.online;
+    paint(a);
+    drawCinema();
+    // Silent for a volume nudge: a toast per step would bury the room in them.
+    if (patch.input != null || patch.mute != null || patch.on != null) note(r.spoken);
+    tick_haptic();
+  } catch (e) {
+    note('The receiver did not take that: ' + e.message);
+  }
 }
 
 /* One key. It reports what it sent rather than what happened, and a failure is
@@ -10567,7 +11455,7 @@ async function prjSend(key) {
       // paint(d), not paint(): it repaints one tile from its device and throws
       // on an undefined one — it is not the whole-board repaint the name suggests.
       paint(d);
-      drawPrj();
+      drawCinema();
       note(r.spoken);
     }
     tick_haptic();
@@ -10580,11 +11468,51 @@ el('#prjscrim').addEventListener('click', (e) => {
   if (e.target === el('#prjscrim')) closePrj();
 });
 el('#prjclose').onclick = closePrj;
-el('#prjon').onclick = () => prjSend('on');
-el('#prjoff').onclick = () => prjSend('off');
+// on and off are ordinary data-prj keys now, so the loop below wires them too.
 for (const b of document.querySelectorAll('#prjscrim [data-prj]')) {
   b.onclick = () => prjSend(b.dataset.prj);
 }
+
+/* Both machines from the panel's foot. It goes through the same /api/cinema the
+   card's key uses, so the two cannot drift over what "both on" means. */
+el('#cineon').onclick = () => firePanelCinema(true);
+el('#cineoff').onclick = () => firePanelCinema(false);
+function firePanelCinema(on) {
+  const members = state.devices.filter((d) => d.cinema && d.cinema.id === cineOpen);
+  if (!members.length) return;
+  fireCinema({ info: members[0].cinema, members }, on).then(drawCinema);
+}
+
+el('#avrmute').onclick = () => { const a = avrDev(); if (a) avrSend({ mute: !a.avr_muted }); };
+for (const b of document.querySelectorAll('#prjscrim [data-avr]')) {
+  const key = b.dataset.avr;
+  const m = /^step(-?\d+)$/.exec(key);
+  if (m) b.onclick = () => avrSend({ step: Number(m[1]) });
+  else if (key === 'on') b.onclick = () => avrSend({ on: true });
+  else if (key === 'off') b.onclick = () => avrSend({ on: false });
+}
+
+/* The strip is driven by the shared pointer handler on .strip, which dispatches
+   input while dragging and change on release. Volume goes on release only: a
+   command per pixel would flood a unit that answers every one of them. */
+(function wireAvrVolume() {
+  const strip = el('#avrvol');
+  const input = strip.querySelector('input');
+  input.addEventListener('input', () => {
+    const a = avrDev();
+    if (!a) return;
+    inFlight.add(a.record_id);
+    strip.style.setProperty('--at',
+      ((Number(input.value) / Number(input.max || 70)) * 100).toFixed(1) + '%');
+    strip.querySelector('.strip-label').textContent = 'VOLUME \u00b7 ' + input.value;
+  });
+  input.addEventListener('change', async () => {
+    const a = avrDev();
+    if (!a) return;
+    await avrSend({ volume: Number(input.value) });
+    inFlight.delete(a.record_id);
+  });
+})();
 
 function drawTv() {
   const d = tvDev();
