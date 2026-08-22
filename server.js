@@ -1,11 +1,17 @@
 /**
- * Pravita's Apartment — local web dashboard for a Neo Console Hub (single file).
+ * A local web dashboard for a Neo Console Hub (single file).
  *
  *   npm install && npm start   ->  http://localhost:3000
  *
  * Device data is loaded on startup from data/devices.json (preferred:
  * it carries the full hub records + room grouping) and falls back to
  * data/neo_console_devices.csv.
+ *
+ * Anything about *this house* — what it is called, where its hub is, which
+ * television sits in which room — comes from config.json, which `tools/setup.js`
+ * writes and which is per-install. Everything about the *protocol* stays in the
+ * code, because that is the same on every installation of this vendor's
+ * controller and every line of it was measured rather than documented.
  */
 
 const fs = require('fs');
@@ -14,10 +20,29 @@ const zlib = require('zlib');
 const express = require('express');
 const WebSocket = require('ws');
 
-const HUB_IP = process.env.HUB_IP || '192.168.1.3';
-const HUB_PORT = process.env.HUB_PORT || '8090';
+/* Read before anything else uses it, and read leniently: a missing or unparsable
+   config must not stop the house working, it should only mean the defaults. An
+   environment variable still wins over the file, because that is how a second
+   instance is run against the same hub for testing (PORT=3111 HUB_IP=...). */
+const CONFIG_PATH = path.join(__dirname, 'config.json');
+const config = (() => {
+  try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
+  catch (err) {
+    if (err.code !== 'ENOENT') console.error('config.json unreadable, using defaults:', err.message);
+    return {};
+  }
+})();
+
+const HOUSE_NAME = process.env.HOUSE_NAME || config.house_name || 'The House';
+/* The name the home-screen icon sits under, where there is room for about
+   twelve characters. Taken from the first word of the house's name unless the
+   install says otherwise — "Pravita's Apartment" wants to read "Pravita's". */
+const HOUSE_SHORT = config.house_short || HOUSE_NAME.split(/[\s]+/)[0];
+
+const HUB_IP = process.env.HUB_IP || config.hub_ip || '192.168.1.3';
+const HUB_PORT = process.env.HUB_PORT || config.hub_port || '8090';
 const HUB_URL = `ws://${HUB_IP}:${HUB_PORT}/bms/1/0/A/`;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || config.port || 3000;
 
 const JSON_PATH = path.join(__dirname, 'data', 'devices.json');
 const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
@@ -203,62 +228,22 @@ var TV_READY = false;
  *
  * Seeded on first run from the devices this installation actually has.
  */
-const SEED_SCENES = [
-  { id: 'movie-night', name: 'Movie Night', note: 'Home Theatre, low and warm',
-    steps: [
-      { record_id: 474, on: true, level: 10 }, { record_id: 475, on: true, level: 10 },
-      { record_id: 476, on: true, level: 10 }, { record_id: 477, on: true, level: 10 },
-      { record_id: 479, on: false }, { record_id: 480, on: false },
-      { record_id: 481, on: false }, { record_id: 482, on: false },
-      { record_id: 478, on: false }, { record_id: 483, on: false },
-      { record_id: 512, on: true },
-    ] },
-  { id: 'dinner', name: 'Dinner', note: 'Dining bright, living room soft',
-    steps: [
-      { record_id: 499, on: true, level: 75 }, { record_id: 500, on: true, level: 75 },
-      { record_id: 501, on: true, level: 75 }, { record_id: 502, on: true, level: 75 },
-      { record_id: 503, on: true },
-      { record_id: 485, on: true, level: 35 }, { record_id: 486, on: true, level: 35 },
-      { record_id: 487, on: true, level: 35 }, { record_id: 488, on: true, level: 35 },
-    ] },
-  { id: 'morning', name: 'Morning', note: 'Curtains open, living room full',
-    steps: [
-      { record_id: 497, on: true }, { record_id: 498, on: true },
-      { record_id: 485, on: true, level: 100 }, { record_id: 486, on: true, level: 100 },
-      { record_id: 487, on: true, level: 100 }, { record_id: 488, on: true, level: 100 },
-      { record_id: 489, on: true, level: 100 }, { record_id: 490, on: true, level: 100 },
-      { record_id: 499, on: true, level: 60 }, { record_id: 500, on: true, level: 60 },
-    ] },
-  // Good Night is per bedroom — you go to bed one room at a time. Every room
-  // keeps its foot light as a night light, except Ashu's, which goes fully dark.
-  { id: 'ashu-good-night', name: 'Good Night · Ashu', note: 'Ashu Room, fully dark',
-    steps: [449, 450, 451, 452, 453, 454, 455, 456, 459, 460, 461]
-      .map(record_id => ({ record_id, on: false })) },
-  { id: 'master-good-night', name: 'Good Night · Master', note: 'Master Room, foot light on',
-    steps: [...[463, 464, 465, 466, 467, 468, 469, 470, 471, 472].map(record_id => ({ record_id, on: false })),
-            { record_id: 473, on: true }] },
-  { id: 'harshit-good-night', name: 'Good Night · Harshit', note: 'Harshit Room, foot light on',
-    steps: [...[440, 441, 442, 443, 444, 445, 446].map(record_id => ({ record_id, on: false })),
-            { record_id: 447, on: true }] },
-  { id: 'parent-good-night', name: 'Good Night · Parent', note: 'Parent Room, foot light on',
-    steps: [...[429, 431, 432, 433, 434, 435, 436, 437].map(record_id => ({ record_id, on: false })),
-            { record_id: 438, on: true }] },
-  { id: 'focus', name: 'Focus', note: 'Ashu Room, full and cool',
-    steps: [
-      { record_id: 449, on: true, level: 100, tune: 0 }, { record_id: 450, on: true, level: 100, tune: 0 },
-      { record_id: 451, on: true, level: 100, tune: 0 }, { record_id: 452, on: true, level: 100, tune: 0 },
-      { record_id: 453, on: true, level: 100, tune: 0 },
-      { record_id: 455, on: false }, { record_id: 460, on: false }, { record_id: 461, on: false },
-    ] },
-  { id: 'wind-down', name: 'Wind Down', note: 'Ashu Room, dim and warm',
-    steps: [
-      { record_id: 449, on: true, level: 20, tune: 100 }, { record_id: 450, on: true, level: 20, tune: 100 },
-      { record_id: 451, on: true, level: 20, tune: 100 }, { record_id: 452, on: false },
-      { record_id: 453, on: false },
-      { record_id: 455, on: false }, { record_id: 459, on: false }, { record_id: 460, on: false },
-      { record_id: 461, on: true },
-    ] },
-];
+/* First-run cues, if this install has any.
+ *
+ * They used to be a literal here, which is wrong the moment the code is meant
+ * for more than one house: a cue is a list of record_ids, and record 449 is a
+ * different lamp on a different hub — so seeding them on a foreign install
+ * would invent cues nobody wrote out of whatever those numbers happen to hit.
+ * Per-install and git-ignored. Absent is the normal case, and an install with
+ * no cues shows the empty state that invites you to make one. */
+const SEED_PATH = path.join(__dirname, 'data', 'seed-scenes.json');
+const SEED_SCENES = (() => {
+  try { return JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')); }
+  catch (err) {
+    if (err.code !== 'ENOENT') console.error('seed-scenes.json unreadable, ignoring:', err.message);
+    return [];
+  }
+})();
 
 let scenes = [];
 
@@ -934,6 +919,10 @@ const SETTLE_MS = 3200;
 function snapshot() {
   return {
     devices: deviceList(),
+    /* Which circuits this install treats as one fitting. The page used to work
+       this out from a name regex, which only ever held in this house — so it is
+       sent as data, and a house with no groups declared simply gets none. */
+    groups: GROUPS,
     synced_at: hubSync.taken || null,
     hub_ok: hubSync.ok,
     hub_error: hubSync.error,
@@ -1042,42 +1031,44 @@ const TV_APP_ORDER = [
   'com.webos.app.browser',            // Web Browser
 ];
 
-const TVS = [
-  { id: 'tv-ashu', name: 'TV', room: 'ASHU ROOM', mac: 'd0:cd:bf:a0:fc:cb' },
-  /* Identified the only way that works: switched on, it answers SSDP and names
-     itself "Dadaji TV". Two unidentified QNED82BXAs were on the LAN with
-     near-consecutive MACs and nothing tells them apart while asleep, so the
-     first guess here was backed out rather than shipped — a wrong mapping puts
-     one room's television on another room's tile, and room-off then switches
-     the wrong screen off.
-     On **Wi-Fi**, so everything works except reliable power-on: Wake-on-Wireless
-     is the flaky half, and this set has already been seen waking its radio
-     without its panel. Its wired MAC is D0:CD:BF:A0:FC:DC — worth knowing
-     because keys are filed by MAC, so running it a cable would orphan this one
-     and cost another pairing prompt. */
-  { id: 'tv-parent', name: 'TV', room: 'PARENT ROOM', mac: '60:95:f8:1d:08:ba' },
-  /* A **QNED70BLA**, not the QNED82BXA the other two are, and on a MAC outside
-     the 60:95:f8 range they share — so the long-unidentified 60:95:f8:1d:11:da
-     is *not* this set and is still unaccounted for. It named itself over SSDP
-     with the model number rather than a room, which is why it had to be
-     identified by switching it on with somebody standing in front of it.
-     Its default app is com.webos.app.home, where both others boot into
-     com.webos.app.livetv — so do not read "home screen" here as a set that has
-     failed to launch something. */
-  { id: 'tv-living', name: 'TV', room: 'LIVING', mac: '8c:77:79:5f:dc:64' },
-  /* Named itself "Master Room" over SSDP, so nothing had to be guessed. On
-     **Ethernet** — the MAC we drive it by is its own wiredInfo address — which
-     is what makes its power-on reliable, the same as Ashu's. */
-  { id: 'tv-master', name: 'TV', room: 'MASTER ROOM', mac: 'd0:cd:bf:91:00:26' },
-  /* This is the MAC that was unaccounted for through the whole television
-     saga — filed here as "TV 2, unnamed, 192.168.1.18" and guessed at twice.
-     Switched on it named itself, at that same address, which is the only method
-     that has ever worked. On **Wi-Fi**: the address we drive it by is its own
-     wifiInfo, so its power-on is the unreliable half. Its idle wired interface
-     is D0:CD:BF:A0:FC:D7 — worth having, because keys are filed by MAC, so
-     running it a cable would orphan this pairing and cost a walk to the set. */
-  { id: 'tv-harshit', name: 'TV', room: 'HARSHIT ROOM', mac: '60:95:f8:1d:11:da' },
-];
+/* The televisions in this house, from config.json.
+ *
+ * Data, not code: another installation has different sets in different rooms,
+ * and the MAC is the identity because both DHCP and a set moving between Wi-Fi
+ * and Ethernet change its address. Which MAC belongs to which room can only be
+ * settled by switching a set on and asking it — see the table in CLAUDE.md,
+ * which also records why the prefix tells you whether power-on will be
+ * reliable (d0:cd:bf is wired and wakes; 60:95:f8 and 8c:77:79 are Wi-Fi and
+ * are the flaky half). `tools/setup.js` discovers candidates over SSDP and the
+ * console maps them to rooms. */
+const TVS = (config.televisions || []).filter((t) => t && t.id && t.mac);
+
+/* Groups of identical fittings, declared by this install rather than found by
+   matching names.
+ *
+ * It used to be a regex on the device name — /^COB\b/i — which is exactly the
+ * kind of thing that works in one house and in no other: the fittings around
+ * somebody else's ceiling are called SPOT or DOWNLIGHT or nothing consistent at
+ * all, and a name is free text the installer typed. So the membership is a list
+ * of record_ids, set from the console.
+ *
+ * The slug is what /do addresses the group by, and it defaults to the label with
+ * a leading "all" removed — so "All COBs" keeps answering to /do/<room>/cobs,
+ * which is what every shortcut and every line of SHORTCUTS.md already says. */
+const GROUPS = (config.groups || [])
+  .filter((g) => g && g.room && Array.isArray(g.record_ids) && g.record_ids.length > 1)
+  .map((g) => ({
+    room: String(g.room).trim().toUpperCase(),
+    label: g.label || 'All',
+    /* Slugged inline rather than through slug(), which is declared a couple of
+       thousand lines further down: a const is not hoisted, so calling it here
+       would throw before the server ever listened — and node --check cannot see
+       that, being a runtime error rather than a syntax one. */
+    slug: g.slug || String(g.label || 'all').replace(/^all\s+/i, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+    record_ids: g.record_ids.map(Number).filter(Number.isFinite),
+  }));
+const groupsIn = (room) => GROUPS.filter((g) => g.room === roomKey(String(room)));
 const YT_APP = 'youtube.leanback.v4';
 
 /* Where a set is put when the dashboard switches it on.
@@ -1913,7 +1904,7 @@ app.get('/sw.js', (req, res) => {
 
 app.get('/manifest.webmanifest', (req, res) => {
   res.type('application/manifest+json').json({
-    name: "Pravita's Apartment",
+    name: HOUSE_NAME,
     short_name: 'The House',
     start_url: '/',
     display: 'standalone',
@@ -3015,7 +3006,12 @@ function circuitsOf(roomName) {
   const groups = [
     { slug: 'all', label: 'everything', records: here.filter(r => (r.app_type || '') !== 'C') },
     { slug: 'lights', label: 'the lights', records: here.filter(isLight) },
-    { slug: 'cobs', label: 'the COBs', records: here.filter(r => /^COB\b/i.test(String(r.device_name || '').trim())) },
+    /* Whatever this install has declared — one address per group, named by the
+       group rather than by a word this code happened to know. */
+    ...groupsIn(roomName).map((g) => ({
+      slug: g.slug, label: 'the ' + g.label.replace(/^all\s+/i, ''),
+      records: here.filter(r => g.record_ids.includes(Number(r.record_id))),
+    })),
   ].filter(g => g.records.length > 1);          // a group of one is just the circuit
 
   // The hub writes one label with full stops in it — T.V — and `t-v` is not an
@@ -3870,7 +3866,7 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Pravita's Apartment  ->  http://localhost:${PORT}`);
+  console.log(`${HOUSE_NAME}  ->  http://localhost:${PORT}`);
   console.log(`Hub                  ->  ${HUB_URL}`);
   loadScenes();
   loadSettings();
@@ -3924,8 +3920,8 @@ const HTML = /* html */ `<!doctype html>
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Pravita's">
-<title>Pravita's Apartment</title>
+<meta name="apple-mobile-web-app-title" content="${HOUSE_SHORT}">
+<title>${HOUSE_NAME}</title>
 <!-- The faces come from this box, not from Google. Three families over the
      internet was 749ms of blocking fetch before the text settled, on a device
      whose whole job is to be glanceable — and on a LAN-only appliance an
@@ -7342,7 +7338,7 @@ const HTML = /* html */ `<!doctype html>
            failure that matters is invisible from the board — the process alive
            and serving pages while no longer reaching the hub. -->
       <span class="stamp-top">
-        <h1>Pravita's Apartment</h1>
+        <h1>${HOUSE_NAME}</h1>
         <button class="pulse" id="pulse" type="button" aria-expanded="false"
                 aria-label="How the dashboard is doing"><i></i></button>
       </span>
@@ -7835,8 +7831,23 @@ const lit = (list) => list.filter(d => d.status && !d.is_curtain);
 const inRoom = (room) => state.devices.filter(d => d.room === room);
 // COB 1…COB 11 are the same fitting repeated around a ceiling, which is why
 // they are the one set of circuits worth driving as one.
-const isCob = (d) => /^COB\\b/i.test(d.name);
-const cobsIn = (room) => inRoom(room).filter(isCob);
+/* Which circuits this install treats as one fitting, sent down with the
+   devices. It used to be a name regex — /^COB\\b/i — which held in exactly one
+   house: somebody else's ceiling is SPOT or DOWNLIGHT or a dozen names an
+   installer typed by hand, and a name is not a fact about the wiring.
+   One group per room, which is what a ceiling is. */
+let houseGroups = [];
+const groupFor = (room) => houseGroups.find(
+  (g) => g.room === String(room || '').trim().toUpperCase()) || null;
+const isCob = (d) => {
+  const g = groupFor(d.room);
+  return !!g && g.record_ids.includes(Number(d.record_id));
+};
+const cobsIn = (room) => {
+  const g = groupFor(room);
+  return g ? inRoom(room).filter((d) => g.record_ids.includes(Number(d.record_id))) : [];
+};
+const groupLabel = (room) => (groupFor(room) || {}).label || 'All';
 const title = (s) => s.toLowerCase().replace(/(^|\\s)\\S/g, (c) => c.toUpperCase());
 
 // The hub stores every label in capitals. Shouting them back is not calm, so
@@ -7915,6 +7926,7 @@ async function load() {
   state.devices = snap.devices.sort((a, b) =>
     KIND_ORDER.indexOf(kindOf(a)) - KIND_ORDER.indexOf(kindOf(b)) || natural(a.name, b.name));
   state.sync = snap;
+  houseGroups = snap.groups || [];
   state.schedules = snap.schedules || [];
   if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now(); applyTheme(); }
   drawIndex();
@@ -7956,6 +7968,9 @@ const markCommanded = (id) => commandedAt.set(id, Date.now());
 // and moves the screen to match it.
 function applySnapshot(snap) {
   state.sync = snap;
+  // Redeclared groups arrive on a push, so the console can change them and every
+  // open browser rebuilds without a reload.
+  if (snap.groups) houseGroups = snap.groups;
   /* One list for the house: whoever edited it, every other browser redraws off
      the same frame the devices arrive in. Compared before redrawing so a push
      that carries no schedule change does not rebuild the list under a finger. */
@@ -8980,7 +8995,7 @@ function cobTile(room, members) {
       '<button class="chip gangsame" type="button"></button></span>' +
     '<span class="big gangbig"></span>';
   body.querySelector('.gangtitle').textContent =
-    'ALL COBS · ' + members.length + ' ON ONE MODULE';
+    groupLabel(tile.dataset.gang).toUpperCase() + ' · ' + members.length + ' ON ONE MODULE';
   body.querySelector('.gangsame').onclick = () => setGang(tile);
   tile.appendChild(body);
 
@@ -9074,7 +9089,7 @@ function gangSlider(tile, key) {
     key === 'level' ? 'BRIGHTNESS' : warmthLabel(start);
   wrap.appendChild(input);
   input.setAttribute('aria-label',
-    'All COBs ' + (key === 'level' ? 'brightness' : 'warmth, 0 cool to 100 warm'));
+    groupLabel(tile.dataset.gang) + ' ' + (key === 'level' ? 'brightness' : 'warmth, 0 cool to 100 warm'));
 
   input.addEventListener('input', () => {
     const v = Number(input.value);

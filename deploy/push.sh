@@ -14,6 +14,13 @@
 # scenes.json, so a full bundle deploy overwrites the house's real cues with
 # whatever local testing left behind — see CLAUDE.md. Every deploy this project
 # has ever done was server.js alone; this keeps it that way by construction.
+#
+# The one exception is config.json, and only when the box does not have one.
+# It is per-install — the house's name, its hub, its televisions, its groups —
+# and the console edits it in place, so overwriting it from here would push one
+# house's settings onto another. But server.js now *reads* it, and a box without
+# one comes up as "The House" with no televisions and no group tiles at all. So:
+# placed if missing, never touched if present.
 
 set -uo pipefail
 
@@ -78,6 +85,15 @@ say "  preflight ok (server parses, page script parses, $ticks backticks)"
 # A remote deploy that breaks startup leaves the house with no dashboard and
 # nobody near the box, and the watchdog will restart a broken service for ever.
 $SSH "cp ~/${DIR}/server.js ~/${DIR}/server.js.prev" || die "cannot reach ${HOST}"
+
+# config.json: place it only if the box has none. Never overwrite — see above.
+if $SSH "test -f ~/${DIR}/config.json"; then
+  say "  config.json already there, left alone"
+else
+  [ -f config.json ] || die "this box has no config.json and neither do you — run tools/setup.js first"
+  scp -q config.json "abneo@${HOST}:~/${DIR}/config.json" || die "could not place config.json"
+  say "  config.json placed (first time)"
+fi
 
 # --- copy and restart ------------------------------------------------------
 scp -q server.js "abneo@${HOST}:~/${DIR}/server.js" || die "copy failed"

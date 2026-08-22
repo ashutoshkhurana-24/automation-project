@@ -44,3 +44,11 @@ data/tv-keys.json
 
 # The televisions app lists: a cache, rebuilt from the sets themselves.
 data/tv-apps.json
+
+# per-install settings: this house's name, hub address, televisions, groups.
+# config.example.json is the committed shape; setup writes this one.
+config.json
+
+# first-run cues, per-install: a cue is a list of record_ids and those numbers
+# mean a different lamp on a different hub.
+data/seed-scenes.json

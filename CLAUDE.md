@@ -104,6 +104,22 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+## Making it somebody else's house too (2026-08-22, in progress)
+
+The target is **another installation of the same vendor's controller** — an Abneo/Tistron hub, a different house. Everything in the protocol sections above transfers as-is; nothing here attempts a different brand, because every line of that protocol was measured against this hardware and there is no way to write, let alone test, a driver for a box nobody has.
+
+**The split is: this house is data, the protocol is code.** `config.json` (git-ignored, per-install; `config.example.json` is the committed shape) holds the house's name, its hub address and port, its televisions, and its groups. An **environment variable still wins over the file**, because that is how a second instance is run against the same hub for testing (`PORT=3111 HUB_IP=... npm start`), and every measurement in this file was taken that way. A missing or unparsable config is not fatal — it means the defaults, and the house comes up as "The House" with no televisions and no group tiles, which is exactly what a fresh box should look like before setup runs.
+
+**Groups are declared, not guessed, and that was the real blocker.** The ceiling tile keyed off `isCob = /^COB\b/i.test(d.name)` — a regex on the device *name*, used in eleven places. It is correct here and wrong everywhere else: another installer typed SPOT, or DOWNLIGHT, or nothing consistent, and a name is free text rather than a fact about the wiring. So membership is a list of `record_ids` in `config.groups`, set by hand from the console — **not** auto-detected, which was the user's call and the right one: a heuristic that guesses which fittings belong together would be wrong occasionally and silently, and the person installing it knows the answer.
+
+Two things that keep the old addresses working. Each group carries a **slug**, defaulting to its label with a leading "all" stripped — so `All COBs` still answers to `/do/<room>/cobs`, which is what every shortcut and every line of `SHORTCUTS.md` already says. And the groups ride the **snapshot**, so the page gets them on first load and on every push, and the console can change one without a reload. One group per room for now, which is what a ceiling is.
+
+**The seed cues left the code.** They were a literal list of `record_id`s, and record 449 is a different lamp on a different hub — seeding them on a foreign install would invent cues nobody wrote out of whatever those numbers happened to hit. They live in `data/seed-scenes.json`, per-install and git-ignored; absent is the normal case, and an install with no cues gets the empty state that invites making one.
+
+**`deploy/push.sh` places `config.json` only when the box has none.** It copies `server.js` and nothing else by design, but `server.js` now *reads* the config, and a box without one loses every television and every group tile. Per-install means the console edits it in place, so pushing over it would put one house's settings on another: placed if missing, never touched if present.
+
+Still to do, in order: a `setup` command that reads `site_config` and writes a proposed config (rooms, kinds, groups) plus an SSDP sweep for screens and a capability report of what it cannot drive; the `/setup` console; and a `bootstrap.sh` that installs Node where it is missing. **Node, not Bun** — Bun's default Linux build wants AVX2 and this installer aims at other people's boxes (the same OptiPlex model shipped with a Pentium that lacks it), while the standalone Node tarball runs anywhere and is already proven here; and the one dependency is `ws` with `perMessageDeflate`, which is the single most fragile thing in the system.
+
 ## Architecture
 
 **Device data** loads at startup from `data/devices.json` (the full hub records plus room grouping via `areas → departments → sub_area.area_devices`), falling back to a CSV parser over `data/neo_console_devices.csv`. Records live in a `Map` keyed by `record_id`; hub reads merge over them, so the map is the single source of truth that `deviceList()` projects for the API.

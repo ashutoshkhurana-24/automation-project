@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Per-install settings: everything about THIS house. Copy to config.json, or",
+    "let `node tools/setup.js` write it for you. Nothing here is about the hub",
+    "protocol — that is the same on every installation of this vendor's",
+    "controller and lives in the code.",
+    "Environment variables win over this file: PORT=3111 HUB_IP=... npm start"
+  ],
+  "house_name": "The House",
+  "house_short": "House",
+  "hub_ip": "192.168.1.3",
+  "hub_port": "8090",
+  "port": 3000,
+
+  "_televisions": [
+    "LG webOS sets, driven directly rather than through the hub. The MAC is the",
+    "identity: DHCP moves the address, and a set moving between Wi-Fi and",
+    "Ethernet changes which MAC answers. Which set is in which room can only be",
+    "settled by switching one on and asking it — the console does this for you.",
+    "id must be unique and stable; it is what the API and cues address."
+  ],
+  "televisions": [
+    { "id": "tv-living", "name": "TV", "room": "LIVING", "mac": "aa:bb:cc:dd:ee:ff" }
+  ],
+
+  "_groups": [
+    "A run of identical fittings around one ceiling, controlled as one tile.",
+    "Set these from the console: pick a room, pick the circuits, name it.",
+    "record_ids are the hub's own numbers, as shown beside each circuit."
+  ],
+  "groups": [
+    { "room": "LIVING", "label": "All COBs", "record_ids": [485, 486, 487] }
+  ]
+}
