@@ -25,13 +25,14 @@ const WebSocket = require('ws');
    environment variable still wins over the file, because that is how a second
    instance is run against the same hub for testing (PORT=3111 HUB_IP=...). */
 const CONFIG_PATH = path.join(__dirname, 'config.json');
-const config = (() => {
+function readConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
   catch (err) {
     if (err.code !== 'ENOENT') console.error('config.json unreadable, using defaults:', err.message);
     return {};
   }
-})();
+}
+let config = readConfig();
 
 const HOUSE_NAME = process.env.HOUSE_NAME || config.house_name || 'The House';
 /* The name the home-screen icon sits under, where there is room for about
@@ -634,6 +635,33 @@ function hubSocket() {
   });
 }
 
+/* One raw site_config, for rewriting data/devices.json.
+ *
+ * Not readHubState(): that merges into the device map and deliberately ignores a
+ * record_id the map does not already hold, so it can never notice a light the
+ * installer fitted last week — which is the entire point of a rediscover. */
+function readSiteConfig(ms) {
+  return new Promise((resolve, reject) => {
+    const ws = hubSocket();
+    let settled = false;
+    const done = (err, msg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch (e) { /* already gone */ }
+      if (err) reject(err); else resolve(msg);
+    };
+    const timer = setTimeout(() => done(new Error('timed out waiting for site_config')), ms || 25000);
+    ws.on('error', (err) => done(err));
+    ws.on('message', (data) => {
+      let msg;
+      try { msg = JSON.parse(data.toString()); } catch (e) { return; }
+      if (!msg || !msg.payload || msg.payload.type !== 'site_config') return;
+      done(null, msg);
+    });
+  });
+}
+
 /**
  * The hub pushes one site_config per connection, carrying live status for every
  * device. It sends nothing in response to a control command and does not push
@@ -1006,7 +1034,18 @@ function pushSoon() {
 
    Addresses are not identity: these are on DHCP and moved twice in one evening,
    so a set is found by MAC — last known address first, then SSDP. */
-const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId } = require('./tools/webos');
+const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId,
+        readKeys: readTvKeys } = require('./tools/webos');
+
+/* Has somebody already accepted the prompt on this set? A key is the whole
+   difference between a screen that works and one that needs a walk to the
+   television, so the console says which. Filed by MAC, because a set's address
+   moves and its interface can change. */
+const tvKeyKnown = (mac) => {
+  if (!mac) return false;
+  try { return !!readTvKeys()[String(mac).trim().toLowerCase()]; }
+  catch (e) { return false; }
+};
 
 /* The order the app row is drawn in.
  *
@@ -1058,38 +1097,58 @@ const TVS = (config.televisions || []).filter((t) => t && t.id && t.mac);
  * The slug is what /do addresses the group by, and it defaults to the label with
  * a leading "all" removed — so "All COBs" keeps answering to /do/<room>/cobs,
  * which is what every shortcut and every line of SHORTCUTS.md already says. */
-const GROUPS = (config.groups || [])
-  .filter((g) => g && g.room && Array.isArray(g.record_ids) && g.record_ids.length > 1)
-  .map((g) => ({
-    room: String(g.room).trim().toUpperCase(),
-    label: g.label || 'All',
-    /* Slugged inline rather than through slug(), which is declared a couple of
-       thousand lines further down: a const is not hoisted, so calling it here
-       would throw before the server ever listened — and node --check cannot see
-       that, being a runtime error rather than a syntax one. */
-    slug: g.slug || String(g.label || 'all').replace(/^all\s+/i, '')
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-    record_ids: g.record_ids.map(Number).filter(Number.isFinite),
-  }));
-const groupsIn = (room) => GROUPS.filter((g) => g.room === roomKey(String(room)));
+let GROUPS = [];
 
 /* What a circuit *is*, where this install says the hub is wrong or silent.
  *
- * Two things guess otherwise and both are worth overriding by hand. A fan is
- * found by `isFan === 'true'` or the word FAN in its name — and on this hub the
- * one actual fan reports isFan "false", so the name is doing the work, which
- * fails the moment somebody's fan is called CEILING or EXHAUST. And an app_type
- * this code has never seen falls through to `light`, so a geyser or a gate would
- * be drawn as a lamp with a warm glow behind it.
+ * Declared here beside GROUPS rather than further down, because applyConfig()
+ * writes both and is called immediately after it — a `let` reached before its
+ * own declaration is a ReferenceError at startup, and node --check cannot see
+ * one. This file has now been bitten by that twice in an hour. */
+const KIND_NAMES = ['light', 'fan', 'curtain', 'climate', 'screen'];
+let KIND_OVERRIDES = {};
+
+/* Rebuild everything derived from config.json.
+ *
+ * Groups and kinds are pure data, read at render time, so the console can change
+ * them and every open browser sees it on the next push — no restart. The house's
+ * name and the hub's address cannot follow: the page is built once at startup
+ * and the hub sockets are already open, so those two say "restart to apply" and
+ * mean it. */
+function applyConfig() {
+  GROUPS = (config.groups || [])
+    .filter((g) => g && g.room && Array.isArray(g.record_ids) && g.record_ids.length > 1)
+    .map((g) => ({
+      room: String(g.room).trim().toUpperCase(),
+      label: g.label || 'All',
+      /* Slugged inline rather than through slug(), which is declared a couple of
+         thousand lines further down: a const is not hoisted, so calling it here
+         would throw before the server ever listened — and node --check cannot
+         see that, being a runtime error rather than a syntax one. */
+      slug: g.slug || String(g.label || 'all').replace(/^all\s+/i, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      record_ids: g.record_ids.map(Number).filter(Number.isFinite),
+    }));
+
+  KIND_OVERRIDES = {};
+  const kinds = config.kinds || {};
+  for (const id of Object.keys(kinds)) {
+    if (KIND_NAMES.includes(String(kinds[id]))) KIND_OVERRIDES[String(id)] = String(kinds[id]);
+  }
+}
+applyConfig();
+const groupsIn = (room) => GROUPS.filter((g) => g.room === roomKey(String(room)));
+
+/* Two things guess a circuit's kind and both are worth overriding by hand. A fan
+ * is found by `isFan === 'true'` or the word FAN in its name — and on this hub
+ * all four actual fans report isFan "false", so the name is doing the work,
+ * which fails the moment somebody's fan is called CEILING or EXHAUST. And an
+ * app_type this code has never seen falls through to `light`, so a geyser or a
+ * gate would be drawn as a lamp with a warm glow behind it.
  * Keyed by record_id as a string, since that is what JSON gives you:
  *   "kinds": { "448": "fan", "512": "screen" }
- * One of light | fan | curtain | climate | screen. The console shows what was
- * guessed and lets you correct it; anything not listed keeps the guess. */
-const KIND_NAMES = ['light', 'fan', 'curtain', 'climate', 'screen'];
-const KIND_OVERRIDES = Object.fromEntries(
-  Object.entries(config.kinds || {})
-    .filter(([, kind]) => KIND_NAMES.includes(String(kind)))
-    .map(([id, kind]) => [String(id), String(kind)]));
+ * The console shows what was guessed and lets you correct it; anything not
+ * listed keeps the guess. Built by applyConfig() above. */
 const YT_APP = 'youtube.leanback.v4';
 
 /* Where a set is put when the dashboard switches it on.
@@ -1937,6 +1996,224 @@ app.get('/manifest.webmanifest', (req, res) => {
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
     ],
   });
+});
+
+/* ── the setup console ───────────────────────────────────────────────────────
+ *
+ * Everything a house has to be told that cannot be read off the hub: what it is
+ * called, which fittings belong to one ceiling, which circuits the kind-guessing
+ * got wrong, and which television is in which room. Unsecured on purpose — this
+ * is a LAN dashboard on a box whose vendor API has no authentication either, and
+ * a login on the setup page would be a lock on a door in a field.
+ *
+ * Groups and kinds take effect at once, because they are read at render time.
+ * The house's name, the hub's address and the port cannot: the page is built
+ * once at startup and the hub sockets are already open. Those say so.
+ */
+const RESTART_KEYS = ['house_name', 'house_short', 'hub_ip', 'hub_port', 'port'];
+
+app.get('/api/setup', (req, res) => {
+  /* Every circuit, with what the kind-guessing decided and what it was told —
+     so the console can show "this was a guess" rather than presenting it as
+     fact. guessed is what the code would say with no override at all. */
+  const circuits = [...devices.entries()].map(([id, entry]) => {
+    const r = entry.record;
+    const appType = String(r.app_type || 'L');
+    const isFanFlag = r.isFan === 'true';
+    const isFanName = /\bFAN\b/i.test(String(r.device_name || ''));
+    let guessed;
+    if (appType === 'C') guessed = 'curtain';
+    else if (appType === 'AC') guessed = 'climate';
+    else if (appType === 'TV' || appType === 'PRJ') guessed = 'screen';
+    else if (appType === 'L') guessed = (isFanFlag || isFanName) ? 'fan' : 'light';
+    else guessed = 'light';                     // the fall-through worth knowing about
+    return {
+      record_id: id,
+      /* roomKey, not the raw name. The hub's own room names are inconsistently
+         cased — ASHU ROOM beside Master Room — and GROUPS holds the uppercased
+         key, so comparing against the raw name silently matched nothing and the
+         console showed those rooms as having no group at all. */
+      name: String(r.device_name || '').trim(),
+      room: roomKey(entry.room),
+      app_type: appType,
+      device_type: String(r.device_type || ''),
+      is_dimmable: r.is_dimmable === 'true',
+      is_tunable: r.is_tunable === 'true',
+      guessed,
+      // Why the guess landed where it did, so a wrong one is explicable.
+      guess_reason: appType === 'L' && !isFanFlag && isFanName ? 'the word FAN in its name'
+        : !['L', 'C', 'AC', 'TV', 'PRJ'].includes(appType) ? 'app_type ' + appType + ' is unknown here'
+        : 'app_type ' + appType,
+      kind: KIND_OVERRIDES[String(id)] || null,
+    };
+  }).sort((a, b) => a.room.localeCompare(b.room) || a.record_id - b.record_id);
+
+  res.json({
+    ok: true,
+    /* What is *configured*, not what is in force. An environment variable wins
+       over the file — PORT=3111 for a test instance is the normal case — and a
+       page showing the effective value would quietly write that override into
+       config.json the next time somebody pressed Save. So the fields show the
+       file's own values and the overrides are reported separately, for the page
+       to mention rather than adopt. */
+    house_name: config.house_name || '',
+    house_short: config.house_short || '',
+    hub_ip: config.hub_ip || '',
+    hub_port: String(config.hub_port || ''),
+    port: Number(config.port || 3000),
+    effective: {
+      house_name: HOUSE_NAME, hub_ip: HUB_IP,
+      hub_port: String(HUB_PORT), port: Number(PORT),
+    },
+    overridden: [
+      process.env.HOUSE_NAME ? 'house_name' : null,
+      process.env.HUB_IP ? 'hub_ip' : null,
+      process.env.HUB_PORT ? 'hub_port' : null,
+      process.env.PORT ? 'port' : null,
+    ].filter(Boolean),
+    hub_ok: hubSync.ok,
+    rooms: [...new Set(circuits.map((c) => c.room))],
+    circuits,
+    groups: GROUPS,
+    televisions: (config.televisions || []).map((t) => ({
+      id: t.id, name: t.name || 'TV', room: t.room, mac: String(t.mac || '').toLowerCase(),
+      // The prefix is the only thing that tells you this before you try it.
+      wake: /^d0:cd:bf/.test(String(t.mac || '').toLowerCase()) ? 'wired, reliable' : 'wi-fi, unreliable',
+      paired: tvKeyKnown(t.mac),
+    })),
+    kind_names: KIND_NAMES,
+  });
+});
+
+app.post('/api/setup', (req, res) => {
+  const b = req.body || {};
+  const next = Object.assign({}, config);
+  const changed = [];
+
+  for (const key of ['house_name', 'house_short', 'hub_ip', 'hub_port']) {
+    if (b[key] !== undefined && String(b[key]).trim() && String(b[key]) !== String(config[key] || '')) {
+      next[key] = String(b[key]).trim().slice(0, 60);
+      changed.push(key);
+    }
+  }
+  if (b.port !== undefined && Number(b.port) > 0 && Number(b.port) !== Number(config.port || 3000)) {
+    next.port = Number(b.port);
+    changed.push('port');
+  }
+
+  /* A group is a room, a name and at least two circuits — one is just the
+     circuit, which is why the tile never appears for a single lamp. Unknown
+     record_ids are refused rather than dropped: a group that quietly holds
+     fewer circuits than you picked is worse than a rejected save. */
+  if (Array.isArray(b.groups)) {
+    const clean = [];
+    for (const g of b.groups) {
+      const room = roomKey(String((g && g.room) || ''));
+      const ids = Array.isArray(g && g.record_ids) ? g.record_ids.map(Number).filter(Number.isFinite) : [];
+      if (!room) return res.status(400).json({ ok: false, error: 'a group needs a room' });
+      if (ids.length < 2) continue;                 // silently dropped: not a group
+      for (const id of ids) {
+        if (!devices.has(id)) return res.status(400).json({ ok: false, error: 'no circuit ' + id });
+        if (roomKey(devices.get(id).room) !== room) {
+          return res.status(400).json({ ok: false, error: 'circuit ' + id + ' is not in ' + room });
+        }
+      }
+      clean.push({ room, label: String((g.label || 'All COBs')).trim().slice(0, 30), record_ids: ids });
+    }
+    next.groups = clean;
+    changed.push('groups');
+  }
+
+  if (b.kinds !== undefined && b.kinds !== null) {
+    const clean = {};
+    for (const id of Object.keys(b.kinds)) {
+      const kind = String(b.kinds[id]);
+      if (!KIND_NAMES.includes(kind)) continue;     // ignore, rather than fail the save
+      if (!devices.has(Number(id))) continue;
+      clean[String(Number(id))] = kind;
+    }
+    next.kinds = clean;
+    changed.push('kinds');
+  }
+
+  if (Array.isArray(b.televisions)) {
+    const clean = [];
+    for (const t of b.televisions) {
+      const mac = String((t && t.mac) || '').trim().toLowerCase();
+      if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)) {
+        return res.status(400).json({ ok: false, error: 'not a MAC address: ' + mac });
+      }
+      const room = roomKey(String(t.room || ''));
+      if (!room) return res.status(400).json({ ok: false, error: 'a screen needs a room' });
+      clean.push({
+        id: String(t.id || 'tv-' + room.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 30),
+        name: String(t.name || 'TV').trim().slice(0, 20),
+        room, mac,
+      });
+    }
+    next.televisions = clean;
+    changed.push('televisions');
+  }
+
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n');
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'could not write config.json: ' + err.message });
+  }
+  config = next;
+  applyConfig();
+  pushSoon();                                   // groups reach every open browser
+
+  const needsRestart = changed.filter((k) => RESTART_KEYS.includes(k) || k === 'televisions');
+  res.json({
+    ok: true, changed,
+    needs_restart: needsRestart,
+    /* Said rather than implied: the page is a constant built at startup and the
+       television sockets are already open, so those two cannot follow a save. */
+    note: needsRestart.length
+      ? 'Saved. ' + needsRestart.join(', ') + ' needs a restart to take effect.'
+      : 'Saved, and live now.',
+  });
+});
+
+/* Look for LG sets on the network. Not merged into the config: which set is in
+   which room can only be settled by somebody watching a screen come on. */
+app.post('/api/setup/scan', async (req, res) => {
+  try {
+    const found = await discoverTvs(6000);
+    res.json({ ok: true, screens: found });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+/* Re-read the hub's device list. Needed after the installer fits anything: the
+   merge in readHubState ignores a record_id the map does not already hold, so a
+   new light is invisible however many times the hub is read. */
+app.post('/api/setup/rediscover', async (req, res) => {
+  try {
+    const msg = await readSiteConfig();
+    const list = ((msg.payload || {}).response || {}).devices || [];
+    if (!list.length) throw new Error('the hub sent no devices — not overwriting');
+    const before = new Set(devices.keys());
+    fs.writeFileSync(JSON_PATH, JSON.stringify(msg, null, 2));
+    const after = new Set(list.map((d) => d.record_id));
+    res.json({
+      ok: true,
+      devices: list.length,
+      added: [...after].filter((id) => !before.has(id)),
+      removed: [...before].filter((id) => !after.has(id)),
+      note: 'Written to data/devices.json. A restart is needed to load it.',
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/setup/restart', (req, res) => {
+  res.json({ ok: true, note: 'Restarting. Give it a few seconds and reload.' });
+  // systemd brings it back; run outside a service and this simply stops.
+  setTimeout(() => process.exit(0), 250);
 });
 
 app.get('/api/health', (req, res) => {
@@ -3880,6 +4157,354 @@ let shell = null;
 const theShell = () => shell || (shell = {
   gz: zlib.gzipSync(HTML, { level: 9 }),
   tag: '"' + require('crypto').createHash('sha1').update(HTML).digest('hex').slice(0, 16) + '"',
+});
+
+/* The setup console.
+ *
+ * Deliberately its own plain page rather than a screen inside the dashboard.
+ * The dashboard is a board you glance at; this is a form you sit at once, and
+ * mixing them would put a settings screen inside the thing being configured —
+ * including on a wall panel where nobody should reach it by accident.
+ *
+ * No authentication, as agreed: this is a LAN dashboard on a box whose vendor
+ * API has none either, and a login here would be a lock on a gate in a field.
+ */
+const SETUP_HTML = /* html */ `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup · ${HOUSE_NAME}</title>
+<style>
+  :root { --ink:#14181d; --soft:#5b636d; --faint:#8b939d; --line:#dcdfe4;
+          --paper:#fff; --ground:#f4f5f7; --accent:#b4442f; --ok:#2b6b4f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; }
+  .wrap { max-width: 860px; margin:0 auto; padding: 28px 18px 90px; }
+  h1 { font-size:22px; margin:0 0 2px; }
+  .sub { color:var(--soft); font-size:13.5px; margin:0 0 26px; }
+  section { background:var(--paper); border:1px solid var(--line); border-radius:12px;
+            padding:18px; margin-bottom:16px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--soft);
+       margin:0 0 4px; font-weight:600; }
+  .why { color:var(--soft); font-size:13px; margin:0 0 14px; }
+  label { display:block; font-size:12.5px; color:var(--soft); margin:10px 0 3px; }
+  input[type=text], input[type=number], select {
+    font:15px/1.4 inherit; padding:8px 10px; border:1px solid var(--line);
+    border-radius:8px; background:var(--paper); color:var(--ink); width:100%; max-width:340px; }
+  button { font:14px/1 inherit; padding:9px 14px; border-radius:8px; cursor:pointer;
+           border:1px solid var(--line); background:var(--paper); color:var(--ink); }
+  button.go { background:var(--ink); color:#fff; border-color:var(--ink); }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; font-weight:600; color:var(--soft); font-size:11.5px;
+       text-transform:uppercase; letter-spacing:.06em; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:5px 8px; border-bottom:1px solid #eef0f2; vertical-align:middle; }
+  td select { max-width:130px; padding:4px 6px; font-size:13px; }
+  .id { font-family:ui-monospace,monospace; color:var(--faint); font-size:12px; }
+  .guess { color:var(--faint); font-size:12px; }
+  .rm { font-family:ui-monospace,monospace; font-size:11px; letter-spacing:.06em;
+        text-transform:uppercase; color:var(--soft); background:var(--ground);
+        padding:2px 7px; border-radius:5px; display:inline-block; }
+  .note { margin-top:12px; font-size:13px; padding:9px 11px; border-radius:8px; display:none; }
+  .note.on { display:block; }
+  .note.good { background:#eaf5ee; color:var(--ok); }
+  .note.bad  { background:#fdeceb; color:var(--accent); }
+  .grp { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
+  .grp h3 { margin:0 0 8px; font-size:14px; }
+  .ticks { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:4px 12px; }
+  .tick { display:flex; align-items:center; gap:7px; font-size:13.5px; }
+  .tick input { width:auto; }
+  .warn { color:var(--accent); }
+  .scr { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:8px; }
+  .scr .mac { font-family:ui-monospace,monospace; font-size:12.5px; }
+  .flex { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .flex > div { flex:1 1 150px; }
+</style></head><body>
+<div class="wrap">
+  <h1>Setup</h1>
+  <p class="sub">Everything this house has to be told that cannot be read off the hub.
+     Groups and circuit kinds take effect immediately; a name, an address or a
+     screen needs a restart, and will say so.</p>
+
+  <section>
+    <h2>This house</h2>
+    <p class="why">The name on the masthead and under the home-screen icon.</p>
+    <div class="flex">
+      <div><label for="hname">Name</label><input id="hname" type="text"></div>
+      <div><label for="hshort">Short name, for the icon</label><input id="hshort" type="text"></div>
+    </div>
+    <div class="row"><button class="go" id="savehouse">Save</button></div>
+    <div class="note" id="n-house"></div>
+  </section>
+
+  <section>
+    <h2>The hub</h2>
+    <p class="why">Where the controller is. Everything about the protocol is fixed;
+       only the address changes between houses.</p>
+    <div class="flex">
+      <div><label for="hip">Address</label><input id="hip" type="text"></div>
+      <div><label for="hport">Port</label><input id="hport" type="text"></div>
+      <div><label for="wport">This dashboard's port</label><input id="wport" type="number"></div>
+    </div>
+    <div class="row"><button class="go" id="savehub">Save</button><span id="hubstate" class="guess"></span></div>
+    <div class="note" id="n-hub"></div>
+  </section>
+
+  <section>
+    <h2>What each circuit is</h2>
+    <p class="why">Two things are guesses. A fan is found by the word FAN in its name,
+       because this hub's own flag is unreliable — so a fan called something else
+       reads as a light. And an <span class="id">app_type</span> this dashboard has
+       never seen falls through to a light, which would give a geyser a lamp's glow.
+       Set anything the guess got wrong.</p>
+    <div class="row"><button class="go" id="savekinds">Save kinds</button></div>
+    <div class="note" id="n-kinds"></div>
+    <table id="circuits"><thead><tr>
+      <th>Room</th><th>Circuit</th><th>Type</th><th>Guessed</th><th>Treat as</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Groups</h2>
+    <p class="why">A run of identical fittings around one ceiling, driven as one tile.
+       Nothing is detected automatically: which fittings belong together is
+       something you know, and a guess would be wrong quietly. Two or more, or it
+       is just the circuit. One per room.</p>
+    <div id="groups"></div>
+    <div class="row"><button class="go" id="savegroups">Save groups</button></div>
+    <div class="note" id="n-groups"></div>
+  </section>
+
+  <section>
+    <h2>Screens</h2>
+    <p class="why">LG sets, driven directly rather than through the hub. Which set is
+       in which room cannot be worked out from the network — the MACs come in
+       batches and a sleeping set will not answer. Switch one on, scan, and see
+       which address appears.</p>
+    <div class="row"><button id="scan">Scan the network</button><span id="scanstate" class="guess"></span></div>
+    <div id="screens"></div>
+    <div class="row"><button class="go" id="savetvs">Save screens</button></div>
+    <div class="note" id="n-tvs"></div>
+  </section>
+
+  <section>
+    <h2>Maintenance</h2>
+    <p class="why">Re-read the hub after the installer fits or removes anything: a
+       record the dashboard has never seen is ignored on every ordinary read, so a
+       new light stays invisible until this is run.</p>
+    <div class="row">
+      <button id="rediscover">Re-read the hub</button>
+      <button id="restart">Restart the dashboard</button>
+    </div>
+    <div class="note" id="n-maint"></div>
+  </section>
+</div>
+<script>
+var S = null;
+function el(id) { return document.getElementById(id); }
+function note(id, msg, bad) {
+  var n = el(id);
+  n.textContent = msg;
+  n.className = 'note on ' + (bad ? 'bad' : 'good');
+}
+function post(path, body) {
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); });
+}
+
+function load() {
+  return fetch('/api/setup').then(function (r) { return r.json(); }).then(function (d) {
+    S = d;
+    el('hname').value = d.house_name || '';
+    el('hshort').value = d.house_short || '';
+    el('hip').value = d.hub_ip || '';
+    el('hport').value = d.hub_port || '';
+    el('wport').value = d.port || 3000;
+    el('hubstate').textContent = d.hub_ok ? 'answering' : 'not answering';
+    /* Said, not adopted: an environment variable beats the file, so a test
+       instance run on another port must not have that port written back here. */
+    if (d.overridden.length) {
+      note('n-hub', 'Running with ' + d.overridden.join(', ') +
+        ' set in the environment, which wins over this file. In force now: ' +
+        d.effective.hub_ip + ':' + d.effective.hub_port + ' on port ' + d.effective.port +
+        '. The fields below are what is saved.', false);
+    }
+    drawCircuits();
+    drawGroups();
+    drawScreens(null);
+  });
+}
+
+function drawCircuits() {
+  var body = el('circuits').querySelector('tbody');
+  body.innerHTML = '';
+  S.circuits.forEach(function (c) {
+    var tr = document.createElement('tr');
+    var sel = '<select data-id="' + c.record_id + '"><option value="">' +
+      'as guessed (' + c.guessed + ')</option>';
+    S.kind_names.forEach(function (k) {
+      sel += '<option value="' + k + '"' + (c.kind === k ? ' selected' : '') + '>' + k + '</option>';
+    });
+    sel += '</select>';
+    tr.innerHTML =
+      '<td><span class="rm">' + c.room + '</span></td>' +
+      '<td>' + c.name + ' <span class="id">#' + c.record_id + '</span></td>' +
+      '<td class="id">' + c.app_type + ' / ' + c.device_type +
+        (c.is_dimmable ? ' · dim' : '') + (c.is_tunable ? ' · tune' : '') + '</td>' +
+      '<td>' + c.guessed + '<br><span class="guess' +
+        (c.guess_reason.indexOf('unknown') !== -1 || c.guess_reason.indexOf('FAN') !== -1 ? ' warn' : '') +
+        '">' + c.guess_reason + '</span></td>' +
+      '<td>' + sel + '</td>';
+    body.appendChild(tr);
+  });
+}
+
+function drawGroups() {
+  var host = el('groups');
+  host.innerHTML = '';
+  S.rooms.forEach(function (room) {
+    var mine = S.groups.filter(function (g) { return g.room === room; })[0];
+    var here = S.circuits.filter(function (c) { return c.room === room; });
+    var box = document.createElement('div');
+    box.className = 'grp';
+    box.dataset.room = room;
+    var ticks = here.map(function (c) {
+      var on = mine && mine.record_ids.indexOf(c.record_id) !== -1;
+      return '<label class="tick"><input type="checkbox" data-id="' + c.record_id + '"' +
+        (on ? ' checked' : '') + '> ' + c.name + ' <span class="id">#' + c.record_id + '</span></label>';
+    }).join('');
+    box.innerHTML = '<h3>' + room + '</h3>' +
+      '<label>What the tile is called</label>' +
+      '<input type="text" class="glabel" value="' + ((mine && mine.label) || 'All COBs') + '">' +
+      '<label>Circuits in it</label><div class="ticks">' + ticks + '</div>';
+    host.appendChild(box);
+  });
+}
+
+function drawScreens(found) {
+  var host = el('screens');
+  host.innerHTML = '';
+  // Whatever is already configured, plus anything the scan turned up that is not.
+  var rows = S.televisions.map(function (t) {
+    return { mac: t.mac, room: t.room, id: t.id, name: t.name, paired: t.paired, wake: t.wake, known: true };
+  });
+  (found || []).forEach(function (f) {
+    (f.macs || []).forEach(function (mac) {
+      mac = String(mac).toLowerCase();
+      if (rows.some(function (r) { return r.mac === mac; })) return;
+      rows.push({ mac: mac, room: '', id: '', name: 'TV', ip: f.ip, label: f.name || f.model,
+        wake: /^d0:cd:bf/.test(mac) ? 'wired, reliable' : 'wi-fi, unreliable', known: false });
+    });
+  });
+  if (!rows.length) {
+    host.innerHTML = '<p class="why">None configured, and none found. A set that is ' +
+      'fully off is invisible to everything — switch one on and scan again.</p>';
+    return;
+  }
+  rows.forEach(function (r) {
+    var opts = '<option value="">choose a room</option>' + S.rooms.map(function (rm) {
+      return '<option value="' + rm + '"' + (r.room === rm ? ' selected' : '') + '>' + rm + '</option>';
+    }).join('');
+    var box = document.createElement('div');
+    box.className = 'scr';
+    box.dataset.mac = r.mac;
+    box.innerHTML =
+      '<div><span class="mac">' + r.mac + '</span> · <span class="guess">' + r.wake +
+        (r.ip ? ' · seen at ' + r.ip : '') + (r.label ? ' · ' + r.label : '') +
+        (r.known ? (r.paired ? ' · paired' : ' · <span class="warn">not paired</span>') : ' · new') +
+        '</span></div>' +
+      '<div class="flex" style="margin-top:8px">' +
+        '<div><label>Room</label><select class="srm">' + opts + '</select></div>' +
+        '<div><label>Name on the tile</label><input type="text" class="snm" value="' + (r.name || 'TV') + '"></div>' +
+        '<div><label>Address it answers to</label><input type="text" class="sid" value="' + (r.id || '') +
+          '" placeholder="tv-living"></div>' +
+      '</div>';
+    host.appendChild(box);
+  });
+}
+
+el('savehouse').onclick = function () {
+  post('/api/setup', { house_name: el('hname').value, house_short: el('hshort').value })
+    .then(function (r) { note('n-house', r.ok ? r.note : r.error, !r.ok); });
+};
+el('savehub').onclick = function () {
+  post('/api/setup', { hub_ip: el('hip').value, hub_port: el('hport').value, port: Number(el('wport').value) })
+    .then(function (r) { note('n-hub', r.ok ? r.note : r.error, !r.ok); });
+};
+el('savekinds').onclick = function () {
+  var kinds = {};
+  Array.prototype.forEach.call(el('circuits').querySelectorAll('select'), function (sel) {
+    if (sel.value) kinds[sel.dataset.id] = sel.value;
+  });
+  post('/api/setup', { kinds: kinds }).then(function (r) {
+    note('n-kinds', r.ok ? r.note : r.error, !r.ok);
+    if (r.ok) load();
+  });
+};
+el('savegroups').onclick = function () {
+  /* Every room, every time. The server replaces the whole list, so sending only
+     the room being edited would silently delete the others. */
+  var groups = [];
+  Array.prototype.forEach.call(el('groups').querySelectorAll('.grp'), function (box) {
+    var ids = [];
+    Array.prototype.forEach.call(box.querySelectorAll('input[type=checkbox]'), function (cb) {
+      if (cb.checked) ids.push(Number(cb.dataset.id));
+    });
+    if (ids.length > 1) {
+      groups.push({ room: box.dataset.room, label: box.querySelector('.glabel').value, record_ids: ids });
+    }
+  });
+  post('/api/setup', { groups: groups }).then(function (r) {
+    note('n-groups', r.ok ? r.note : r.error, !r.ok);
+    if (r.ok) load();
+  });
+};
+el('savetvs').onclick = function () {
+  var tvs = [], bad = null;
+  Array.prototype.forEach.call(el('screens').querySelectorAll('.scr'), function (box) {
+    var room = box.querySelector('.srm').value;
+    if (!room) return;                       // not mapped yet: simply not configured
+    var id = box.querySelector('.sid').value.trim() ||
+      'tv-' + room.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (tvs.some(function (t) { return t.id === id; })) bad = 'two screens cannot share the address ' + id;
+    tvs.push({ mac: box.dataset.mac, room: room, name: box.querySelector('.snm').value, id: id });
+  });
+  if (bad) return note('n-tvs', bad, true);
+  post('/api/setup', { televisions: tvs }).then(function (r) {
+    note('n-tvs', r.ok ? r.note : r.error, !r.ok);
+    if (r.ok) load();
+  });
+};
+el('scan').onclick = function () {
+  el('scan').disabled = true;
+  el('scanstate').textContent = 'listening for about six seconds…';
+  post('/api/setup/scan').then(function (r) {
+    el('scan').disabled = false;
+    el('scanstate').textContent = r.ok ? (r.screens.length + ' answered') : r.error;
+    if (r.ok) drawScreens(r.screens);
+  });
+};
+el('rediscover').onclick = function () {
+  post('/api/setup/rediscover').then(function (r) {
+    note('n-maint', r.ok
+      ? (r.note + ' ' + r.devices + ' devices' +
+         (r.added.length ? ', added ' + r.added.join(', ') : '') +
+         (r.removed.length ? ', removed ' + r.removed.join(', ') : ', nothing changed'))
+      : r.error, !r.ok);
+  });
+};
+el('restart').onclick = function () {
+  post('/api/setup/restart').then(function (r) {
+    note('n-maint', r.note, false);
+    setTimeout(function () { location.reload(); }, 4000);
+  });
+};
+load();
+</script></body></html>`;
+
+app.get('/setup', (req, res) => {
+  res.type('html').set('Cache-Control', 'no-cache').send(SETUP_HTML);
 });
 
 app.get('/', (req, res) => {
