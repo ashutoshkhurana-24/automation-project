@@ -5023,6 +5023,14 @@ const HTML = /* html */ `<!doctype html>
   }
 
   * { box-sizing: border-box; }
+  /* [hidden] is display:none in the UA sheet, which is the weakest origin there
+     is — so any display of our own beats it and an element told to hide stays
+     on screen as an empty band. This sheet had patched that one element at a
+     time (.chip, .seg-row, .whatsnext, .seeklayer and seven more) and still
+     missed one: #schedcircuit is .sched-pick.pickbtn { display: flex }, so the
+     dead "Choose circuits" button sat inside the picker that replaced it,
+     the 96px that pushed a six-circuit list into scrolling. One rule instead. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
   html { background: var(--base); }
   body {
@@ -8393,7 +8401,7 @@ const HTML = /* html */ `<!doctype html>
         </div>
       </div>
 
-      <div class="sched-field">
+      <div class="sched-field" id="schedwhat">
         <span class="sched-lab">What it does</span>
         <div class="seg-row" id="schedkind">
           <button class="seg" type="button" data-kind="cue">Run a cue</button>
@@ -8431,6 +8439,11 @@ const HTML = /* html */ `<!doctype html>
       <button class="sheet-btn" id="schedrun" type="button">Run it now</button>
       <button class="sheet-btn" id="schedcancel" type="button">Close</button>
       <button class="sheet-btn danger" id="scheddelete" type="button" hidden>Delete</button>
+      <!-- While circuits are being chosen this is the whole foot. Done belongs
+           where the thumb already is and outside the scroll, so a list of
+           fourteen does not mean scrolling back up to leave; and Save must not
+           be offered from inside a half-finished selection. -->
+      <button class="sheet-btn go" id="scheddone" type="button" hidden>Done</button>
     </div>
   </div>
 </div>
@@ -11215,7 +11228,17 @@ function toggleSchedCircuit(d) {
   const had = ids.some((x) => String(x) === key);
   const isScreen = (id) => typeof id === 'string';
   let next = had ? ids.filter((x) => String(x) !== key) : [...ids, d.record_id];
-  if (!had && (isScreen(d.record_id) || next.some(isScreen))) next = [d.record_id];
+  if (!had && (isScreen(d.record_id) || next.some(isScreen))) {
+    /* Say so. Standing on the list this looked like a tick that quietly untick-
+       ed three others: the count in the head dropped from three to one and
+       nothing on screen accounted for it. */
+    if (ids.length) {
+      note(isScreen(d.record_id)
+        ? 'A screen is scheduled on its own, so the other circuits came out.'
+        : 'A screen is scheduled on its own, so the screen came out.');
+    }
+    next = [d.record_id];
+  }
 
   schedDraft.target = { kind: 'device', record_ids: next };
   const list = schedDevices(schedDraft.target);
@@ -11242,8 +11265,16 @@ function drawSchedPicker() {
       b.type = 'button';
       b.className = 'pick';
       b.innerHTML = '<span class="what"></span><span class="count"></span><span class="chev">›</span>';
+      /* How many of this room are already in the schedule, not just how many it
+         holds. Without it, stepping out of a room to pick from another one loses
+         sight of the first room's ticks completely — the count in the head says
+         four and the list gives no clue which rooms they are in. */
+      const mine = schedDevices(schedDraft.target).filter((x) => x.room === room).length;
+      b.classList.toggle('in', mine > 0);
       b.querySelector('.what').textContent = title(room);
-      b.querySelector('.count').textContent = inRoom(room).length + ' circuits';
+      b.querySelector('.count').textContent = mine
+        ? mine + ' of ' + inRoom(room).length + ' chosen'
+        : inRoom(room).length + ' circuits';
       b.onclick = () => { schedPickRoom = room; schedPick = 'circuits'; drawSchedSheet(); };
       box.appendChild(b);
     }
@@ -11254,28 +11285,29 @@ function drawSchedPicker() {
 
   /* A checklist, since a schedule can name several circuits: tapping toggles
      and the picker stays open, so choosing five is five taps rather than five
-     round trips through the form. Done is the way back — and a tick that cannot
-     be unticked is the one thing a tick promises, which is the lesson the cue
-     editor already recorded. */
+     round trips through the form. A tick that cannot be unticked is the one
+     thing a tick promises, which is the lesson the cue editor already recorded.
+     Done is not in this list — it is the sheet's foot, pinned outside the
+     scroll, because a Done above fourteen circuits means scrolling back up to
+     leave and it read as more important than the choosing.
+     The tick is drawn rather than described: this list said "chosen" in 13px
+     grey at the far end of the row and shifted the name a shade lighter, and
+     that was the whole of the feedback for the one question the screen exists
+     to answer. The .pick .box style was written for exactly this and had never
+     been used — the same shape as the cue editor's rowbox, so the two sheets
+     do not spell a chosen circuit two different ways. */
   const chosen = schedIds(schedDraft.target).map(String);
-  const done = document.createElement('button');
-  done.type = 'button';
-  done.className = 'sheet-btn go schedpickdone';
-  done.textContent = chosen.length
-    ? 'Done \u00b7 ' + chosen.length + (chosen.length === 1 ? ' circuit' : ' circuits')
-    : 'Done';
-  done.onclick = () => { schedPick = null; drawSchedSheet(); };
-  box.appendChild(done);
-
   for (const d of inRoom(schedPickRoom)) {
     const mine = chosen.includes(String(d.record_id));
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'pick' + (mine ? ' in' : '');
-    b.setAttribute('aria-pressed', String(mine));
-    b.innerHTML = '<span class="what"></span><span class="count"></span>';
+    b.setAttribute('role', 'checkbox');
+    b.setAttribute('aria-checked', String(mine));
+    b.innerHTML = '<span class="box">' + CHECK + '</span>'
+      + '<span class="what"></span><span class="count"></span>';
     b.querySelector('.what').textContent = pretty(d.name);
-    b.querySelector('.count').textContent = mine ? 'chosen' : '';
+    b.querySelector('.count').textContent = kindWord(d);
     b.onclick = () => {
       /* The id stays a string for a television and a number for a hub circuit,
          which is the difference the server keys everything off. */
@@ -11286,25 +11318,85 @@ function drawSchedPicker() {
   }
 }
 
+/* What a circuit is, in one word, at the end of its row. The slot held the word
+   "chosen" — which the tick now says, and says better — so it is free to carry
+   the thing you actually need when picking blind from a list of names: whether
+   HANGING is a lamp and whether AC is the air conditioner. */
+function kindWord(d) {
+  /* Dropped only when the name already *is* the word — "AC · ac" is daft. Not
+     when it merely contains it: LIVING holds CURTAIN ROPE, MAIN CURTAIN and
+     SHEER CURTAIN, and the rope is a light while the other two are motors, so
+     "curtain" beside the two that really are is the only thing in the row
+     telling you which one takes open and close. Suppressing on a substring
+     blanked all three and made the list unreadable in exactly the room where
+     getting it wrong picks the wrong verb. */
+  const said = (w) => (String(d.name || '').trim().toLowerCase() === w ? '' : w);
+  if (d.is_tv) return said('screen');
+  if (d.is_curtain) return said('curtain');
+  if (d.is_fan) return said('fan');
+  if (d.is_ac) return said('ac');
+  if (d.is_tunable) return 'tunable';
+  if (d.is_dimmable) return 'dimmable';
+  return '';
+}
+
 /** Fills the sheet from the draft. Called on open and after every change. */
 function drawSchedSheet() {
   if (!schedDraft) return;
   el('#schedat').value = schedDraft.at;
 
-  /* While a circuit is being chosen the form gets out of the way, the same as
-     the cue sheet hides its head and foot while picking. */
+  /* While a circuit is being chosen the picker owns the whole sheet, the same as
+     the cue sheet hides its head and foot while picking. It used to own only the
+     middle: the form's "What it does" label and its own trigger button stayed
+     above the list — the trigger still reading "Choose circuits" while you were
+     choosing them — and those 96px are what pushed a six-circuit room into
+     scrolling a sheet with room to spare. */
   drawSchedPicker();
   for (const id of ['#schedat', '#scheddays', '#schedafterfield']) {
     const n = el(id); if (n) n.closest('.sched-field').hidden = !!schedPick;
   }
+  el('#schedwhat').hidden = !!schedPick;
   el('#schedkind').hidden = !!schedPick;
-  if (schedPick) {
+
+  /* The head and foot belong to whichever job the sheet is doing. Picking, the
+     head counts what is chosen and the foot is one Done: the count has to live
+     outside the scrolling list, or the answer to "have I got them all" is only
+     visible while you happen to be looking at the right row, and Save must not
+     be offered from inside a half-made selection. */
+  const picking = !!schedPick;
+  el('#schedname').hidden = picking;
+  el('#scheddone').hidden = !picking;
+  el('#schedsave').hidden = picking;
+  el('#schedcancel').hidden = picking;
+  // Run it now and Delete belong to a schedule that exists, picking or not.
+  el('#schedrun').hidden = picking || !schedEditing;
+  el('#scheddelete').hidden = picking || !schedEditing;
+
+  if (picking) {
+    /* Counted off the circuits that resolve, not off the saved ids: a schedule
+       whose lamp the installer has since taken away holds an id that names
+       nothing and has no row in any room to tick — so counting the ids would
+       promise a circuit the list cannot show, and the room name would have come
+       out of title(undefined). */
+    const chosenDevs = schedDevices(schedDraft.target);
+    const n = chosenDevs.length;
+    el('#schedeyebrow').textContent = schedPick === 'rooms'
+      ? 'Which room' : title(schedPickRoom);
+    /* Its own sentence, not schedTargetWords with a word bolted on the end —
+       that reads "3 circuits · Dining chosen", which says the room was chosen. */
+    const where = [...new Set(chosenDevs.map((x) => x.room))];
+    el('#schedsays').textContent = !n
+      ? 'Tap the circuits this schedule should switch.'
+      : n + (n === 1 ? ' circuit chosen' : ' circuits chosen')
+        + (where.length === 1 ? ' in ' + title(where[0]) : ', across ' + where.length + ' rooms');
+    el('#scheddone').textContent = n
+      ? 'Done \u00b7 ' + n + (n === 1 ? ' circuit' : ' circuits') : 'Done';
     el('#schedtarget').hidden = true;
-    el('#schedcircuit').hidden = true;
     el('#schedaction').hidden = true;
     el('#schedcontrols').hidden = true;
     return;
   }
+  el('#schedeyebrow').textContent = schedEditing ? 'Schedule' : 'New schedule';
 
   const days = el('#scheddays');
   days.innerHTML = '';
@@ -11440,9 +11532,14 @@ function syncSchedTarget() {
 function schedPreview() {
   if (!schedDraft.target) return 'Pick something for it to do.';
   if (!schedDraft.days.length) return 'Pick at least one day, or it will never run.';
-  const d = schedDraft.target.kind === 'device'
-    ? deviceOf(schedIds(schedDraft.target)[0]) : null;
   const many = schedDevices(schedDraft.target);
+  /* The first circuit that still exists, not the first id saved. A schedule
+     naming a lamp the installer has since removed keeps that id — the server
+     drops it when the schedule runs, which is deliberate — and deviceOf gave
+     undefined for it, so a schedule for one live circuit and one dead one threw
+     on pretty(d.name) and left the sentence blank. many is already the resolved
+     list, and where every id resolves this is the same circuit as before. */
+  const d = schedDraft.target.kind === 'device' ? (many[0] || null) : null;
   let what = '';
   if (schedDraft.target.kind === 'cue') {
     what = 'run ' + (cues.find(c => c.id === schedDraft.target.id)?.name || 'a cue');
@@ -11498,6 +11595,7 @@ async function saveSchedule(id, patch) {
 
 el('#newsched').onclick = () => openSchedSheet(null);
 el('#schedcancel').onclick = closeSchedSheet;
+el('#scheddone').onclick = () => { schedPick = null; drawSchedSheet(); };
 el('#schedscrim').addEventListener('click', (e) => { if (e.target === el('#schedscrim')) closeSchedSheet(); });
 
 el('#schedat').oninput = () => {
