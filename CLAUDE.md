@@ -62,6 +62,31 @@ and the `/do` reply was `{"ok":true,"count":1,"sent":1,"spoken":"Ac in Ashu Room
 
 **The projector works now, and it is a remote rather than a switch (2026-08-22).** Record 512, HOME THEATRE, `app_type: PRJ`, `device_type: IR` — the one screen the hub itself drives. The record carries **twenty-two named keys and the code for each key is the record's own field**: `on` is 168, `off` 169, `menu` 177, through `sigSource` `computer` `video` `focusAdd/Red` `picAdd/Red` `up/down/left/right` `confirm` `quit` `volAdd/Red` `mute` `auto` `pause` `mcd`. That is exactly what `Device/areaComps.projIrMap` builds, so those names are the hub's spelling and not ours.
 
+**An AVR would work the same way, and this house has none (2026-08-22).** Asked whether the vendor's code carries IR for an audio-video receiver: it does, in three places, and the payload is **identical to the projector's** — so if one is ever fitted, `prjCommand`'s shape works unchanged and only the key names differ.
+
+- `Device/areaComps.py:avrIrMap` — `device_id_ir` plus twenty keys: `power mute left up ok down right fback play fforward last stop next format pause title sk menu back`. No `device_id`, exactly like the projector.
+- `avrRelayIrMap` (`device_type: RLIR`) — the same twenty plus `device_id` and `channel_id`: a relay for power with IR for the rest.
+- `BMS_host/device_operations.py` builds `"IR_OPR " + device_id_ir + " " + code` and calls the same `ac_panel_opr.ir_opr`, with a `time.sleep(0.3)` before it. The live path needs no special case at all — `operations.py` sends **any** `device_type == 'IR'` record to `ir_opr`, and only an AC gets its command string rewritten.
+
+**The important part is a trap: an IR record's key names are slots, not meanings.** The projector's happen to be literal — `on` really is power on, proven by firing it. An AVR's are not:
+
+| scene operation | field it actually sends |
+|---|---|
+| on | `power` |
+| **off** | **`sk`** |
+| mute | `mute` |
+| **DVD input** | **`play`** |
+| **GAME input** | **`fforward`** |
+| **MEDIA PLAYER input** | **`last`** |
+
+So the installer programs whatever codes a given unit needs into whichever slots the generic remote layout provides, and `play` sends the DVD-input command. **Never infer what an IR key does from its name** — read the dispatch, or press it and look. The same caution applies to any future PRJ on a different unit.
+
+Two more things worth having written down:
+- **`PRJ` + `RLIR` is unimplemented in the hub itself**: both branches log `"Projector RLIR: Not Completed"` with the `ir_opr` call commented out. A relay+IR projector cannot be driven by this firmware at all, whatever we send.
+- **The registry disagrees with the records.** `BMS_host/config.py` lists the eight appliance kinds — `AC TV CT MP STB PRJ AVR` (plus lights) — but a curtain's actual `app_type` is **`C`**, not the `CT` the registry names. Trust the records, not the registry.
+
+Confirmed from the hub's own `devices_tbl` that nothing here uses it: `L/RL` 74, `AC/IR` 6, `C/RL` 5, `AC/RL` 1, `PRJ/IR` 1, `TV/LIP` 1. No AVR, no STB, no MP.
+
 The payload is **`IR_OPR <device_id_ir> <code>`**, and it was not inferred. `BMS_host/ac_panel_opr.py:ir_opr` splits its argument on spaces and reads device and channel out of positions 1 and 2, and `get_opr_from_params` (the AC-only rewrite) returns `"IR "+device_id+" "+channel_id` — so position 0 is a label the hub ignores. The exact string came from **the hub's own journal, which logs every payload it receives and therefore is a packet capture of the vendor app**: `'opr_param': 'IR_OPR 195 168'` twenty-three times, `195 169` four, `195 177` twice. Nothing varies between keys but the code, which is why there was nothing further to learn from sniffing the app.
 
 Two traps, both the same shape as the air conditioners:
