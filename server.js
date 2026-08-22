@@ -9184,8 +9184,8 @@ const HTML = /* html */ `<!doctype html>
           <input type="range" class="slider dim" min="0" max="70" step="1" aria-label="Volume">
         </div>
         <div class="tvrow">
-          <button class="tvkey ico" type="button" data-avr="step-1" data-ico="minus" aria-label="Quieter"></button>
-          <button class="tvkey ico" type="button" data-avr="step1" data-ico="plus" aria-label="Louder"></button>
+          <button class="tvkey ico" type="button" data-avr="quieter" data-ico="minus" aria-label="Quieter"></button>
+          <button class="tvkey ico" type="button" data-avr="louder" data-ico="plus" aria-label="Louder"></button>
           <button class="tvkey wide ico" type="button" id="avrmute" aria-label="Mute"></button>
         </div>
         <div class="tvlegend">Source</div>
@@ -11631,12 +11631,19 @@ function firePanelCinema(on) {
 }
 
 el('#avrmute').onclick = () => { const a = avrDev(); if (a) avrSend({ mute: !a.avr_muted }); };
+/* Named keys, compared as strings. This was a regex on the attribute — and a
+   regex literal in this page is inside a template literal, so its backslashes
+   are eaten unless they are doubled: /^step(-?\\d+)$/ reached the browser as
+   /^step(-?d+)$/, matched nothing, and the volume buttons were never wired at
+   all. They looked normal and did nothing. The whole hazard goes away without
+   the regex, which is the point. */
+const AVR_KEYS = {
+  louder: { step: 1 }, quieter: { step: -1 },
+  on: { on: true }, off: { on: false },
+};
 for (const b of document.querySelectorAll('#prjscrim [data-avr]')) {
-  const key = b.dataset.avr;
-  const m = /^step(-?\d+)$/.exec(key);
-  if (m) b.onclick = () => avrSend({ step: Number(m[1]) });
-  else if (key === 'on') b.onclick = () => avrSend({ on: true });
-  else if (key === 'off') b.onclick = () => avrSend({ on: false });
+  const patch = AVR_KEYS[b.dataset.avr];
+  if (patch) b.onclick = () => avrSend(patch);
 }
 
 /* The strip is driven by the shared pointer handler on .strip, which dispatches
