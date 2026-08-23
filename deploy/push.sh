@@ -159,7 +159,7 @@ if [ "$code" = "200" ] && [ "$active" = "active" ]; then
   $SSH "curl -s -m 8 http://127.0.0.1:${PORT}/api/health -H 'Host: ${HOST}:${PORT}' | python3 -c \"
 import json,sys
 d=json.load(sys.stdin)
-print('  devices', d['devices'], '| hub', d['hub']['ok'], '| cues', d.get('cues_fired','-'))
+print('  devices', d['devices'], '| hub', d['hub']['ok'], '| cues fired', d.get('cues_fired','-'))
 \"" 2>/dev/null
   say "deployed — service active, page 200"
   exit 0

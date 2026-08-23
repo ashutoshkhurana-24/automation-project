@@ -432,10 +432,14 @@ const itemIsCurtain = (it) => !!it.entry
   && ((it.entry.record.app_type || '') === 'C' || it.entry.is_curtain);
 /* An air conditioner that is infrared, which is six of the seven. HOME THEATRE
    496 is device_type RL — a real relay — so it is a plain switch and stays on
-   the setRecords path, which is correct for it. */
-const itemIsAc = (it) => !!it.entry
-  && (it.entry.record.app_type || '') === 'AC'
-  && it.entry.record.device_type === 'IR';
+   the batch path, which is correct for it.
+   The record-level test is the one every bulk sender needs, since a batch
+   carries records rather than schedule items; itemIsAc is the same question
+   asked of a schedule's item. */
+const isAcRecord = (rec) => !!rec
+  && (rec.app_type || '') === 'AC'
+  && rec.device_type === 'IR';
+const itemIsAc = (it) => !!it.entry && isAcRecord(it.entry.record);
 
 /** The sentence a schedule reads as, used by the API and spoken back. */
 function scheduleSays(sch) {
@@ -522,11 +526,8 @@ async function runSchedule(sch) {
  * The screens and the batch start together, as applyScene does, because a set
  * taking nine seconds to wake must not hold up the lamps.
  *
- * Not fixed here, and worth knowing before someone schedules one: an air
- * conditioner is IR and setRecords cannot command it — it is handed a bare
- * record with no command string and the hub drops it silently. That is the same
- * as this path has always done with a single AC; multi-select only makes it
- * easier to include one by accident. See the protocol note above. */
+ *  - an air conditioner that is infrared needs its verb in the command string
+ *    too, and goes one at a time for the same reason a curtain does. */
 async function fireTargets(items, want) {
   const records = [];
   const curtains = [];
@@ -2894,10 +2895,10 @@ async function setRecords(records, { on, level, tune }) {
   const wantTune = pct(tune);
   if (wantLevel == null && wantTune == null) throw new Error('Nothing to set — send on, level or tune');
 
-  /* An infrared projector leaves here first, for the reason the air conditioners
-     leave fireTargets: the batch sends a bare record and the hub reads the
-     device and the channel out of the command string, so a projector in a batch
-     is dropped without a word while the hub still files the status. Doing it
+  /* An infrared projector leaves here first: the batch sends a bare record and
+     the hub reads the device and the channel out of the command string, so a
+     projector in a batch is dropped without a word while the hub still files
+     the status it was handed. Doing it
      here rather than in each caller is what makes /do, the group tile and
      switchOffMany all reach it. It has no level and no colour, so only the
      on/off decision means anything — a warmth drag simply passes it by. */
@@ -2909,8 +2910,26 @@ async function setRecords(records, { on, level, tune }) {
       if (entry) { await prjPower(entry, wantLevel > 0); prjSent++; }
     }
   }
-  records = rest;
-  if (!records.length) return prjSent;
+
+  /* An infrared air conditioner leaves for the same reason, and this is what
+     makes /do reach one at all: `/do/ashu/ac/off` answered ok, count 1, sent 1
+     and the hub logged `Sending Operation on   on channel id` — no device, no
+     channel — against `on 193 on channel id 10` for the same unit through
+     /api/ac. Silent, and reported as a success.
+     Like the projector it has no level and no colour, so only the on/off
+     decision means anything and a warmth drag passes it by. One at a time:
+     each is its own socket, as in fireTargets. */
+  const split = splitAcs(rest);
+  let acSent = 0;
+  if (split.acs.length && wantLevel != null) {
+    for (const rec of split.acs) {
+      const entry = devices.get(rec.record_id);
+      if (entry) { await acPower(entry, wantLevel > 0); acSent++; }
+    }
+  }
+
+  records = split.rest;
+  if (!records.length) return prjSent + acSent;
 
   const canTune = (rec) => rec.is_tunable === 'true' && rec.channel_id_tunable != null;
   // A colour asked for goes to every tunable lamp. With none asked for, the
@@ -2926,9 +2945,9 @@ async function setRecords(records, { on, level, tune }) {
         // has been given one by hand, in which case that stands.
         || (decodeLevel(rec.device_status) === 0 && !handTuned.has(rec.record_id))));
 
-  // Starts at the projectors already sent, so a caller counting what went out
-  // is not told a projector press was nothing.
-  let sent = prjSent;
+  // Starts at the presses already sent, so a caller counting what went out is
+  // not told a projector or an air conditioner was nothing.
+  let sent = prjSent + acSent;
   if (colour != null && tunable.length) {
     sent += await sendBatchToHub(tunable.map((rec) => ({
       recordId: rec.record_id,
@@ -3156,6 +3175,18 @@ function splitProjectors(records) {
   const prjs = [], rest = [];
   for (const rec of records) (isPrjRecord(rec) ? prjs : rest).push(rec);
   return { prjs, rest };
+}
+
+/* And the infrared air conditioners, for the identical reason: the hub reads
+   the device and the channel out of the command string, so a bare record in a
+   batch is dropped without a word — while the hub still files the device_status
+   it was handed, which is what made the board show a unit off while it ran on.
+   The channel even differs per verb on these units (on is 11, off is 10), so
+   there is nothing a bare record could give it to resolve from. */
+function splitAcs(records) {
+  const acs = [], rest = [];
+  for (const rec of records) (isAcRecord(rec) ? acs : rest).push(rec);
+  return { acs, rest };
 }
 
 /* One key, by name, on the hub's projector. `on` and `off` are the two anyone
@@ -3485,8 +3516,7 @@ async function sendSteps(list) {
      This does change what an existing cue does, deliberately and with the
      user's say-so (2026-08-22): a step reading on in a cue called Movie Night
      is plainly what was meant, it is fired by hand rather than at 3am, and no
-     schedule carries the projector. That is exactly the argument the air
-     conditioners fail, which is why they are still not done here. */
+     schedule carries the projector. */
   const prjSteps = order.filter(({ t }) => isPrjRecord(t.rec));
   if (prjSteps.length) {
     order = order.filter(({ t }) => !isPrjRecord(t.rec));
@@ -3495,7 +3525,30 @@ async function sendSteps(list) {
       if (entry) await prjPower(entry, t.level > 0);
     }
   }
-  if (!order.length) return prjSteps.length;
+
+  /* An infrared air conditioner, the same way, and this is the last road that
+     could not reach one: a cue step, `/do/<room>/ac/<action>` and a `device:`
+     sleep timer all arrive here. The batch hands the hub a bare record and the
+     hub resolves the device and the channel out of the command string, so it was
+     dropped in silence — and then filed the device_status anyway, so the cue
+     reported success and the board showed the unit off while it ran on.
+     The argument for leaving this alone was that it would change what existing
+     cues do at whatever hour they fire. Checked against the house before doing
+     it (2026-08-24): not one of the nine cues carries an AC step, records 506
+     to 511 appearing in none of them, so nothing that already exists changes
+     behaviour. Only what somebody builds from here on.
+     No level and no colour, so the step's level is read only for its sign. */
+  const acSteps = order.filter(({ t }) => isAcRecord(t.rec));
+  if (acSteps.length) {
+    order = order.filter(({ t }) => !isAcRecord(t.rec));
+    for (const { t } of acSteps) {
+      const entry = devices.get(t.rec.record_id);
+      if (entry) await acPower(entry, t.level > 0);
+    }
+  }
+
+  const irSent = prjSteps.length + acSteps.length;
+  if (!order.length) return irSent;
 
   const tunes = order
     .filter(({ t }) => t.tune != null && t.level > 0)
@@ -3524,7 +3577,7 @@ async function sendSteps(list) {
     await sleep(SCENE_SETTLE_MS);
   }
 
-  return prjSteps.length + await sendBatchToHub(order.map(({ step, t }) => ({
+  return irSent + await sendBatchToHub(order.map(({ step, t }) => ({
     recordId: step.record_id,
     fields: { device_status: encodeLevel(t.level) },
   })));
