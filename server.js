@@ -4103,6 +4103,47 @@ function circuitsOf(roomName) {
   return [...groups, ...singles];
 }
 
+/* What a circuit is, and which of the action words it will actually take.
+ *
+ * This is the one thing the grammar could never say. ACTIONS lists every word
+ * the parser knows, but whether a given address accepts one depends on what is
+ * wired to it — asking an untunable lamp for a colour is a 400, and a curtain
+ * refuses everything except its three verbs. Learning that from a reference
+ * rather than from a failed request is the whole point of the page below.
+ *
+ * Both of these read the dispatch in `doRoute` rather than restating it: any
+ * curtain in the target forces the curtain verbs on the whole address, and the
+ * warmth family is the only other gated set. A bare number is accepted
+ * everywhere, because on a switch it simply means on or off. */
+const isCurtainRec = (r) => (r.app_type || '') === 'C';
+
+function circuitKind(records) {
+  const curtains = records.filter(isCurtainRec).length;
+  if (curtains) return curtains === records.length ? 'curtain' : 'curtain + others';
+  const kinds = new Set(records.map((r) =>
+    isAcRecord(r) ? 'air conditioner · infrared'
+    : isPrjRecord(r) ? 'projector · infrared'
+    /* The hub's own screen record. The board hides it wherever a real
+       television is driven directly (shadowedByTv), but /do still addresses it
+       — and it is not the set: commanding it moves a belief in the hub's
+       database while the television carries on as it was. Naming it here is
+       cheaper than letting somebody find that out by pressing it. */
+    : (r.app_type || '') === 'TV' ? 'screen \u00b7 the hub\u2019s record, not the set'
+    : r.is_tunable === 'true' ? 'tunable light'
+    : r.is_dimmable === 'true' ? 'dimmable light'
+    : 'switch'));
+  return kinds.size === 1 ? [...kinds][0] : 'mixed';
+}
+
+function actionsFor(records) {
+  if (records.some(isCurtainRec)) return ['open', 'close', 'stop'];
+  const out = ['on', 'off', 'toggle', '0-100', 'up', 'down'];
+  if (records.some((r) => r.is_tunable === 'true')) {
+    out.push('warmth-0-100', 'warm', 'cool', 'warmer', 'cooler');
+  }
+  return out;
+}
+
 /** Where a set of circuits stands now, from the cache. */
 const levelOf = (records) => Math.round(
   records.reduce((s, r) => s + decodeLevel(r.device_status), 0) / records.length);
@@ -4162,8 +4203,302 @@ const warmthName = (t) =>
   t < 20 ? 'cool' : t < 42 ? 'soft white' : t < 64 ? 'neutral' : t < 84 ? 'warm' : 'candle';
 const title_ = (s) => String(s).toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
 
+/* ── the reference page ───────────────────────────────────────────────────
+ *
+ * `/do` has always answered with JSON, which is right for the things that call
+ * it — Shortcuts, cron, and the dashboard's own command bar, which fetches this
+ * very address so the field can never offer a word the server would refuse. But
+ * JSON is a poor way to *learn* an API: it lists the action words without
+ * saying which circuit takes which, gives slugs with no hint what they are
+ * wired to, and says nothing about the endpoints that are not `/do` at all.
+ *
+ * So a browser gets a page and everything else gets exactly the JSON it got
+ * before. The test is deliberately strict — an explicit `text/html` in Accept,
+ * which browsers send and `curl` does not, curl sending only the wildcard type.
+ * Widening it to `req.accepts('html')` would match that wildcard and hand a
+ * page to every Shortcut in the house. `?json=1` forces the JSON in a browser,
+ * which is how you read the shape the command bar actually consumes.
+ */
+const DO_ACTION_NOTES = [
+  ['on', 'Full brightness, or simply on.', 'anything'],
+  ['off', 'Out.', 'anything'],
+  ['toggle', 'On if it is off, off if it is on. Re-reads the hub first if the cache is over 4s old, since a toggle computed from a stale reading is backwards.', 'anything'],
+  ['0-100', 'A bare number is always brightness \u2014 never a temperature. On anything that cannot dim, including an air conditioner, any number above 0 simply means on: /do/ashu/ac/24 switches the unit on and says nothing about degrees.', 'anything'],
+  ['up / down', '20 either way from wherever it is now. On a plain switch these are on and off.', 'anything'],
+  ['warmth-0-100', 'Colour temperature. 0 is cool and 100 is warm on this hub. tune-70 is the same thing, spelled the way the hub spells it.', 'a tunable circuit'],
+  ['warm / cool', 'Shorthand for 85 and 15.', 'a tunable circuit'],
+  ['warmer / cooler', '15 either way from where it is now.', 'a tunable circuit'],
+  ['open / close / stop', 'A curtain reads its verb from a different field and ignores levels entirely. Stop works mid-travel, which is the only way to reach a position.', 'a curtain, and nothing else'],
+];
+
+const DO_OTHER_APIS = [
+  ['Cues', [
+    ['GET|POST', '/api/cue/:id/fire', 'Fire a cue. Same as /do/cue/:id, and leaves the same one-step undo.'],
+    ['GET', '/api/cues', 'Every cue with its id, name and what it touches.'],
+    ['POST', '/api/scenes', 'Create one: {name, steps:[{record_id, on, level, tune}]}.'],
+    ['POST', '/api/house/off', 'Everything out.'],
+  ]],
+  ['Circuits', [
+    ['POST', '/api/toggle', '{record_id} — one circuit, and it waits to confirm.'],
+    ['POST', '/api/level', '{record_id, level} — returns at once, no confirmation.'],
+    ['POST', '/api/tune', '{record_id, tune} — colour only, and marks the circuit hand-tuned so circadian leaves it alone.'],
+    ['POST', '/api/group', '{record_ids, on?, level?, tune?} — one shared socket, verify and resend behind it.'],
+  ]],
+  ['Air conditioning', [
+    ['POST', '/api/ac', '{record_id, power?, off_after?} — off_after is minutes, 0 cancels. Both in one request, because "on, and off again in an hour" is one intention.'],
+  ]],
+  ['Screens the hub does not own', [
+    ['POST', '/api/tv/:id', '{on, volume, step, mute, button, app, youtube, toast} — a television answers for itself, so its reading is a reading.'],
+    ['POST', '/api/tv/say', '{message} — every set that is on, and it names in "missed" the ones that were off.'],
+    ['GET', '/api/tv/:id/icon/:appId', 'The set’s own app art, proxied past its self-signed certificate.'],
+  ]],
+  ['Home theatre', [
+    ['POST', '/api/projector', '{key} — one infrared key press. Its key names are the hub’s spelling, and a name is a slot rather than a meaning.'],
+    ['POST', '/api/avr', '{on, volume, step, mute, source} — the receiver states its volume and source as fact.'],
+    ['POST', '/api/cinema', '{on} — projector and receiver together. Anything short of both-on turns both on.'],
+  ]],
+  ['Timers, and the house itself', [
+    ['POST', '/api/timers', '{minutes, scope} — scope is house, room:NAME or device:ID. minutes 0 means now.'],
+    ['DELETE', '/api/timers/:id', 'Cancel one.'],
+    ['GET', '/api/devices', 'Every circuit as the dashboard sees it. ?refresh=1 forces a hub read.'],
+    ['GET', '/api/stream', 'Server-sent events: a full snapshot whenever the house actually moves.'],
+    ['GET', '/api/health', '503 when the background reader has stopped getting through. Cheap enough to poll.'],
+  ]],
+];
+
+/* Kept as one template literal rather than woven into the concatenation below,
+   because `deploy/push.sh` finds every script tag in this file and parses what
+   is between them — which only works when that is nothing but the script. A
+   page script the preflight cannot reach is one that serves 200 and is dead in
+   the browser. (Do not write the tag name in a comment either: the extractor
+   scans the whole file for it, and this comment broke it once.)
+   Selecting the text is not a lesser fallback here, it is the common case: the
+   clipboard API needs a secure context, and the way anybody actually reaches
+   this page is http://<ip>:3000 from a phone, which is not one. So it tries the
+   clipboard, falls back to selecting, and marks the chip either way — a control
+   that silently does nothing is worse than one that hands you a selection. */
+const DO_PAGE_SCRIPT = /* html */ `<script>
+document.addEventListener("click", function (e) {
+  var c = e.target.closest && e.target.closest("code.addr");
+  if (!c) return;
+  var mark = function () {
+    c.classList.add("copied");
+    setTimeout(function () { c.classList.remove("copied"); }, 900);
+  };
+  var select = function () {
+    try {
+      var s = getSelection(), r = document.createRange();
+      r.selectNodeContents(c); s.removeAllRanges(); s.addRange(r);
+    } catch (err) {}
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(c.textContent).then(mark, function () { select(); mark(); });
+  } else { select(); mark(); }
+});
+</script>`;
+
+const escHtml = (v) => String(v)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function doPage(host) {
+  /* The examples name the address that reached this page rather than a
+     configured one. config.hub_ip is 127.0.0.1 on an install where the
+     dashboard runs on the hub, which is true and useless to anybody reading
+     this from a phone. */
+  const HERE = 'http://' + (host || 'localhost:' + PORT);
+  const rows = (list) => list.join('');
+  const code = (t) => '<code class="addr" title="Click to copy">' + escHtml(t) + '</code>';
+
+  const roomBlocks = [...roomsIndex()].map(([sl, name]) => {
+    const circuits = circuitsOf(name);
+    const body = circuits.map((c) => {
+      const now = levelOf(c.records);
+      const tune = tuneOf(c.records);
+      const state = now > 0 ? now + '%' + (tune != null ? ' · warmth ' + tune : '') : 'off';
+      return '<tr><td>' + code('/do/' + sl + '/' + c.slug + '/on') + '</td>'
+        + '<td>' + escHtml(c.label) + '</td>'
+        + '<td class="kind">' + escHtml(circuitKind(c.records)) + '</td>'
+        + '<td class="acts">' + escHtml(actionsFor(c.records).join(' ')) + '</td>'
+        + '<td class="now">' + escHtml(state) + '</td></tr>';
+    });
+    return '<section><h2>' + escHtml(title_(name)) + '</h2>'
+      + '<p class="why">Also ' + code('/do/' + sl + '/off') + ' for the whole room, and '
+      + '<a href="/do/' + sl + '">/do/' + sl + '</a> to list it as JSON. '
+      + 'Any address here also answers to a unique prefix — ' + code('/do/' + sl.split('-')[0] + '/all/off') + '.</p>'
+      + '<table><thead><tr><th>Address</th><th>Circuit</th><th>What it is</th>'
+      + '<th>Actions it takes</th><th>Now</th></tr></thead><tbody>'
+      + rows(body) + '</tbody></table></section>';
+  });
+
+  const cueRows = scenes.map((sc) =>
+    '<tr><td>' + code('/do/cue/' + sc.id) + '</td><td>' + escHtml(sc.name) + '</td>'
+    + '<td class="kind">' + escHtml(sc.note || '') + '</td>'
+    + '<td class="now">' + sc.steps.length + '</td></tr>');
+
+  const actionRows = DO_ACTION_NOTES.map(([w, what, needs]) =>
+    '<tr><td>' + code(w) + '</td><td class="what">' + escHtml(what) + '</td>'
+    + '<td class="kind">' + escHtml(needs) + '</td></tr>');
+
+  const otherRows = DO_OTHER_APIS.map(([head, items]) =>
+    '<tr class="grouphead"><td colspan="3">' + escHtml(head) + '</td></tr>'
+    + items.map(([m, path, what]) =>
+      '<tr><td class="verb">' + escHtml(m) + '</td><td>' + code(path) + '</td>'
+      + '<td class="what">' + escHtml(what) + '</td></tr>').join(''));
+
+  return '<!doctype html>\n'
++ '<html lang="en"><head>\n'
++ '<meta charset="utf-8">\n'
++ '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
++ '<title>The /do API · ' + escHtml(HOUSE_NAME) + '</title>\n'
++ '<style>\n'
++ '  :root { --ink:#14181d; --soft:#5b636d; --faint:#8b939d; --line:#dcdfe4;\n'
++ '          --paper:#fff; --ground:#f4f5f7; --accent:#b4442f; --ok:#2b6b4f; }\n'
++ '  * { box-sizing: border-box; }\n'
++ '  body { margin:0; background:var(--ground); color:var(--ink); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; }\n'
++ '  .wrap { max-width: 980px; margin:0 auto; padding: 28px 18px 90px; }\n'
++ '  h1 { font-size:22px; margin:0 0 2px; }\n'
++ '  .sub { color:var(--soft); font-size:13.5px; margin:0 0 26px; max-width:70ch; }\n'
++ '  section { background:var(--paper); border:1px solid var(--line); border-radius:12px;\n'
++ '            padding:18px; margin-bottom:16px;\n'
+/* Every table here wants more width than a phone has — a room needs up to
+   645px of it in the 303px a 375px screen leaves — so each section scrolls its
+   own table sideways and the document never does. Measured rather than
+   guessed: without this the body scrolled horizontally on all eleven tables. */
++ '            overflow-x:auto; }\n'
++ '  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--soft);\n'
++ '       margin:0 0 4px; font-weight:600; }\n'
++ '  .why { color:var(--soft); font-size:13px; margin:0 0 14px; max-width:78ch; }\n'
++ '  table { width:100%; border-collapse:collapse; font-size:13.5px; }\n'
+/* A table fits by crushing its widest column rather than by overflowing, and
+   at 375px that gave the shapes table a 248px address beside a 73px
+   description — one word per line, "One / circuit, / or one / group of /
+   them." Measured, not guessed.
+   The floor goes on the columns that hold a *sentence* rather than on the
+   table: a column of short tokens (an action list, a kind, a level) wraps
+   perfectly well and forcing the whole table wider would make every room
+   scroll sideways for no gain. A 30-character address and a sentence genuinely
+   cannot share a phone screen, so those two tables scroll inside their section
+   and nothing else has to. */
++ '  td.what { min-width:210px; }\n'
++ '  th { text-align:left; font-weight:600; color:var(--soft); font-size:11.5px;\n'
++ '       text-transform:uppercase; letter-spacing:.06em; padding:6px 8px;\n'
++ '       border-bottom:1px solid var(--line); }\n'
++ '  td { padding:6px 8px; border-bottom:1px solid #eef0f2; vertical-align:top; }\n'
++ '  code.addr { font-family:ui-monospace,monospace; font-size:12.5px; background:var(--ground);\n'
++ '        border:1px solid var(--line); border-radius:5px; padding:2px 6px; cursor:pointer;\n'
++ '        white-space:nowrap; display:inline-block; }\n'
++ '  code.addr:hover { border-color:var(--soft); }\n'
++ '  code.addr.copied { background:#eaf5ee; border-color:var(--ok); color:var(--ok); }\n'
++ '  .kind, .acts, .now { color:var(--soft); }\n'
++ '  .acts { font-family:ui-monospace,monospace; font-size:11.5px; }\n'
++ '  .now { font-variant-numeric:tabular-nums; white-space:nowrap; }\n'
++ '  .verb { font-family:ui-monospace,monospace; font-size:11px; color:var(--faint);\n'
++ '          text-transform:uppercase; letter-spacing:.05em; white-space:nowrap; }\n'
++ '  tr.grouphead td { font-size:11.5px; text-transform:uppercase; letter-spacing:.06em;\n'
++ '          color:var(--ink); font-weight:600; padding-top:16px; border-bottom:1px solid var(--line); }\n'
++ '  pre { background:var(--ground); border:1px solid var(--line); border-radius:8px;\n'
++ '        padding:11px 13px; overflow-x:auto; font-size:12.5px; margin:0; }\n'
++ '  a { color:var(--accent); }\n'
++ '  .warn { color:var(--accent); }\n'
++ '  .nav { display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin:0 0 22px; }\n'
++ '  @media (max-width: 560px) { .wrap { padding:20px 12px 70px; } section { padding:14px; } }\n'
++ '</style></head><body>\n'
++ '<div class="wrap">\n'
++ '  <h1>The /do API</h1>\n'
++ '  <p class="sub">Every address this house answers to from outside the browser — Shortcuts,\n'
++ '     Siri, cron, curl. Everything here answers to <b>GET</b>, so it works from anything that can\n'
++ '     fetch a URL, and every reply carries a <code>spoken</code> sentence for Siri to read.\n'
++ '     This page is the same data the dashboard’s own command bar loads, so it cannot drift\n'
++ '     from what the server accepts. Click any address to copy it.</p>\n'
++ '  <p class="nav"><a href="/">← The board</a> <a href="/setup">Setup</a>\n'
++ '     <a href="/do?json=1">This page as JSON</a> <a href="/api/health">Health</a></p>\n'
++ '\n'
++ '  <section>\n'
++ '    <h2>The four shapes</h2>\n'
++ '    <p class="why">A room, then optionally a circuit, then one or two actions. Rooms and circuits\n'
++ '       match on a <b>unique prefix</b>, so <code class="addr">/do/ashu/foot/off</code> is enough;\n'
++ '       an ambiguous prefix is a 300 that names the candidates rather than a guess.</p>\n'
++ '    <table><tbody>\n'
++ '      <tr><td>' + code('/do/<room>/<circuit>/<action>') + '</td><td class="what">One circuit, or one group of them.</td></tr>\n'
++ '      <tr><td>' + code('/do/<room>/<action>') + '</td><td class="what">The whole room. <code>house</code> is a room meaning all of them.</td></tr>\n'
++ '      <tr><td>' + code('/do/cue/<id>') + '</td><td class="what">Fire a cue.</td></tr>\n'
++ '      <tr><td>' + code('/do/cue/<id>/<action>') + '</td><td class="what">on, off, set, clear or toggle.</td></tr>\n'
++ '    </tbody></table>\n'
++ '    <p class="why" style="margin-top:14px">Two actions can be merged, left to right, so a lamp comes on\n'
++ '       at the level <i>and</i> the colour you meant rather than one then the other:\n'
++ '       ' + code('/do/ashu/cobs/40/warm') + ' or ' + code('/do/ashu/cobs/40+warm') + '.\n'
++ '       Every room has the collective names <code>all</code>, <code>lights</code> and its declared\n'
++ '       groups. <span class="warn">These are GET requests that change the house</span> — a link\n'
++ '       is a command, which is why nothing on this page is clickable except the JSON listings.</p>\n'
++ '  </section>\n'
++ '\n'
++ '  <section>\n'
++ '    <h2>The actions, and what each one needs</h2>\n'
++ '    <p class="why">The words are the same everywhere; whether an address accepts one depends on what\n'
++ '       is wired to it. Asking a circuit that cannot tune for a colour is a 400 rather than a quiet\n'
++ '       success sending nothing, so the third column is the part worth reading.</p>\n'
++ '    <table><thead><tr><th>Action</th><th>What it does</th><th>Needs</th></tr></thead>\n'
++ '    <tbody>' + rows(actionRows) + '</tbody></table>\n'
++ '  </section>\n'
++ '\n'
++ '  <section>\n'
++ '    <h2>Cues</h2>\n'
++ '    <p class="why">A cue’s id is its address and never changes, so a shortcut built months ago keeps\n'
++ '       firing after a rename. <code>clear</code> puts out only what the cue <i>lights</i>, not\n'
++ '       everything it mentions.</p>\n'
++ '    <table><thead><tr><th>Address</th><th>Name</th><th>Touches</th><th>Steps</th></tr></thead>\n'
++ '    <tbody>' + rows(cueRows) + '</tbody></table>\n'
++ '  </section>\n'
++ '\n'
++ rows(roomBlocks)
++ '\n'
++ '  <section>\n'
++ '    <h2>What /do cannot reach</h2>\n'
++ '    <p class="why">/do addresses the circuits <b>the hub owns</b>. The televisions and the receiver are\n'
++ '       not on the hub at all — the dashboard speaks to them directly — so they have their own\n'
++ '       endpoints below. These take <b>POST</b> with a JSON body, except where marked.</p>\n'
++ '    <p class="why">And one trap worth knowing before reaching for a screen: where a room above lists\n'
++ '       a circuit as <i>the hub\u2019s record, not the set</i>, that is the hub\u2019s own idea of a\n'
++ '       television, and commanding it changes only what the hub believes. The set itself is\n'
++ '       <code class="addr">/api/tv/&lt;id&gt;</code> and answers for itself, which is why the board\n'
++ '       hides the hub\u2019s copy where the two overlap.</p>\n'
++ '    <table><thead><tr><th>Method</th><th>Path</th><th>Body, and what it does</th></tr></thead>\n'
++ '    <tbody>' + rows(otherRows) + '</tbody></table>\n'
++ '  </section>\n'
++ '\n'
++ '  <section>\n'
++ '    <h2>What a reply looks like</h2>\n'
++ '    <p class="why">Every reply carries <code>spoken</code>. An error names the valid options, because a\n'
++ '       mistyped URL in Shortcuts is otherwise silent. <code>sent</code> is how many commands actually\n'
++ '       went to the hub — worth checking, since it is the number that catches a circuit that was\n'
++ '       addressed but never commanded.</p>\n'
++ '<pre>$ curl -s ' + escHtml(HERE) + '/do/ashu/cobs/40+warm\n'
++ '{"ok":true,"room":"ashu-room","circuit":"cobs","action":"40",\n'
++ ' "count":5,"sent":10,"level":40,"tune":85,\n'
++ ' "spoken":"All cobs in Ashu Room at 40% and set to warm"}\n'
++ '\n'
++ '$ curl -s ' + escHtml(HERE) + '/do/ashu/nosuch/on\n'
++ '{"ok":false,"error":"No such circuit here",\n'
++ ' "known":["all","lights","cobs","fan","bed-spot", ...],\n'
++ ' "spoken":"I cannot find that one"}</pre>\n'
++ '  </section>\n'
++ '</div>\n'
++ DO_PAGE_SCRIPT
++ '\n'
++ '</body></html>';
+}
+
 /** The whole map, so you can see every address you can type. */
 app.get('/do', (req, res) => {
+  /* A browser reading the reference, or a machine reading the grammar. Strict
+     on text/html so curl and Shortcuts, which send only the wildcard, keep
+     getting exactly the JSON they got before — the command bar fetches this
+     address, so a page served here would break the field. */
+  const wantsPage = /\btext\/html\b/.test(req.headers.accept || '') && !('json' in req.query);
+  if (wantsPage) {
+    return res.type('html').set('Cache-Control', 'no-cache').send(doPage(req.headers.host));
+  }
+
   const rooms = [...roomsIndex()].map(([sl, name]) => ({
     room: sl,
     circuits: circuitsOf(name).map(c => c.slug),
@@ -4192,10 +4527,16 @@ app.get('/do/:room', (req, res, next) => {
       known: found.ambiguous || [...roomsIndex().keys()],
     });
   }
+  /* Nothing in the page fetches this one — the command bar reads /do — so it
+     is free to answer the question a bare list of slugs cannot: what is wired
+     to each address, and therefore which actions it will take. */
   res.json({
     room: found.hit.slug,
     circuits: circuitsOf(found.hit.name).map(c => ({
       circuit: c.slug,
+      name: c.label,
+      kind: circuitKind(c.records),
+      actions: actionsFor(c.records),
       level: levelOf(c.records),
       tune: tuneOf(c.records),
       circuits: c.records.length,
@@ -5002,6 +5343,8 @@ const SETUP_HTML = /* html */ `<!doctype html>
   <p class="sub">Everything this house has to be told that cannot be read off the hub.
      Groups and circuit kinds take effect immediately; a name, an address or a
      screen needs a restart, and will say so.</p>
+  <p class="sub"><a href="/">&larr; The board</a> &nbsp; <a href="/do">The /do API</a> &nbsp;
+     <a href="/api/health">Health</a></p>
 
   <section>
     <h2>This house</h2>

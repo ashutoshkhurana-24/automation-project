@@ -9,6 +9,12 @@ not remote control.
 
 ## One address for everything: `/do`
 
+**Open `/do` in a browser for the live version of this section.** It lists every
+room, every circuit, what each one is wired to and therefore which of the
+actions below it will actually accept — read off the running house rather than
+written down here, so it cannot go stale. `curl` and Shortcuts still get the
+JSON they always did.
+
 A cue is the right shape for "good night". It is the wrong shape for "just the
 fan", or "a bit dimmer" — you do not want a saved cue for every circuit at every
 level. So every circuit in the house also has a plain address you can type from
