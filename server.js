@@ -6599,10 +6599,30 @@ const litSince = new Map();
 // circuit has actually been off and on again.
 const dismissedNudges = new Map();
 
+/* A timer survives a restart now, at the user's request (2026-08-25), reversing
+ * the decision recorded above it. The case that decides the shape is the one the
+ * watchdog creates: it restarts the service after two failed health checks, which
+ * is a fifteen-second outage, and it used to evaporate an auto-off at exactly the
+ * moment it was doing its job.
+ *
+ * Read here and armed later. `loadState()` runs before the first hub read, and
+ * `sleepSteps()` chooses its circuits by which ones are *on* — so arming a
+ * due-now timer here would compute that set from `devices.json` rather than from
+ * the house, and switch off whatever the file happened to say. `restoreTimers()`
+ * is called once the first read has landed.
+ */
+let savedTimers = [];
+
+/* Long enough to cover a restart, short enough that the house has probably not
+   moved on — the same trade as the cancel window, and deliberately its own
+   constant so that changing one does not silently change the other. */
+const TIMER_GRACE_MS = 5 * 60 * 1000;
+
 function loadState() {
   try {
     const saved = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     for (const [id, at] of Object.entries(saved.lit_since || {})) litSince.set(Number(id), at);
+    savedTimers = Array.isArray(saved.timers) ? saved.timers : [];
   } catch { /* first run */ }
 }
 
@@ -6610,24 +6630,62 @@ function saveState() {
   try {
     fs.writeFileSync(STATE_PATH, JSON.stringify({
       lit_since: Object.fromEntries(litSince),
-      /* No timers of any kind. An AC auto-off used to be kept here, on the
-         argument that the watchdog would otherwise evaporate one; the user's
-         call is that it must not have a memory at all — a restart comes up with
-         No timer, always, so nothing is ever armed that nobody armed. Which
-         also makes it consistent with the sleep timer beside it, and leaves the
-         left-on advisory as the thing that catches a machine left running. */
+      /* Everything but the handle, which is this process's own setTimeout and
+         means nothing to the next one. `at` is absolute, so a restored timer
+         keeps the moment it was set for rather than restarting its countdown. */
+      timers: [...timers.values()].map((t) => ({
+        id: t.id, kind: t.kind || 'sleep', scope: t.scope || null, label: t.label || null,
+        at: t.at, recordId: t.recordId != null ? t.recordId : null,
+        minutes: t.minutes != null ? t.minutes : null,
+      })),
     }, null, 2));
   } catch (err) { console.error('could not save state:', err.message); }
 }
 
-/* Bring back the ones that have not come due yet, and only those.
+/* Bring back what is still worth arming.
  *
- * A timer whose moment passed while the process was down is dropped rather than
- * fired late. It would be acting on a belief formed before the restart: this is
- * infrared, the hub cannot see the unit, and an off sent two hours late lands on
- * whatever the room is doing then — including an air conditioner somebody has
- * since started with its own remote. The left-on advisory still covers that case,
- * which is the right instrument for it: it nudges rather than acts. */
+ * A timer whose moment passed by more than the grace period is dropped rather
+ * than fired late, and the reason is the hardware: an air conditioner is
+ * infrared, the hub cannot see it, and an off sent two hours late lands on
+ * whatever the room is doing then — including a unit somebody has since started
+ * with its own remote. The left-on advisory still covers that case and is the
+ * right instrument for it, because it nudges rather than acts. Said out loud in
+ * the log, so a timer that vanished is not a mystery.
+ */
+function restoreTimers() {
+  const now = Date.now();
+  let armed = 0;
+  let late = 0;
+  let dropped = 0;
+  for (const t of savedTimers) {
+    if (!t || typeof t.at !== 'number') continue;
+    /* Before the drop test, not after: the counter clears every id that came
+       back, armed or not, so an id is never reused across a restart and the log
+       cannot show two different timers under one name. */
+    const n = Number(String(t.id || '').replace(/^t/, ''));
+    if (Number.isFinite(n) && n > timerSeq) timerSeq = n;
+
+    const over = now - t.at;
+    if (over > TIMER_GRACE_MS) {
+      console.log(`timer ${t.label || t.id}: due ${Math.round(over / 60000)} min `
+        + 'before this restart, dropped rather than fired late');
+      dropped++;
+      continue;
+    }
+    /* Past its moment but inside the grace window: armTimer floors the delay at
+       zero, so it fires on the next tick — which is after this read, which is
+       the whole reason the restore waits. */
+    if (over > 0) late++; else armed++;
+    armTimer({ ...t });
+  }
+  savedTimers = [];
+  if (armed || late || dropped) {
+    console.log(`timers restored: ${armed} still pending`
+      + (late ? `, ${late} due during the restart and firing now` : '')
+      + (dropped ? `, ${dropped} too late to fire` : ''));
+  }
+}
+
 /** Called after every hub read: notice what came on and what went off. */
 function trackLit() {
   let changed = false;
@@ -6812,6 +6870,8 @@ async function runTimer(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
+  saveState();          // it has fired; it must not come back on the next restart
+  logEvent({ e: 'timer', kind: t.kind || 'sleep', scope: t.scope || null, label: t.label || null });
   if (t.kind === 'ac') { await runAcOff(t); return; }
   await runSleep(t.scope, t.label);
 }
@@ -6852,17 +6912,24 @@ async function runAcOff(t) {
 /* One AC timer per unit, and asking for a second replaces the first — two
    pending offs on one machine is not a thing anybody means. */
 function clearAcTimer(recordId) {
+  let gone = false;
   for (const t of timers.values()) {
     if (t.kind === 'ac' && t.recordId === recordId) {
       clearTimeout(t.handle);
       timers.delete(t.id);
+      gone = true;
     }
   }
+  if (gone) saveState();
 }
 
 function armTimer(t) {
   t.handle = setTimeout(() => runTimer(t.id), Math.max(0, t.at - Date.now()));
   timers.set(t.id, t);
+  /* Written here rather than at each call site, so every road that arms a timer
+     — the sleep panel, an air conditioner's auto-off, and the restore itself —
+     persists it without having to remember to. */
+  saveState();
 }
 
 app.get('/api/automations', (req, res) => {
@@ -6937,6 +7004,9 @@ app.delete('/api/timers/:id', (req, res) => {
   if (!t) return res.status(404).json({ ok: false, error: 'No such timer' });
   clearTimeout(t.handle);
   timers.delete(t.id);
+  /* Cancelling has to reach the file too, or the next restart brings it back —
+     which is exactly what happened the last time these were persisted. */
+  saveState();
   res.json({ ok: true });
 });
 
