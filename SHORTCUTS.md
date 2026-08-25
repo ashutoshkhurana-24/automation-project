@@ -195,14 +195,45 @@ understanding.
 
 | | Action | Settings |
 |---|---|---|
-| 1 | **Dictate Text** | Language: **English (India)** · Stop Listening: **After Short Pause** |
-| 2 | **Get Contents of URL** | `http://100.83.127.114:3000/api/say` · Method **POST** · Header `Content-Type: application/json` · Request Body **JSON**: key `text` = *Dictated Text*, key `who` = a short name for this phone |
+| 1 | **Record Audio** | Stop Recording: whichever suits you — *After a set duration* is one tap, *On Tap* lets a long sentence finish |
+| 2 | **Get Contents of URL** | `http://100.83.127.114:3000/api/hear?who=ashu` · Method **POST** · Header `Content-Type: audio/m4a` · Request Body **File**: *Recorded Audio* |
 | 3 | **Speak Text** | *Get Dictionary Value* `spoken` from *Contents of URL* |
 
-`who` is a fixed piece of text you type once per phone — `ashu`, `mum`, `dad`.
-It exists only so **cancel** puts back what *that* phone said, and nothing else
-reads it. A shortcut without it still works; every such phone simply shares one
-cancel slot between them.
+**Why the recording rather than iOS dictation.** `Dictate Text` is on-device and
+monolingual: it has no notion of a code-mixed sentence, and no way to be told that
+this house contains a cob, an Ashu or a parda. The hub sends the audio to a
+transcriber along with the house's own vocabulary, which is the part no on-device
+dictation can do.
+
+Measured against synthesised Indian-accented Hinglish — five commands, scored on
+word recall:
+
+| | no vocabulary | with the house's |
+|---|---|---|
+| `gpt-4o-mini-transcribe` | 7/30 | 13/30 |
+| `whisper-1` | 12/30 | 22/30 |
+| **`gpt-4o-transcribe`** | 4/30 | **25/30** |
+
+Two things matter more than those numbers. **The failure is script, not accuracy**:
+asked cold, every model returned Devanagari or Urdu — *"आशू रूम का फैन चालू करो"*
+is a perfect transcript and useless here, because the grammar matches `ashu`
+against a room slug. And **spoken numbers have to be asked for as digits**, or
+"forty" comes back as **41** — which is the error worth paying an endpoint to
+avoid. Both are in the prompt.
+
+The upshot is that it can be *faster* than dictation was, not slower: a clean
+`ashu cobs 40 warm` lands on the free grammar path and never reaches the model at
+all. Roughly ₹0.03 a command, and about a second of transcription.
+
+`who` is a query parameter here rather than a body field, because the body is the
+audio. It is a fixed piece of text you type once per phone — `ashu`, `mum`, `dad` —
+and exists only so **cancel** puts back what *that* phone said. Leave it off and
+those phones share one cancel slot.
+
+**`/api/say` is unchanged**, so a typed or dictated shortcut still works exactly as
+before. Anything that speaks — a transcript, a typed line, the command bar — meets
+the same grammar, the same cancel gate, the same two Hindi nouns and the same
+speech pass, because both endpoints go through one function.
 
 The **tailnet** address rather than `192.168.1.3` so the same shortcut works at
 home and away — your iPhone is already a node on it. On the home Wi-Fi either
@@ -213,9 +244,11 @@ Tap** → *Double Tap* → your shortcut. On a 15 Pro or later the **Action Butt
 is better: tactile, no misfires, and it works from the Lock Screen. Triple tap is
 noticeably less prone to firing in a pocket than double.
 
-`Dictate Text` is deliberately **not** Siri: you get the raw transcript with no
+This is deliberately **not** Siri: the shortcut hands over raw audio with no
 intent-matching in front of it, so "turn off the lights" cannot be captured by
-HomeKit and a shortcut name never has to be recognised.
+HomeKit and a shortcut name never has to be recognised. It also means the phone is
+doing nothing but recording and speaking — every judgement about what was said
+happens on the hub, where the house's own names are.
 
 ### What you can say
 

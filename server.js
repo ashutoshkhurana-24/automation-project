@@ -65,6 +65,14 @@ function readKeyFile() {
 const OPENAI_KEY = process.env.OPENAI_API_KEY || readKeyFile();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || config.openai_model || 'gpt-5.6-luna';
 const OPENAI_BASE = process.env.OPENAI_BASE || 'https://api.openai.com';
+/* Measured against synthesised Indian-accented Hinglish, five commands, scored on
+   word recall with the house's own vocabulary in the prompt: gpt-4o-transcribe
+   25/30, whisper-1 22/30, gpt-4o-mini-transcribe 13/30. Cold, with no vocabulary
+   at all, the best of them managed 12. gpt-4o-audio-preview — which would have
+   skipped transcription and heard the command directly — is not available on this
+   key. Overridable, because the ranking is a measurement and not a law. */
+const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL
+  || config.transcribe_model || 'gpt-4o-transcribe';
 
 const JSON_PATH = path.join(__dirname, 'data', 'devices.json');
 const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
@@ -5996,9 +6004,12 @@ async function runCancel(who) {
   }
 }
 
-app.post('/api/say', async (req, res) => {
-  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
-  const text = String((req.body && req.body.text) || '').trim();
+/* One sentence in, one sentence out — and the only entry point for it, so the
+ * grammar, the cancel gate, the two Hindi nouns and the speech pass cannot come
+ * to mean something different depending on how the words arrived. /api/say hands
+ * it typed or dictated text; /api/hear hands it what the transcriber heard.
+ */
+async function answerSaid(req, res, text, who, extra) {
   /* Always 200 from here down, whatever went wrong — see grabResponse above.
      `ok` and `spoken` carry the verdict; the status code cannot.
 
@@ -6010,7 +6021,7 @@ app.post('/api/say', async (req, res) => {
      wants the canonical wording still has it, and a reply that reads oddly can
      be traced back to the sentence it came from. */
   const say = (body) => {
-    const out = { ...body };
+    const out = { ...body, ...(extra || {}) };
     if (out.spoken && !out.verbatim) {
       out.said = out.spoken;
       out.spoken = speakable(out.spoken);
@@ -6019,10 +6030,6 @@ app.post('/api/say', async (req, res) => {
   };
   if (!text) return say({ ok: false, via: 'none', spoken: 'I did not catch that' });
 
-  /* Who is speaking, so "cancel" reverses what *they* said. Trimmed and capped
-     because it is used as a map key and arrives in a request body; a Shortcut
-     that does not send it shares the anonymous slot rather than failing. */
-  const who = String((req.body && req.body.who) || '').trim().slice(0, 40).toLowerCase();
   const remember = (step) => rememberFor(who, step);
 
   /* Before the grammar and well before the model, because a cancel should cost
@@ -6132,6 +6139,144 @@ app.post('/api/say', async (req, res) => {
   }
 
   return say({ ok: false, via: 'model', heard: text, spoken: 'I did not understand that' });
+}
+
+/* ── hearing it, rather than being told what was said ──────────────────
+ *
+ * iOS `Dictate Text` is on-device and monolingual: it has no notion of a
+ * code-mixed sentence and no way to be told that this house contains a cob, an
+ * Ashu or a parda. Measured against synthesised Indian-accented Hinglish, it is
+ * the vocabulary that matters far more than the model — and the failure is not
+ * even accuracy, it is **script**. Asked cold, every transcriber tested returned
+ * Devanagari or Urdu: "आशू रूम का फैन चालू करो" is a perfect transcript and
+ * useless here, because the grammar matches `ashu` against a room slug.
+ *
+ * So the prompt does three things, and each was worth a measurable jump:
+ * romanised Latin only; the house's own names; and spoken numbers as digits —
+ * without that last one "forty" came back as **41**, which is the shape of error
+ * worth paying a whole endpoint to avoid.
+ *
+ * Built from the live house rather than a hand-kept list, for the same reason the
+ * family guide is: a second copy of the room names is a second thing to drift.
+ */
+let heardVocab = { at: 0, text: '' };
+
+function transcriptPrompt() {
+  // Cheap, but it walks every device, and a held button can fire it repeatedly.
+  if (heardVocab.text && Date.now() - heardVocab.at < 60000) return heardVocab.text;
+
+  const rooms = [...roomsIndex().values()].map((r) => title_(r));
+  const names = new Set();
+  for (const room of roomsIndex().values()) {
+    for (const c of circuitsOf(room)) {
+      if (!COLLECTIVE_SAY.has(c.slug)) names.add(spokenWords(c.slug));
+    }
+  }
+  for (const sc of scenes) names.add(sc.name);
+
+  const text = 'Short home-automation commands, in Hinglish or English, spoken by an '
+    + 'Indian speaker. Write them in romanised Latin script only — never in Devanagari '
+    + 'or Urdu script. Spoken numbers are written as digits: chalees is 40, bees is 20, '
+    + 'saath is 60, sattar is 70, forty is 40, sixty is 60. '
+    + 'Room names: ' + rooms.join(', ') + '. '
+    + 'Things in them: ' + [...names].sort().join(', ') + '. '
+    + 'Words that may be spoken: on, off, up, down, warm, cool, warmer, cooler, open, '
+    + 'close, stop, volume, mute, unmute, cancel, wapas, pankha, parda, chalu karo, '
+    + 'band karo, khol do, kya chalu hai. '
+    + 'Examples: "ashu cobs 40", "living off", "master cobs 60 warm", '
+    + '"ashu room ka fan chalu karo", "living ka main curtain khol do".';
+  heardVocab = { at: Date.now(), text };
+  return text;
+}
+
+const COLLECTIVE_SAY = new Set(['all', 'lights']);
+const spokenWords = (slug) => String(slug).replace(/-/g, ' ');
+
+/* What OpenAI needs the file called. It reads the extension, so a name is not
+   cosmetic — and Shortcuts records m4a, which is the default for that reason. */
+const AUDIO_EXT = {
+  'audio/m4a': 'm4a', 'audio/x-m4a': 'm4a', 'audio/mp4': 'm4a', 'video/mp4': 'mp4',
+  'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+  'audio/wave': 'wav', 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/flac': 'flac',
+};
+
+/** The audio, transcribed. Returns the words, or a sentence saying why not. */
+async function transcribe(buf, contentType) {
+  if (!OPENAI_KEY) return { error: 'No model key is set on the hub' };
+  const ext = AUDIO_EXT[String(contentType || '').split(';')[0].trim().toLowerCase()] || 'm4a';
+
+  const fd = new FormData();
+  fd.append('file', new Blob([buf]), 'said.' + ext);
+  fd.append('model', TRANSCRIBE_MODEL);
+  fd.append('prompt', transcriptPrompt());
+  /* Latin script is asked for in the prompt rather than through `language`, which
+     names the language and not the alphabet: `hi` pushes it toward Devanagari and
+     `en` toward dropping the Hindi words altogether. */
+
+  /* Longer than the model's own six seconds, because this waits on an upload as
+     well as a model, and a phone on the far side of the house is the normal case. */
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 12000);
+  try {
+    const r = await fetch(OPENAI_BASE + '/v1/audio/transcriptions', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + OPENAI_KEY },
+      body: fd, signal: stop.signal,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      console.error('hear: transcription refused:', r.status, JSON.stringify(j).slice(0, 200));
+      return { error: r.status === 401 ? 'The model key was refused'
+        : 'I could not make out the recording' };
+    }
+    const text = String(j.text || '').trim();
+    return text ? { text } : { error: 'I did not catch that' };
+  } catch (err) {
+    if (err.name === 'AbortError') return { error: 'The transcription did not answer in time' };
+    console.error('hear: unreachable:', err.message);
+    return { error: 'I could not reach the model' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* The audio arrives as the raw body rather than a multipart form: Shortcuts can
+   send a file that way, and it saves this project a multipart parser and the
+   dependency that would come with it. 20MB against OpenAI's 25 — a spoken
+   command is a few dozen KB, so the limit is only there to bound a mistake. */
+app.post('/api/hear', express.raw({ type: '*/*', limit: '20mb' }), async (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  /* 200 for everything, exactly as /api/say: Shortcuts reads no body from a
+     non-2xx, so a refusal sent as one arrives on the phone as silence. */
+  const nope = (spoken) => res.status(200).json({ ok: false, via: 'hear', spoken });
+
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || buf.length < 1200) return nope('I did not catch that');
+
+  const heard = await transcribe(buf, req.headers['content-type']);
+  if (heard.error) return nope(heard.error);
+
+  stats.heard = (stats.heard || 0) + 1;
+  /* `input`, not `via`. `via` names the road the words took once they were words —
+     grammar, model or cancel — and that is the thing worth knowing, because a
+     better transcript is one that lands on the free path more often. Overwriting
+     it here would have hidden exactly the measurement this endpoint exists for.
+
+     The transcript rides back as `heard`, which answerSaid already sets: when the
+     house does the wrong thing the only useful question is what it thought you
+     said, and this is the one place that can answer it. */
+  return answerSaid(req, res, heard.text, whoSaid(req.query), { input: 'voice' });
+});
+
+/** Who is speaking, so "cancel" reverses what *they* said. Trimmed and capped
+    because it is used as a map key and arrives in a request body; a caller that
+    sends none shares the anonymous slot rather than failing. */
+const whoSaid = (body) =>
+  String((body && body.who) || '').trim().slice(0, 40).toLowerCase();
+
+app.post('/api/say', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  const text = String((req.body && req.body.text) || '').trim();
+  return answerSaid(req, res, text, whoSaid(req.body));
 });
 
 /* Ask the hardware on demand, and report what changed.

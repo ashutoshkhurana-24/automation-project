@@ -1182,3 +1182,69 @@ at all. And **the theme follows the phone rather than the hub's clock** — the
 dashboard reads the hour off the hub precisely so a phone in another timezone
 still shows the house as the house is, and a file opened from Messages has no hub
 to ask.
+
+### Hearing it, rather than being told what was said (2026-08-25)
+
+*"I dont find iphone's diction to accurately recogonise hinglish speech or indian
+accent, any alternative with my open ai api?"* `POST /api/hear` takes the audio,
+transcribes it on the hub and feeds the words into the existing pipeline. The
+Shortcut is Record Audio → this → Speak Text, and the key still never leaves the
+box.
+
+**The failure was script, not accuracy, and that is the finding worth keeping.**
+Asked cold, every transcriber tested returned Devanagari or Urdu — *"आशू रूम का फैन
+चालू करो"* is a perfect transcript and completely useless here, because the grammar
+matches `ashu` against a room slug. Romanised Latin has to be demanded in the
+prompt. It is asked for there rather than through the `language` parameter, which
+names the language and not the alphabet: `hi` pushes toward Devanagari and `en`
+toward dropping the Hindi words altogether.
+
+**The vocabulary hint is worth more than the model choice**, and it is the thing
+on-device dictation can never do — iOS has no way to be told this house contains a
+cob, an Ashu or a parda. Measured on synthesised Indian-accented Hinglish, five
+commands, word recall:
+
+| | cold | with the house's names |
+|---|---|---|
+| `gpt-4o-mini-transcribe` | 7/30 | 13/30 |
+| `whisper-1` | 12/30 | 22/30 |
+| **`gpt-4o-transcribe`** | 4/30 | **25/30** |
+
+**Spoken numbers must be asked for as digits.** Without that line "forty" came back
+as **41** — a silent, plausible, wrong answer, which is the worst shape available.
+With it, `chalees` and `sattar` arrive as 40 and 70. It is a bias and not a
+guarantee: the same clip returned "sattar" on a later run and the model absorbed
+it, which is the arrangement working as intended rather than a failure.
+
+**The prompt is generated from the live house**, like the family guide and for the
+same reason: a second copy of the room names is a second thing to drift. Cached for
+a minute, because it walks every device and a held button can fire repeatedly.
+
+**`answerSaid()` is now the one entry point** and `/api/say` is a four-line route on
+top of it. That refactor is the point rather than tidiness: the grammar, the cancel
+gate, the two Hindi nouns and the speech pass must not come to mean something
+different depending on how the words arrived.
+
+Four things worth knowing:
+
+- **The audio is the raw request body, not a multipart form.** Shortcuts can send a
+  file that way, and it saves this project a multipart parser and a dependency —
+  `express.raw` is already there. Node 18 on the hub has `fetch`, `FormData` and
+  `Blob` but **no global `File`**, so the upload to OpenAI uses a `Blob` with an
+  explicit filename; OpenAI reads the extension, so that name is load-bearing.
+- **`input: 'voice'`, never `via`.** `via` names the road the words took once they
+  were words, and overwriting it hid the one measurement this endpoint exists for —
+  a better transcript is one that lands on the free grammar path more often.
+  Verified live: `ashu cobs sattar warm` → `via=model`, a clean `ashu cobs 40 warm`
+  → grammar, and `cancel` → `via=cancel`.
+- **`who` is a query parameter here**, because the body is the audio.
+- **`gpt-4o-audio-preview` is not available on this key**, so the better
+  architecture — one call, audio in, tool call out, no transcription step at all —
+  is closed for now. Re-check it before building anything more elaborate.
+
+**Tested end to end against the live house** with synthesised clips: a question
+answered from a real reading, a Hinglish command that was a no-op by design, and a
+spoken *cancel* that restored Ashu's cobs to 100% at tune 63 after a test command
+moved them. The numbers above come from synthesised voices, so treat 25/30 as
+directional — real speech has not been measured, and the honest place to do that is
+a phone.
