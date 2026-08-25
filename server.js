@@ -3881,7 +3881,14 @@ function outstanding(scene) {
   });
 }
 
-async function applyScene(scene) {
+/**
+ * @param opts `{ verify: false }` returns as soon as the commands are on the wire
+ *   and finishes verify-and-resend behind the caller. For anything a person is
+ *   waiting to be *told* about: the send is the act, and the verification is a
+ *   second read of the house that has no business holding up the sentence. A cue
+ *   fired from the dashboard still waits, because there the count is displayed.
+ */
+async function applyScene(scene, opts) {
   /* Two different machines. The hub takes a batch down one socket and is read
      back to see what landed; a television is its own host, answers for itself,
      and is never retried. They are started together because neither waits on
@@ -3895,27 +3902,41 @@ async function applyScene(scene) {
   try { sent = await sendSteps(sceneTargets(hubSteps)); }
   catch (err) { console.error(`scene ${scene.id} failed to send:`, err.message); }
 
-  await sleep(SETTLE_MS);
-  await readHubStateFresh();
-
-  // One retry for whatever the hub did not take.
-  const missed = outstanding({ steps: hubSteps });
-  if (missed.length) {
-    console.log(`scene ${scene.id}: retrying ${missed.length}`);
-    try { await sendSteps(sceneTargets(missed)); }
-    catch (err) { console.error(`scene ${scene.id} retry failed:`, err.message); }
+  /* Everything past here reads the house back, waits SETTLE_MS for it to be worth
+     reading, and resends what did not land. Two settles is over six seconds. */
+  const verify = async () => {
     await sleep(SETTLE_MS);
     await readHubStateFresh();
-  }
 
-  const still = outstanding({ steps: hubSteps });
-  const tv = await screens;
-  return {
-    sent, total: scene.steps.length,
-    set: (hubSteps.length - still.length) + tv.filter((r) => !r.failed).length,
-    missed: still.length + tv.filter((r) => r.failed).length,
-    tv,
+    // One retry for whatever the hub did not take.
+    const missed = outstanding({ steps: hubSteps });
+    if (missed.length) {
+      console.log(`scene ${scene.id}: retrying ${missed.length}`);
+      try { await sendSteps(sceneTargets(missed)); }
+      catch (err) { console.error(`scene ${scene.id} retry failed:`, err.message); }
+      await sleep(SETTLE_MS);
+      await readHubStateFresh();
+    }
+
+    const still = outstanding({ steps: hubSteps });
+    const tv = await screens;
+    return {
+      sent, total: scene.steps.length,
+      set: (hubSteps.length - still.length) + tv.filter((r) => !r.failed).length,
+      missed: still.length + tv.filter((r) => r.failed).length,
+      tv,
+    };
   };
+
+  if (opts && opts.verify === false) {
+    /* Logged rather than returned, so what actually landed is still on the record
+       even though nobody was kept waiting to hear it. */
+    verify()
+      .then((r) => logEvent({ e: 'verified', id: scene.id, set: r.set, missed: r.missed }))
+      .catch((err) => console.error(`scene ${scene.id} verify failed:`, err.message));
+    return { sent, total: scene.steps.length, verifying: true };
+  }
+  return verify();
 }
 
 app.get('/api/scenes', (req, res) => res.json({ scenes: sceneList() }));
@@ -3992,7 +4013,7 @@ function captureBefore(steps) {
  * a Home Screen widget, or Siri — so all of them come through here, and all of
  * them leave the same one step of undo behind.
  */
-async function fireCue(scene) {
+async function fireCue(scene, opts) {
   // The snapshot is only worth keeping if it is current: a cached read can be
   // up to REFRESH_MS old, and undoing to a stale reading is worse than not
   // offering undo at all.
@@ -4003,7 +4024,7 @@ async function fireCue(scene) {
   undoable = before.length ? { name: scene.name, at: Date.now(), steps: before } : null;
 
   stats.cuesFired++;
-  const result = await applyScene(scene);
+  const result = await applyScene(scene, opts);
   /* Logged after the fact, with what actually landed: a cue that dropped four
      circuits is a different event from one that took, and the report should be
      able to tell you which cues in this house are unreliable. */
@@ -5991,10 +6012,12 @@ async function runCancel(who) {
      * later all five sat at zero. Verify-and-resend still happens — it just
      * happens behind the reply, which is exactly what setRecords already does for
      * every ordinary command, and for the same reason. */
-    applyScene({ id: 'cancel', name: 'Cancel', steps: step.steps })
-      .then((r) => logEvent({ e: 'cancel', who: key, kind: step.kind, name,
-                              set: r.set, missed: r.missed }))
-      .catch((err) => console.error('cancel: replay failed:', err.message));
+    /* The send is awaited; only the verification is not. Fire-and-forget was a
+       shade too eager — it answered "back as it was" before the commands had even
+       left, which is a claim about something that had not happened yet. */
+    const back = await applyScene({ id: 'cancel', name: 'Cancel', steps: step.steps },
+                                  { verify: false });
+    logEvent({ e: 'cancel', who: key, kind: step.kind, name, sent: back.sent });
 
     /* Both halves have to agree, not just the verb: "the cobs are back as it
        was" is what you get from fixing only the first one. */
@@ -6128,14 +6151,20 @@ async function answerSaid(req, res, text, who, extra) {
         return say({ ok: true, via: 'model', heard: text, cue: scene.id, cleared: true, sent,
           spoken: sent ? scene.name + ' cleared' : scene.name + ' was already out' });
       }
-      const result = await fireCue(scene);
+      /* Answered on send, verified behind the reply — the same trade cancel makes
+         and for the same reason: applyScene spends two SETTLE_MS reading the house
+         back, so a spoken cue took three and a half seconds to report something
+         that had already happened. The straggler count goes with it, and it was
+         the least trustworthy half of that sentence anyway — a dimmable light
+         fades, and a fade still in flight reads as the wrong level. The dashboard
+         still waits, because there the count is shown rather than spoken. */
+      const result = await fireCue(scene, { verify: false });
       /* fireCue has already taken the snapshot, freshness and all, into the
          house-wide slot that /api/scenes/undo reads. Copied rather than taken
          again: two reads of the same moment, one of them later, is one too many. */
       if (undoable) remember({ kind: 'cue', name: scene.name, steps: undoable.steps });
       return say({ ok: true, via: 'model', heard: text, cue: scene.id, ...result,
-        spoken: result.missed ? scene.name + ' set, but ' + result.missed + ' did not take'
-          : scene.name + ' set' });
+        spoken: scene.name + ' set' });
     } catch (err) {
       return say({ ok: false, via: 'model', heard: text, error: err.message,
         spoken: 'The hub did not answer' });

@@ -651,6 +651,25 @@ against, so "this prefix is ambiguous" is a property of one room and not of the
 grammar. The general form is the one already in this file about `/do`: an address
 that resolves does the thing.
 
+**Do not restore what you did not do (2026-08-25, the user's instruction).** People
+are living in the house and switching things on and off while you work, so a
+"baseline" recorded two minutes ago is not a fact about the house — it is a fact
+about the past. Restoring to it fights the household: on 2026-08-25 a test switched
+all eleven Living cobs on, and the tidy-up then switched ten of them off again to
+match an earlier reading, which would have put out anything somebody had turned on
+in between.
+
+The rule is narrow. **Undo only inside the same action you took**, where you know
+the before-state because you just read it and nothing else has intervened — the
+cancel slot is exactly this, and it is why it captures immediately before the
+write. Past that, **report what you touched and leave it**. A sentence saying "I
+switched Living's cobs on and have left them on" is worth more than a restore that
+might be wrong, because the person reading it knows what they wanted and you do not.
+
+**And prefer a no-op to begin with.** The good tests in this file are the ones that
+changed nothing: a fan already running, a room already dark, a curtain told to
+`stop`. Choose those first, and choose the user's own room when something must move.
+
 **A read is not a measurement.** Brightness reads back honestly, so `device_status` can verify a level. Colour does not (see `device_status_tunable` above), so anything about colour has to be counted by eye, and the person at the other end of the conversation is the instrument. When measuring timing this way:
 - **Interleave the conditions, never run them in blocks.** Both dashboards poll every 15s and a trial takes seconds, so block-running one gap at a time lets a burst of interference land entirely on one condition — which is how a flat truth acquires a shape. A blocked sweep produced a clean-looking curve with a trough in it that a shuffled re-run did not reproduce.
 - **Re-baseline between trials**, so a count is read against a known starting state rather than a mixed one.
@@ -1290,3 +1309,44 @@ One measurement artefact to expect: the first command within ~15s of a
 `systemctl restart` can take tens of seconds, because startup awaits
 `pollHardware(true)` and the first hub read. Seen once at 68s. It is not
 representative — re-measure warm.
+
+### A spoken cue answers on send too (2026-08-25)
+
+`applyScene` now takes `{ verify: false }`: it awaits the send and finishes
+verify-and-resend behind the caller. `fireCue` forwards the option, and the spoken
+cue path passes it.
+
+| | before | after |
+|---|---|---|
+| spoken cue | ~8.5s by arithmetic | **3.2s measured** |
+| cancel | 4759ms | **131ms** |
+
+**What is left is the model, and it is irreducible for a cue.** Measured on its
+own, a Hinglish command through `askModel` is 2076ms; the cue's remaining 3.2s is
+that plus `fireCue`'s freshness read and the send. A cue cannot use the free
+grammar path — `speechWords` matches an address, and a cue is a name — so every
+spoken cue is a model call by construction. Do not go looking for another 3
+seconds in `applyScene`; they are not there any more.
+
+**The dashboard still waits.** `applyScene(scene)` with no options is unchanged, so
+`/do/cue/<id>`, cron and the schedules keep their verified counts — there the number
+is displayed, and nobody is standing in a room waiting to be told.
+
+**Cancel now awaits the send.** Fire-and-forget was a shade too eager: it answered
+"back as it was" before the commands had left, which is a claim about something that
+had not happened. 131ms with the send awaited is fast enough that there was never
+anything to buy by skipping it.
+
+**One bug this produced, worth the warning.** The fix was first written against a
+factoring (`actOnCall`, with `via` in scope) that exists only in the stashed
+audio-native branch — so `via` was written into a scope that has no such binding.
+`node --check` passes a ReferenceError happily, and neither review tool exercises
+the cue path. It was caught by grepping for the symbol and finding the function
+absent. **After a stash or a revert, check that the code you are editing against is
+the code that is deployed.**
+
+Tested with a throwaway single-step cue whose one step was a fan that was already
+on, so firing it changed nothing; created and deleted inside the same session, which
+is the one shape of clean-up the restore rule above permits. `normal-mode` appeared
+in the cue list while this was being measured — somebody in the house made it, and
+it was left alone.
