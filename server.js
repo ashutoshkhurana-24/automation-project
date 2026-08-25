@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const net = require('net');
+const dgram = require('dgram');
 const path = require('path');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
@@ -752,6 +753,110 @@ const stats = {
   readsOk: 0, readsFailed: 0, consecutiveReadFailures: 0,
   commandsSent: 0, commandsFailed: 0, cuesFired: 0, schedulesFired: 0,
 };
+
+/* ── asking the hardware, rather than the hub ──────────────────────────────
+ *
+ * Every reading in this system is the hub's *record* of what it believes. That
+ * record is usually right, because the hub originates almost every change — even
+ * the wall switches here are smart switches that fire hub groups. But it has
+ * been observed wrong once (2026-08-25, Ashu's fan; see CLAUDE.md, cause still
+ * unestablished), and nothing in the read path could check it.
+ *
+ * This is the check. The bus is HDL Buspro — `SMARTCLOUD` in every frame — and
+ * the vendor's own `relay_code.py` carries a `GET_STATUS` opcode beside the ones
+ * it uses to command. Broadcasting it makes each relay module report its
+ * channels, the vendor's own `device_listener()` receives the replies, and its
+ * workers write them into the record we already read. So this asks the question
+ * and then gets out of the way: nothing here parses a reply, and there is no
+ * second copy of the house's state to keep in step.
+ *
+ * Three things learned getting this working, all of them load-bearing:
+ *
+ * - **It must be sent from the hub.** Six queries from the Mac drew no reply at
+ *   all; three from the hub drew `Receieved status of : 61` and `Saving status of
+ *   relay: 61` in the vendor's journal. Either the modules answer only the
+ *   controller they know, or a Wi-Fi broadcast does not reach the bus. Do not
+ *   try to run this from a laptop.
+ * - **Do not bind udp/6000.** The vendor's `socket_manager.find_and_kill_process`
+ *   kills whatever holds that port, and its app runs the house. Sending from an
+ *   ephemeral port avoids the question entirely, and the reply still lands in the
+ *   vendor's listener where it is wanted.
+ * - **The CRC is CRC-16/CCITT (XModem), init 0, over everything after the
+ *   SMARTCLOUD header and before the checksum itself.** Verified against a real
+ *   captured frame before a single packet was transmitted, which is the only
+ *   reason it worked first time.
+ *
+ * `relay_opr` is fire-and-forget UDP with no acknowledgement, so this cannot be
+ * confirmed and does not try. It costs four packets and never blocks a read.
+ */
+const HDL_HEADER = Buffer.concat([
+  Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]), Buffer.from('SMARTCLOUD'), Buffer.from([0xAA, 0xAA]),
+]);
+// len, src subnet/device, src type, opcode 0x0033 (read channel status), dst subnet.
+// The module id is appended, then the checksum.
+const HDL_GET_STATUS = Buffer.from([0x0b, 0x01, 0xFE, 0xFF, 0xFE, 0x00, 0x33, 0x01]);
+
+function hdlCrc(buf) {
+  let crc = 0;
+  for (const b of buf) {
+    crc ^= (b << 8);
+    for (let i = 0; i < 8; i++) {
+      crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+    }
+  }
+  return crc & 0xffff;
+}
+
+/* Which modules to ask, taken from the records rather than written down — on
+   this install that is 19, 61, 62 and 195, the last being the one air
+   conditioner that is a real relay. `device_type: RL` is the whole test: an
+   infrared unit has no channels to report and would not answer. */
+function relayModules() {
+  const out = new Set();
+  for (const { record } of devices.values()) {
+    if (record.device_type !== 'RL') continue;
+    const id = Number(record.device_id);
+    if (Number.isInteger(id) && id > 0 && id < 256) out.add(id);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+const POLL_MIN_MS = 10000;        // a burst of questions must not flood the bus
+let lastPoll = 0;
+
+/**
+ * Ask every relay module to report itself. Resolves once the replies have had
+ * time to land, so a caller can read straight afterwards and see the answer.
+ */
+function pollHardware(force) {
+  if (!force && Date.now() - lastPoll < POLL_MIN_MS) return Promise.resolve(false);
+  lastPoll = Date.now();
+  return new Promise((done) => {
+    let sock;
+    try { sock = dgram.createSocket('udp4'); } catch { return done(false); }
+    /* A poll is a nicety; a read is the house working. Nothing in here may throw
+       into a caller, so every failure resolves false and is said once. */
+    const give = (ok) => { try { sock.close(); } catch { /* already shut */ } done(ok); };
+    sock.on('error', (err) => {
+      if (!pollHardware.warned) {
+        console.error('hardware poll: ' + err.message);
+        pollHardware.warned = true;
+      }
+      give(false);
+    });
+    sock.bind(() => {                       // ephemeral port, never 6000
+      try { sock.setBroadcast(true); } catch { /* not fatal */ }
+      for (const id of relayModules()) {
+        const body = Buffer.concat([HDL_GET_STATUS, Buffer.from([id])]);
+        const sum = Buffer.alloc(2);
+        sum.writeUInt16BE(hdlCrc(body));
+        sock.send(Buffer.concat([HDL_HEADER, body, sum]), 6000, '255.255.255.255', () => {});
+      }
+      // Measured: replies were logged by the vendor inside the same second.
+      setTimeout(() => give(true), 700);
+    });
+  });
+}
 
 function readHubState() {
   if (reading) return reading;
