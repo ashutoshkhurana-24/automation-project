@@ -1248,3 +1248,45 @@ spoken *cancel* that restored Ashu's cobs to 100% at tune 63 after a test comman
 moved them. The numbers above come from synthesised voices, so treat 25/30 as
 directional — real speech has not been measured, and the honest place to do that is
 a phone.
+
+### The reply was slow, and the freshness read was mine (2026-08-25)
+
+*"the 'spoken' part at the end takes a little while, whereas the actual action is
+quick."* Both halves were true and they had different causes. Measured against the
+live hub before touching anything:
+
+| | before | after |
+|---|---|---|
+| a terse command, cache stale | 1450ms | **~200ms** |
+| the same, cache warm | 180ms | 180ms |
+| cancel, a real restore | 4759ms | **44ms** |
+| Hinglish, via the model | ~2600ms | unchanged |
+| a question | ~4100ms | unchanged, by choice |
+
+**The first cause was a regression from the cancel work.** `runAddress` re-read the
+hub only for relative actions, where a toggle computed from a stale reading is
+backwards. Building cancel I widened that to fire whenever `remember` is present —
+and `/api/say` always passes it — so every spoken command paid a 1.3s hub read so
+that cancel's snapshot would be fresh. Since the background reader runs every 15s
+and nobody speaks two commands four seconds apart, that was **the first command
+every time**. Reverted. The trade now runs the other way and is the right way
+round: an undo may restore a reading up to REFRESH_MS old, and in this house the
+hub originates nearly every change, so its record is usually current.
+
+**The second cause is the one the complaint actually describes.** `applyScene`
+sends in about two hundred milliseconds and then spends SETTLE_MS twice reading the
+house back and resending stragglers — so the lamps were already back while the
+speaker waited three and a half seconds to hear about it. Cancel now answers on
+send and lets verify-and-resend finish behind the reply, which is exactly what
+`setRecords` has always done for an ordinary command. Nothing was given up but the
+straggler count, and that count was already known to cry wolf one time in four.
+
+**The general shape, worth keeping:** a spoken reply is a conversation and a
+verification is not part of it. Anything that reads the house back belongs behind
+the answer unless the answer is *about* the reading — which is why `look` still
+pays its four seconds and was deliberately left alone.
+
+One measurement artefact to expect: the first command within ~15s of a
+`systemctl restart` can take tens of seconds, because startup awaits
+`pollHardware(true)` and the first hub read. Seen once at 68s. It is not
+representative — re-measure warm.

@@ -4947,12 +4947,19 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord, remember)
     roomName = found.hit.name;
   }
 
-  /* A relative or toggling action is only as good as its reading of now — and so
-     is a cancel, one step further on. Undoing to a reading that was already
-     stale when we took it puts the room somewhere it never was, which is the
-     failure fireCue guards against for cues; the same guard, for the same
-     reason, when somebody is going to be able to say "cancel" at this. */
-  if ((remember || words.some(w => ['toggle', 'up', 'down', 'warmer', 'cooler'].includes(w)))
+  /* A relative or toggling action is only as good as its reading of now: a toggle
+     computed from a stale reading is backwards, which is worse than slow.
+     Absolute actions are deliberately *not* included, and that is a correction.
+     Cancel's snapshot wanted a fresh reading too, so this once fired whenever
+     `remember` was present — which for /api/say is always — and measured a **1450ms
+     penalty on every spoken command against 180ms** without it. Nobody speaks two
+     commands four seconds apart, so it was the first command every time.
+     The trade is worth taking the other way: an undo may restore a reading up to
+     REFRESH_MS old, and in this house the hub originates nearly every change (the
+     wall switches fire through the vendor's app), so its record is usually current.
+     A rare undo to a slightly older level is a smaller harm than eight-tenths of a
+     second added to every single thing anybody says. */
+  if (words.some(w => ['toggle', 'up', 'down', 'warmer', 'cooler'].includes(w))
       && (!hubSync.taken || Date.now() - hubSync.taken > 4000)) {
     await readHubStateFresh().catch(() => {});
   }
@@ -5966,37 +5973,34 @@ async function runCancel(who) {
           + ' where it was' };
     }
 
-    // records and cues alike: a snapshot, replayed through the usual machinery,
-    // which is what brings verify-and-resend with it.
     const name = step.kind === 'cue' ? step.name
       : step.label + (step.room && step.room !== 'HOUSE' ? ' in ' + title_(step.room) : '');
-    const result = await applyScene({ id: 'cancel', name: 'Cancel', steps: step.steps });
 
-    /* applyScene's residual count is not reliable enough to say out loud. A
-       dimmable light fades, and a fade still in flight reads as a level that is
-       not the one asked for — measured live, one cancel in four came back
-       claiming three lamps had missed when a moment later all five sat at zero.
-       In JSON on a dashboard that is a curiosity; spoken aloud it is a warning
-       that cries wolf, and a reply nobody believes is worse than a shorter one.
-       So the count is only spoken if it survives one more look, which costs
-       nothing in the ordinary case because the ordinary case is zero. */
-    let missed = result.missed;
-    if (missed) {
-      await sleep(SETTLE_MS);
-      await readHubStateFresh().catch(() => {});
-      missed = outstanding({ steps: step.steps }).length;
-    }
-    logEvent({ e: 'cancel', who: key, kind: step.kind, name,
-               set: result.set, missed, first_pass: result.missed });
+    /* Sent, then answered — not sent, verified, and then answered.
+     *
+     * applyScene sends in about two hundred milliseconds and then spends
+     * SETTLE_MS twice over reading the house back and resending stragglers, so
+     * the lamps were already back while the speaker waited three and a half
+     * seconds to be told about it. Measured: 4759ms for a cancel against 250ms
+     * for the send. Somebody standing in a room they have just put right does not
+     * want a verification read out to them.
+     *
+     * Nothing is given up but the straggler count, and that count was not worth
+     * saying: a dimmable light fades, a fade still in flight reads as the wrong
+     * level, and one cancel in four claimed three lamps had missed when a moment
+     * later all five sat at zero. Verify-and-resend still happens — it just
+     * happens behind the reply, which is exactly what setRecords already does for
+     * every ordinary command, and for the same reason. */
+    applyScene({ id: 'cancel', name: 'Cancel', steps: step.steps })
+      .then((r) => logEvent({ e: 'cancel', who: key, kind: step.kind, name,
+                              set: r.set, missed: r.missed }))
+      .catch((err) => console.error('cancel: replay failed:', err.message));
+
     /* Both halves have to agree, not just the verb: "the cobs are back as it
        was" is what you get from fixing only the first one. */
     const many = SPEAK_PLURAL.test(name);
-    const head = name + (many ? ' are back as they were' : ' is back as it was');
-    if (missed) {
-      return { ok: true, cancelled: true,
-        spoken: head + ', but ' + missed + ' did not take' };
-    }
-    return { ok: true, cancelled: true, spoken: head };
+    return { ok: true, cancelled: true,
+      spoken: name + (many ? ' are back as they were' : ' is back as it was') };
   } catch (err) {
     console.error('cancel failed:', err.message);
     return { ok: false, cancelled: false, error: err.message,

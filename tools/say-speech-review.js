@@ -100,7 +100,6 @@ const GROUPS = [
     'Fan in Ashu Room is back as it was',
     'the COBs in Living are back as they were',
     'Movie Night is back as it was',
-    'Movie Night is back as it was, but 2 did not take',
     'ashu TV volume is back to 12',
     'ashu TV is muted again',
     'ashu TV is unmuted again',
