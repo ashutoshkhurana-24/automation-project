@@ -429,8 +429,19 @@ const itemLabel = (it) => it.tv
   // Not through sentence() for the name: it title-cases, and turned TV into Tv.
   ? `${it.tv.name} · ${sentence(it.tv.room)}`
   : `${sentence(it.entry.record.device_name)} · ${sentence(it.entry.room)}`;
-const itemIsCurtain = (it) => !!it.entry
-  && ((it.entry.record.app_type || '') === 'C' || it.entry.is_curtain);
+/* A curtain, asked of a record. It belongs beside the infrared test below
+   because it is the same kind of fact and needed by the same callers: a curtain
+   reads open/close out of opr_param and never looks at device_status, so it
+   cannot ride a bulk send either, and every path that commands records in bulk
+   has to pull them out first.
+   One definition rather than four — itemIsCurtain here and isCurtainRec further
+   down (for /do's reference page) both ask this same question, of a schedule
+   item and of a record.
+   `it.entry.is_curtain` was also tested here and is always undefined: a device
+   map entry is { room, record }, and is_curtain exists only on the projection
+   the browser is sent. */
+const isCurtainRecord = (rec) => !!rec && (rec.app_type || '') === 'C';
+const itemIsCurtain = (it) => !!it.entry && isCurtainRecord(it.entry.record);
 /* An air conditioner that is infrared, which is six of the seven. HOME THEATRE
    496 is device_type RL — a real relay — so it is a plain switch and stays on
    the batch path, which is correct for it.
@@ -610,7 +621,11 @@ function clearCue(scene) {
  * earlier fires the rest rather than putting that one out. Only a cue whose
  * every lit circuit is actually lit is treated as already standing. */
 const cueIsSet = (scene) => {
-  const want = cueLights(scene);
+  /* Curtains are left out of the reckoning rather than counted as unlit. One
+     reports no position, so it can neither confirm nor deny that a cue is
+     standing — and counted, it always answered "not set", which would make
+     /do/cue/<id>/toggle fire for ever and never clear. */
+  const want = cueLights(scene).filter((rec) => !isCurtainRecord(rec));
   return want.length > 0 && want.every(rec => decodeLevel(rec.device_status) > 0);
 };
 
@@ -3033,8 +3048,25 @@ async function setRecords(records, { on, level, tune }) {
     }
   }
 
-  records = split.rest;
-  if (!records.length) return prjSent + acSent;
+  /* A curtain leaves for the third time and the same reason: it reads its verb
+     out of opr_param and never looks at device_status, so the batch drops it
+     without a word and then files a status against it — which is exactly how a
+     cue containing one reported success while the curtain never moved. Open
+     above zero, close at zero; a level in between means nothing to a motor that
+     reports no position, and a colour passes it by entirely. One at a time, as
+     everywhere else a curtain is sent. */
+  const withCurtains = splitCurtains(split.rest);
+  let curtainSent = 0;
+  if (withCurtains.curtains.length && wantLevel != null) {
+    const verb = wantLevel > 0 ? CURTAIN_VERB.open : CURTAIN_VERB.close;
+    for (const rec of withCurtains.curtains) {
+      await sendToHub(rec.record_id, {}, verb);
+      curtainSent++;
+    }
+  }
+
+  records = withCurtains.rest;
+  if (!records.length) return prjSent + acSent + curtainSent;
 
   const canTune = (rec) => rec.is_tunable === 'true' && rec.channel_id_tunable != null;
   // A colour asked for goes to every tunable lamp. With none asked for, the
@@ -3050,9 +3082,9 @@ async function setRecords(records, { on, level, tune }) {
         // has been given one by hand, in which case that stands.
         || (decodeLevel(rec.device_status) === 0 && !handTuned.has(rec.record_id))));
 
-  // Starts at the presses already sent, so a caller counting what went out is
-  // not told a projector or an air conditioner was nothing.
-  let sent = prjSent + acSent;
+  // Starts at what has already gone out one at a time, so a caller counting the
+  // sends is not told a projector, an air conditioner or a curtain was nothing.
+  let sent = prjSent + acSent + curtainSent;
   if (colour != null && tunable.length) {
     sent += await sendBatchToHub(tunable.map((rec) => ({
       recordId: rec.record_id,
@@ -3292,6 +3324,22 @@ function splitAcs(records) {
   const acs = [], rest = [];
   for (const rec of records) (isAcRecord(rec) ? acs : rest).push(rec);
   return { acs, rest };
+}
+
+/* And the curtains, which is the third thing that cannot ride a batch and the
+   one this was missed on longest. A curtain ignores device_status completely —
+   the hub reads open, close or stop out of opr_param (see CURTAIN_VERB below) —
+   so a curtain in a batch is dropped in silence, and then the batch's own
+   optimistic write files a device_status against it while the hub files one too.
+   That combination is what made a cue containing a curtain report success: the
+   read-back agreed, so `outstanding` saw a satisfied step and never retried.
+   Found 2026-08-24: Morning had never opened the living-room curtains and Movie
+   Night had never closed the home theatre's, both since the day they were
+   written. */
+function splitCurtains(records) {
+  const curtains = [], rest = [];
+  for (const rec of records) (isCurtainRecord(rec) ? curtains : rest).push(rec);
+  return { curtains, rest };
 }
 
 /* One key, by name, on the hub's projector. `on` and `off` are the two anyone
@@ -3652,8 +3700,30 @@ async function sendSteps(list) {
     }
   }
 
-  const irSent = prjSteps.length + acSteps.length;
-  if (!order.length) return irSent;
+  /* And the curtains, which is the last road that could not reach one and the
+     one it hid on longest. A curtain reads open or close out of opr_param and
+     ignores device_status, so a curtain step rode the batch, moved nothing, and
+     reported success — the batch's optimistic write and the hub's own filing
+     between them made `outstanding` see a satisfied step, so it was never even
+     retried. Two of the nine cues in this house carry one: Morning had never
+     opened LIVING's two curtains and Movie Night had never closed the home
+     theatre's, since the day each was written.
+     Unlike the air conditioners this changes nothing about what a cue was
+     *meant* to do — the steps were there and simply never arrived — so there was
+     no case to weigh. No level and no colour: the step's level is read only for
+     its sign, a motor with no position having nothing in between. */
+  const curtainSteps = order.filter(({ t }) => isCurtainRecord(t.rec));
+  if (curtainSteps.length) {
+    order = order.filter(({ t }) => !isCurtainRecord(t.rec));
+    for (const { t } of curtainSteps) {
+      await sendToHub(t.rec.record_id, {},
+        t.level > 0 ? CURTAIN_VERB.open : CURTAIN_VERB.close);
+    }
+  }
+
+  // Everything that had to go on its own rather than in the batch.
+  const sentAlone = prjSteps.length + acSteps.length + curtainSteps.length;
+  if (!order.length) return sentAlone;
 
   const tunes = order
     .filter(({ t }) => t.tune != null && t.level > 0)
@@ -3682,7 +3752,7 @@ async function sendSteps(list) {
     await sleep(SCENE_SETTLE_MS);
   }
 
-  return irSent + await sendBatchToHub(order.map(({ step, t }) => ({
+  return sentAlone + await sendBatchToHub(order.map(({ step, t }) => ({
     recordId: step.record_id,
     fields: { device_status: encodeLevel(t.level) },
   })));
@@ -3755,6 +3825,15 @@ function outstanding(scene) {
   return scene.steps.filter((step) => {
     const t = stepTarget(step);
     if (!t) return false;
+    /* A curtain cannot be judged at all, so it is never outstanding. It reports
+       no position — is_tis is false on all five here, so there is no positional
+       channel even to ask — and device_status is not what drives it, so reading
+       that back would mark every curtain step missed for ever: a retry on each
+       fire, and a second pulse at the motor. It errs toward not resending, which
+       is the safe direction and the same answer the infrared devices get, for the
+       same reason. Before the send was fixed this was hidden: the batch wrote a
+       device_status against the curtain, so it read as satisfied. */
+    if (isCurtainRecord(t.rec)) return false;
     return decodeLevel(t.rec.device_status) !== t.level;
   });
 }
@@ -4220,7 +4299,7 @@ function circuitsOf(roomName) {
  * curtain in the target forces the curtain verbs on the whole address, and the
  * warmth family is the only other gated set. A bare number is accepted
  * everywhere, because on a switch it simply means on or off. */
-const isCurtainRec = (r) => (r.app_type || '') === 'C';
+const isCurtainRec = isCurtainRecord;      // the same question, one definition
 
 function circuitKind(records) {
   const curtains = records.filter(isCurtainRec).length;
