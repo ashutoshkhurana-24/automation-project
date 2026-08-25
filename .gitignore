@@ -52,3 +52,15 @@ config.json
 # first-run cues, per-install: a cue is a list of record_ids and those numbers
 # mean a different lamp on a different hub.
 data/seed-scenes.json
+
+# The spoken-command model key. A credential, and per-install. Not in
+# config.json because /setup rewrites that from its form and has no field for
+# this, so it would be dropped on the next save.
+data/openai-key
+
+# The house's own history, behind the monthly report. Per-install, and it is a
+# record of when people were in which room — not something to commit.
+data/history/
+
+# Cortex Code's own plan files. Working notes from the agent, not the project's.
+.cortex/
