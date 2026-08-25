@@ -1588,7 +1588,13 @@ class TvLink {
       // One subscription per thing the tile shows. Each fires immediately with
       // the current value, so there is no separate read to reconcile.
       tv.subscribe('ssap://com.webos.service.tvpower/power/getPowerState', (p) => {
-        this.power = panelOn(p.state);
+        const on = panelOn(p.state);
+        /* A television is the one thing in this house whose state is a reading
+           rather than a belief — it pushes its own changes, including ones made
+           with its own remote — so its hours in the report are real hours. Only
+           a change is logged, since a subscription fires on connect too. */
+        if (on !== this.power) logEvent({ e: 'tv', id: this.id, room: roomKey(this.room), on, app: this.app || null });
+        this.power = on;
         pushSoon();
       });
       tv.subscribe('ssap://audio/getVolume', (p) => {
@@ -1599,7 +1605,13 @@ class TvLink {
         pushSoon();
       });
       tv.subscribe('ssap://com.webos.applicationManager/getForegroundAppInfo', (p) => {
-        this.app = p.appId || '';
+        const app = p.appId || '';
+        // Only while the panel is on: a set in standby reports its launcher, and
+        // "watched the home screen for nine hours" is not a fact about anybody.
+        if (app !== this.app && this.power && app) {
+          logEvent({ e: 'tvapp', id: this.id, room: roomKey(this.room), app });
+        }
+        this.app = app;
         pushSoon();
       });
       this.power = true;                    // it answered, so it is awake
@@ -1664,6 +1676,10 @@ class TvLink {
     // something, not when the set sleeps, and dropping it made every icon in
     // the panel disappear the moment the television went off.
     if (this.online || this.power) pushSoon();
+    /* A lost connection is a trustworthy reading of off — a set that is on
+       always answers — so it closes the viewing interval in the history rather
+       than leaving it open to the end of the month. */
+    if (this.power) logEvent({ e: 'tv', id: this.id, room: roomKey(this.room), on: false, app: null });
     this.online = false;
     this.power = false;
     this.app = '';
