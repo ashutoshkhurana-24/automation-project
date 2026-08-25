@@ -625,6 +625,22 @@ node -e 'const W=require("ws");const ws=new W("ws://192.168.1.3:8090/bms/1/0/A/"
 
 The hub is only reachable from the same LAN; `EHOSTUNREACH` means the machine is off that network, not that the code is broken.
 
+**Do not probe a refusal with a prefix of a real name (2026-08-25).** Testing that
+`/api/say` returns refusals rather than acting, `ashu a off` was chosen on the
+assumption that a single letter would be ambiguous. In Living it is — "all or ac"
+— but **ASHU ROOM has no second `a` circuit, so `a` uniquely prefix-matched the
+collective name `all` and switched the whole room off**, at 17:19, in somebody's
+bedroom. Restored inside a minute (the fan, record 448, was the only thing on;
+found from `data/history/`'s last `snap` entry, which is what that log is for) and
+verified against the hub directly.
+
+The lesson is narrow: a refusal probe must use a string that **cannot match
+anything** — `widget`, not `a`. The unique-prefix matcher is doing exactly what it
+is designed to do, and every room has a different set of names for it to be unique
+against, so "this prefix is ambiguous" is a property of one room and not of the
+grammar. The general form is the one already in this file about `/do`: an address
+that resolves does the thing.
+
 **A read is not a measurement.** Brightness reads back honestly, so `device_status` can verify a level. Colour does not (see `device_status_tunable` above), so anything about colour has to be counted by eye, and the person at the other end of the conversation is the instrument. When measuring timing this way:
 - **Interleave the conditions, never run them in blocks.** Both dashboards poll every 15s and a trial takes seconds, so block-running one gap at a time lets a burst of interference land entirely on one condition — which is how a flat truth acquires a shape. A blocked sweep produced a clean-looking curve with a trough in it that a shuffled re-run did not reproduce.
 - **Re-baseline between trials**, so a count is read against a known starting state rather than a mixed one.
@@ -858,3 +874,301 @@ Both earlier leads were wrong and are closed: `channel_id_open`/`channel_id_clos
 **The lesson worth keeping:** the hub's Python is readable at `/home/abneo/abneo_controller/`. Reading it beats guessing payloads against a controller that answers nothing — this was solved in minutes there after three wrong guesses against the wire.
 
 Full design notes and tiered idea list: `~/.claude/plans/glowing-honking-treehouse.md`.
+
+## Speaking to the house — `/api/say` (2026-08-25)
+
+**`runAddress()` is the executor and `/api/say` does not reimplement it.** A sentence comes in, a sentence goes out; between them the endpoint turns the words into a `/do` address and hands them over, so unique-prefix matching, ambiguity-as-error, the stale-cache re-read before a relative action, the curtain verb path and the refusal to tune an untunable lamp are all inherited rather than restated. Two paths reach it: `speechWords()`, a filler-stripping grammar that resolves two to four words of terse English on the hub for nothing, and the model, which is what reads the Hinglish.
+
+**Every reply is HTTP 200, whatever happened.** Shortcuts' "Get Contents of URL" treats a non-2xx as an error and never reads the body, so a 400 would arrive on the phone as silence — the house sounding broken when it merely misheard. `grabResponse()` is a shim that captures what `runAddress` would have sent, and the verdict rides in `ok` and `spoken`. A shim rather than a refactor, because `runAddress` is the path every shortcut and cron line in this house already goes through.
+
+**Hinglish input is the model's job, not a vocabulary in the code.** The alternative — a hand-written Hindi verb table — fails silently and switches the wrong circuit; the model gets a generated prompt listing every room and what is wired in it, and returns a tool call whose room and circuit are then validated by the same `pick()` that refuses a mistyped URL. So a circuit the model invents is a refusal, not a cheerful success.
+
+### The television gap in `look`, and what it dragged in
+
+**`circuitsOf()` cannot see a television, because a television is not in `devices`.** The sets and the receiver are driven directly, over SSAP and Denon's control port, and live in their own maps. So the first version of `look` answered "Living room mein kya chalu hai" without mentioning the television — which is the worst possible omission, these being *the only things in the house whose state is a genuine reading rather than a belief*. `directlyRead(room)` returns them shaped like circuits (slug, label) so `pick()` works on them unchanged, but carrying their own link and their own sentence, since neither the level arithmetic nor the wording in `readingOf()` applies to a screen.
+
+**The hub keeps a stale record of a television it can no longer speak for**, and a spoken answer must not read both out. Record 517 "T.V" in ASHU ROOM is the same set now driven over SSAP; the board already hides it (`shadowedByTv`) because two tiles called TV in one room can disagree with nothing on the face saying which to believe. `liveCircuits()` applies the same filter for the reading path. It is **not** applied inside `circuitsOf()`, because `/do` still addresses 517 deliberately — the filter belongs to the reader, not the address grammar.
+
+**Commanding a screen had to come with it, or the feature would lie.** Once `look` can say the television is on, "TV band karo" is the next sentence anybody says — and without `screenCommand()` it resolves to the shadowed record, moves a row in the hub's database, and answers "Done" while the set plays on. A confident lie is the one outcome worth spending code to avoid. Only the verbs both link classes already implement (on, off, toggle, a volume, up, down, mute, unmute); apps, sources and YouTube stay on `/api/tv` and `/api/avr`, where a request has somewhere to put a name. The check sits in `/api/say`'s `run()`, which is the one point both the grammar path and the model path pass through.
+
+The two classes differ in what they hand back and the code respects it: a `TvLink` method already returns `{ok, spoken}` (written for `/do` and Siri), while an `AvrLink` method returns a bare promise and **rejects** when nothing is listening — so the receiver's reply is built here with the same `avrSettle` and `avrSpoken` that `/api/avr` uses. Waiting for the unit to confirm rather than for a fixed interval is the whole reason its answers can be called readings.
+
+**Eleven clauses is not an answer.** Read one circuit at a time, Living came back as eleven consecutive "Cob 3 is on" clauses — about fifteen seconds of speech, and nobody is still listening by the fourth. Where a whole group is on at one level the group's own label says it: *"the COBs are on"*. Only groups whose label is already a plural noun phrase, because `readingOf()` puts a plural verb after a multi-record group and `all` is labelled "everything" — which would come out as "everything are on". Largest group first, so eleven cobs fold into `the lights` rather than being said twice, and three is the floor: folding a pair loses both names to save no time at all.
+
+### Replies in Hinglish were built, tested against the phone and removed — do not re-propose
+
+The whole rewriter existed and worked: sixteen fixed sentences, twenty-five
+whole-sentence rules, fourteen clause rules, gender-free throughout, behind
+`config.reply_language`. **iOS `Speak Text` cannot say it.** The user tested it on
+the phone and that was the end of it — the endpoint's entire value is that a
+sentence comes back *spoken*, so a reply the voice mangles is worth less than a
+plainer one it reads cleanly. Removed rather than left behind a flag, which is
+what was done with light mode for the same reason: dead rules nobody will ever
+switch on are a maintenance cost pretending to be an option. `SAY_LANG` and
+`config.reply_language` went with it.
+
+**Hinglish input is untouched and is still the expected case.** The asymmetry is
+the point: the speaker reads Hinglish perfectly and the phone does not speak it,
+so the two halves of the conversation are not in the same language, and there is
+no reason they should be.
+
+### The reply is reworded for the voice, at the same one boundary
+
+`speakable()` replaced `hinglish()` at exactly the same seam — the `say()` wrapper
+in `/api/say`, with the original kept as `said`. That the swap was a swap rather
+than a rewrite is the argument for having put the translation in one place to
+begin with: `spokenFor`, `readingOf` and `/do` never moved, and every cron line
+and shortcut in the house still gets the words it was written against.
+
+Four things measured against the voice rather than guessed, each of them
+something it does badly otherwise:
+
+- **A verb.** "Foot light in Ashu Room off" is a caption; read aloud it is three
+  unrelated words. Confirmations get one, and agreement is decided once in `be()`
+  from the *label* — `spokenFor` says "the lights" for a group of one, so "the
+  lights is now on" is what counting records would have produced.
+- **Lower case for an acronym meant as a word.** iOS spells a capitalised one out,
+  so "the COBs" arrives as "the C O B s". `AC`, `TV` and `LED` are *wanted*
+  spelled and stay upper case — and are **lifted** when they arrive lower case
+  from a slug, since "ac" is read as "ack".
+- **No em dash.** It reads as a pause of unguessable length, and what hangs off one
+  in these sentences was always their wordiest half. Two short sentences instead.
+- **Contractions**, which is the difference between speech and a manual.
+
+**The same guard as before, for the same reason.** A reading can end in "at 40%"
+or "muted" exactly as a confirmation does, so `SPEAK_READING` keeps readings away
+from the whole-sentence rules — without it, "Reading Light is at 40%" becomes
+"Reading Light is **is now** at 40%". This is the second transform to need that
+gate, so treat it as a property of the shape rather than a quirk of one table.
+
+**The receiver had to answer to "receiver".** The reply calls it one and the
+record is named `AVR`; a device named one thing and spoken about as another has a
+name nobody can guess. One alias in `screenCommand`.
+
+`tools/say-speech-review.js` (was `hinglish-review.js`) prints all ninety
+sentences and asserts the mechanical half: no em dash, no acronym the voice will
+spell, a plural subject with a plural verb, a verb at all, and a closing stop.
+Its two deliberate non-sentences — the whole-house list and a bare "Done." — are
+named rather than allowed to weaken the check.
+
+### The family guide is generated, never written by hand
+
+`tools/make-guide.js` writes `data/speaking-to-the-house.html`: one
+self-contained page for the people who live here, listing every circuit in every
+room with what each can actually do. It reads a **running server** rather than
+`devices.json`, because `/do/<room>` already resolves kind and permitted actions
+from the dispatch — a second derivation is how a guide starts quietly lying, and
+the whole point of it is that nobody has to guess between "foot light" and
+"footlight".
+
+Three decisions worth keeping. It **drops the hub's shadowed television record**,
+which `/do` still addresses deliberately — offering it to somebody who cannot know
+the difference is the one thing the page must not do, since commanding it moves a
+database row, answers as though it worked, and the set plays on. It **folds
+numbered siblings** (`cob 1 to cob 11`), the same reasoning as folding them in a
+spoken answer. And its per-room honesty falls out of reading the live house:
+HOME THEATRE's AC shows no infrared hedge because record 496 really is a relay,
+while the other six carry it.
+
+**The register follows the medium, and the page was rebuilt once to get it
+right.** It shipped wholly in Hinglish, on the reasoning that Hinglish is what
+gets spoken. The user's correction: *"Keep description an instruction as english,
+only phrases, example, use cases in hinglish"* — and that is the better rule,
+because an explanation is *read* and reads better in one language, while a phrase
+is *said* and has to be exactly the thing you say. A reply is a third case again:
+it is spoken by a phone that cannot say Hinglish, so it is English. Three media,
+three answers, none of them a house style.
+
+That split is now visible in the design rather than left to the reader: a thing to
+say out loud is a **filled speech bubble**, a circuit name is an **outlined chip**.
+One is a whole utterance, the other a word inside one, and they must never look
+interchangeable.
+
+Three things stay English inside the Hinglish phrases, each load-bearing: every
+room and circuit name (the installer's labels, the only names the hub knows — the
+page's loudest line is that *pankha* fails and *fan* works), the troubleshooting
+table's left column (the exact English the phone says, which they have to match),
+and the action words, which are the free grammar path.
+
+**Every room is collapsed behind a `<details>`**, after the user said the page was
+too long to scroll. The tension is real — a reference must not drop a name,
+because a missing name is a name somebody has to guess — and `<details>` resolves
+it without compromise: everything is still there, it just opens at a tap, natively,
+with no script on the page. Seven stacked tables became seven rows. The per-room
+hue is not decoration either: the family find their own room by its colour before
+they read the word.
+
+**Every example phrase in it was run against the live house before shipping**, and
+that is the standard for this page: it must not teach a sentence nobody has seen
+work. Fourteen of them, chosen so all but two were no-ops against the house as it
+stood — the fan already on, the lights already off. The two that had to move
+something were done on ASHU in daylight and restored, and the curtain shape was
+proven with `rok do` (stop), which releases both relays and so cannot move a motor
+in an occupied room. Testing is what found the one wording gap: saying `warm`
+answers *"set to candle"*, because `warmthName` names the band rather than echoing
+the word — correct, and confusing enough to need a line in the guide.
+
+The `html-authoring` skill is mostly inapplicable here — it targets Snowflake's
+sandboxed report renderer, so its `/libs/` paths would 404 in Safari and its
+provenance block means nothing to a family guide. What transfers and was kept:
+zero network requests (it is opened from Messages, possibly offline),
+`color-scheme: light dark` with `light-dark()`, a fluid container, and every table
+wrapped in `overflow-x: auto` so a table scrolls rather than the page.
+
+
+### Two bugs the live house found, one of them serious (2026-08-25)
+
+**Asking whether the fan was on switched it on.** `speechWords()` strips `is` and `the` as filler, so *"is the ashu fan on"* reduced to `[ashu, fan, on]` — an impeccable command, and the free grammar path ran it before the model ever saw the sentence. The same stripping turned *"what is on"* into a command addressed to a room called `what`, answered with "I do not know that room" while `SHORTCUTS.md` promised it worked. Both were found by typing documented examples at the live hub, not by reading the code.
+
+**The fix is a gate, not a cleverer grammar.** `SAY_ASKS` is tested before anything else in `speechWords` and returns null on a question mark, an interrogative opening in either language, or the Hinglish shapes that ask without one (`chal raha`, `chalu hai`, `band hai`, `on hai`, `batao`). The grammar matches three words against an address and an address has no mood, so it cannot be taught the difference — questions are kept away from it instead. **It is deliberately generous**, because the two mistakes are not comparable: a command mistaken for a question goes to the model and still comes back right for a fraction of a paisa, while a question mistaken for a command switches something on in a room somebody is sitting in.
+
+**"netflix laga do" switched the television on and said nothing about Netflix.** The prompt told the model that apps are not wired and to say so; handed a named app it reached for the nearest tool it had and called `control … on`. The reply — *"ashu tv on ho raha hai"* — was true and useless, which is the exact confident-lie shape `screenCommand` exists to prevent. Fixed in the prompt by naming the failure rather than only the capability: *do not call a tool at all, and in particular do not switch the screen on instead — coming on without the app is not what was asked, and the reply would not say so.* Three phrasings now decline. Worth remembering as a general rule for this prompt: **stating what a tool cannot do is not the same as forbidding the plausible substitute**, and the model will find the substitute.
+
+### Cancel — one step back, per speaker (2026-08-25)
+
+*"can you add a cancel command to undo the last spoken command?"* An undo already
+existed and **only cues used it**: `undoable`, one global slot, replayed through
+`applyScene`. The work was to capture at the spoken paths, add a phrase gate, and
+keep the honesty straight where the hardware cannot support a real undo.
+
+**Per speaker, not per house**, because several people talk to this place. A
+shared slot means your "cancel" reverses whatever somebody *else* said last,
+which is a worse failure than having no cancel — so `spokenBack` is a Map keyed
+on `who` from the request body, bounded at 8 because that is user input, and LRU
+by delete-then-set (a Map keeps a key at its original position when overwritten,
+so without the delete the person who speaks most often is evicted first). A
+shortcut that sends no `who` gets the anonymous slot and still works.
+
+**`/do` deliberately leaves no cancel point.** `runAddress` and `screenCommand`
+take an optional `remember` callback and only `/api/say` passes one. A cron line
+firing at 07:15 is not something anybody is about to say "cancel" at, and
+capturing for it would cost every one of those a hub read.
+
+**Capture needs a fresh reading, and that is the same rule `fireCue` already
+had.** `runAddress` re-read the hub only for relative actions (`toggle`, `up`);
+that condition now also fires when `remember` is present. Undoing to a reading
+that was already stale puts the room somewhere it never was.
+
+**Where the hardware cannot support an undo, the reply says so** — the three
+decisions the user made, and each is a limit rather than a shortfall:
+
+| | what it does | why |
+|---|---|---|
+| curtains | reverses the verb, and states that it is *not exactly where it was* | no position is ever reported, so "put back" would be a claim it cannot support |
+| screens | volume and mute only, exactly | those are read off the set. Power is refused **with the reason**: switching a television back on lands on the home screen, not on what was playing, so a "cancel" would interrupt you a second time |
+| everything else | snapshot replayed through `applyScene` | brings verify-and-resend with it |
+
+The screen-power case is stored as its own `screen-power` marker rather than not
+stored at all, purely so cancel can explain *why* instead of claiming nothing was
+said.
+
+**Two wording bugs that only a live run finds, and one that mechanical checks
+missed by design.** *"Ashu TV is back at volume 12"* came out as **"is back is at
+volume 12"**: my sentence ended in the exact shape `SPEAK_WHOLE` reads as a screen
+being *set* to a volume, so it inserted a second verb. The reply was reworded to
+*"Ashu TV volume is back to 12"* and `say-speech-review.js` gained a check for a
+verb re-inserted with one word wedged in the middle. And plural agreement has two
+halves — fixing only the verb gives *"the cobs are back as it was"*.
+
+**`applyScene`'s residual miss count is not safe to say out loud.** A dimmable
+light *fades*, and a fade still in flight reads as a level that is not the one
+asked for — measured live, one cancel in four claimed three lamps had missed when
+a moment later all five sat at zero. In JSON on a dashboard that is a curiosity;
+spoken aloud it cries wolf, and a reply nobody believes is worse than a shorter
+one. So a non-zero count is re-checked after one more settle before it is spoken,
+which costs nothing in the ordinary case because the ordinary case is zero. **The
+spoken cue reply has the same flaw and still carries it** (*"set, but 2 did not
+take"*) — left alone as out of scope, worth fixing if it is ever heard.
+
+**The gate is matched before the grammar and long before the model**, so cancel
+costs no network call, and it cannot shadow an address because nothing in this
+house is named any of these words. `nahi` must be **doubled**: "nahi, fan band
+karo" is a command with a correction in front of it, and swallowing it would be
+the worst kind of bug — one that eats a sentence and answers as though it acted.
+
+**Verified live**, on ASHU in the evening with the house restored afterwards:
+a real reversal (cobs 40 → 0), per-phone isolation (mum's cancel refused ashu's
+command), a refusal not clobbering the slot, cancel not becoming a new cancel
+point, the curtain-`stop` refusal, and `/do` still leaving nothing behind. **Not
+tested live and said so at the time:** an actual curtain reversal (it moves a
+motor in an occupied room), screen volume (every set was off), and the five-minute
+expiry — verified by reading only. A local instance on `PORT=3100` loads no
+schedules, which makes it the safe way to test this.
+
+**A caution repeated from earlier the same day**: a test phrase is not a probe.
+`ashu fan on` during this work switched his fan on and I briefly attributed it to
+the user before tracing it to my own leftover slot. Read the history before
+blaming the household.
+
+### pankha and parda, resolved by kind (2026-08-25)
+
+*"parda and pankha won't work. Can we change that so that works too? Only these
+two for now."* Two words, and the interesting part is that the obvious
+implementation is the dangerous one.
+
+**A synonym table would have switched on a light.** `parda` aliased to the word
+"curtain" is matched by `pick()` as a prefix, and in LIVING the only circuit
+*starting* with that word is **CURTAIN ROPE, which is `app_type` L** — a light
+sitting between two motors that are not. This file already recorded that trap for
+the schedule picker; it is the same one. So `hindiCircuits()` selects on **kind**:
+`app_type === 'C'` for a curtain, and the fan test `circuitsOf()` already uses
+(override first, because this hub's own `isFan` flag reads false for all four real
+fans). Which gives the three honest outcomes rather than one lucky one — one match
+works, two ask which, none says so.
+
+`every` rather than `some` on a circuit's records, or the collective `all` — which
+holds the fan among ten other things — would qualify as "the fan".
+
+**Only these two, and that is a rule rather than a starting point.** A table of
+Hindi nouns is a table of guesses, and a guess that happens to resolve switches
+something on in a room somebody is sitting in. The user drew the same line
+unprompted (*"we can skip batti"*).
+
+**The model translates them itself, by name, and that had to be stopped — found
+by testing, after it had already acted.** With the grammar path guarded and the
+model path not, on the live house: *"Ashu ka parda khol do"* returned circuit
+`curtain-rope` and **switched a light on in his room**, and *"Living ka parda khol
+do"* picked one of the two curtains and **opened it at 19:15** instead of asking
+which. Both restored — the curtain by the cancel feature built an hour earlier,
+which is the first time that has been used in anger and is exactly what it is for,
+though a curtain's prior position is unknowable and I said so.
+
+The fix is that where the *sentence* carries one of the two words, the model's
+choice of circuit is **discarded** and the word is passed through, so
+`hindiCircuits()` is the single authority on every road — grammar, model, `/do`,
+and `houseReading`. The general lesson is the one already in this file about the
+prompt: **guarding the path you were thinking about is not guarding the feature**,
+and the model will translate a noun for you whether or not you asked it to.
+
+**A pre-existing bug fell out of it.** `/api/say` computed `ok: out.code < 400`,
+so a **300 ambiguity was reported as success** — which is why *"ashu cob 1 on"*
+earlier answered `ok: true` with "I can't find that": the ambiguous and
+not-found branches share one sentence, and only the status code told them apart.
+It is `< 300` now. Worth knowing a Shortcut branching on `ok` would have taken the
+success path on a refusal.
+
+### The guide's design follows the dashboard, and the rainbow was a mistake (2026-08-25)
+
+*"I like call outs and playful design. But I would like if those elements and
+general design looks similar to existing dashboard vibe."*
+
+**The eight per-room hues had to go, and the reason is in this file.** The
+dashboard's rule is *the interface is neutral; the only colour is light* — so
+seven arbitrary room colours were speaking its language and saying something
+untrue with it, and a room card there is deliberately uniform. Recognition comes
+from the name and the count instead.
+
+What replaced it is the dashboard's own vocabulary, token for token: `--ink`,
+`--soft`, `--faint`, `--paper`, `--rim`, `--lip`, `--accent`, `--warm`; the paper
+palette with the dark one after dark; a pane with the rim and the specular lip;
+the mono `.cat-head` pill for a heading that makes its own contrast; the callouts
+shaped like the left-on advisories, amber edge and warm ground; one line of
+display serif with the one coral phrase, as the hero does; and the 60ms-down,
+240-back press that this file calls the whole trick.
+
+Two things it cannot inherit. **The display face is a system serif**, because
+Instrument Serif is served from the hub and this page must make no network request
+at all. And **the theme follows the phone rather than the hub's clock** — the
+dashboard reads the hour off the hub precisely so a phone in another timezone
+still shows the house as the house is, and a file opened from Messages has no hub
+to ask.

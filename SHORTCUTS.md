@@ -185,6 +185,321 @@ midnight without unlocking anything.
 
 ---
 
+## Speaking to the house
+
+`POST /api/say` takes a sentence and answers with a sentence. The phone does the
+listening and the talking — both free, both on-device — and the hub does the
+understanding.
+
+**The shortcut is three actions.** No API key on the phone, no JSON to unpick.
+
+| | Action | Settings |
+|---|---|---|
+| 1 | **Dictate Text** | Language: **English (India)** · Stop Listening: **After Short Pause** |
+| 2 | **Get Contents of URL** | `http://100.83.127.114:3000/api/say` · Method **POST** · Header `Content-Type: application/json` · Request Body **JSON**: key `text` = *Dictated Text*, key `who` = a short name for this phone |
+| 3 | **Speak Text** | *Get Dictionary Value* `spoken` from *Contents of URL* |
+
+`who` is a fixed piece of text you type once per phone — `ashu`, `mum`, `dad`.
+It exists only so **cancel** puts back what *that* phone said, and nothing else
+reads it. A shortcut without it still works; every such phone simply shares one
+cancel slot between them.
+
+The **tailnet** address rather than `192.168.1.3` so the same shortcut works at
+home and away — your iPhone is already a node on it. On the home Wi-Fi either
+address is fine.
+
+**Triggering it without a wake word.** Settings → Accessibility → Touch → **Back
+Tap** → *Double Tap* → your shortcut. On a 15 Pro or later the **Action Button**
+is better: tactile, no misfires, and it works from the Lock Screen. Triple tap is
+noticeably less prone to firing in a pocket than double.
+
+`Dictate Text` is deliberately **not** Siri: you get the raw transcript with no
+intent-matching in front of it, so "turn off the lights" cannot be captured by
+HomeKit and a shortcut name never has to be recognised.
+
+### What you can say
+
+Hinglish is the expected case. Room and circuit names stay English, because they
+are the installer's own labels.
+
+```
+living room ki light band kar do
+ashu ka fan chalu karo
+sab band karo
+cobs thoda kam karo
+ashu ki cob peeli kar do
+main curtain band karo
+ashu ka TV band kar do
+theatre ka AVR thoda tez karo
+movie night laga do
+```
+
+Terse English works too, and never leaves the box — `living off`,
+`ashu cobs 40`, `master warmth-70` are the same grammar the dashboard's own
+command bar takes, so they resolve on the hub in about 200ms with no model call
+and no cost. Everything else goes to the model, which is what reads the Hindi.
+
+### Two Hindi nouns that work
+
+`pankha` and `parda` resolve, so *"ashu ka pankha band karo"* and *"living ka
+parda khol do"* are addresses rather than sentences the model has to interpret.
+
+**They resolve by kind, never by name**, and that is the whole design. Aliasing
+`parda` to the word "curtain" would be matched as a prefix, and in LIVING the only
+circuit *starting* with it is CURTAIN ROPE — **a light**, sitting beside two
+motors that are not. So the words select on `app_type`, which means:
+
+| | |
+|---|---|
+| a room with one | it just works |
+| a room with two (Living) | *"There is more than one curtain in Living. Say main curtain or sheer curtain."* |
+| a room with none (Ashu) | *"There is no curtain in Ashu Room."* — rather than the rope |
+
+**Only these two.** Every other Hindi noun stays out, deliberately: a table of
+them is a table of guesses, and a guess that happens to resolve switches something
+on in a room somebody is sitting in. `batti` does not work; `light` and `cob` do.
+
+**The model translates them on its own, and had to be stopped.** Measured on the
+live house before the guard was in place: *"Ashu ka parda khol do"* came back as
+circuit `curtain-rope` and **switched a light on**, and *"Living ka parda khol
+do"* picked one of the two curtains and opened it rather than asking. So where the
+sentence carries one of the two words, the model's choice of circuit is discarded
+and the word is passed through — leaving one authority for them on every road,
+including `/do/<room>/parda/open` and the reading path.
+
+### Asking, not just telling
+
+Questions work as well as commands, and the reply is a reading rather than a
+guess:
+
+```
+living room mein kya chalu hai
+kya sab band hai
+ashu ka fan chal raha hai
+ashu ka TV chal raha hai
+theatre mein kya baj raha hai
+what is on
+```
+
+**What comes back depends on what the hardware can honestly say**, which is the
+one thing worth knowing about these answers:
+
+| you ask about | you get | because |
+|---|---|---|
+| a lamp, a fan, a relay | *"Ashu Room mein Cob 1 40% par hai, warm"* | the module reports back, so this is a reading |
+| a television | *"Ashu Room mein TV on hai, YouTube chal raha hai, volume 12"* | the set answers for itself over SSAP |
+| the receiver | *"Home Theatre mein AVR on hai, PS5 chal raha hai, 45 par"* | it states its own volume and source |
+| an infrared air conditioner or the projector | *"hub ne AC on bheja tha, check nahi kar sakta"* | infrared is one-way — this is the hub's own note, not a reading |
+| a curtain | *"Main Curtain ki position pata nahi chalti"* | a curtain tells the hub nothing, ever |
+
+A room with nothing on says so *and* mentions that the infrared units cannot be
+checked, because "nothing is on" would otherwise be a stronger claim than the
+house can support.
+
+Where a whole group is on at one level it is named as a group — *"Living mein
+COBs on hain"* rather than eleven separate clauses, which took about fifteen
+seconds to read out and nobody listened past the third.
+
+**The reply is English, whatever the request was written in**, because the phone
+has to read it out and iOS `Speak Text` cannot say Hinglish — it was built,
+tested against the voice and rejected on exactly that. Hinglish *input* is
+untouched and is still the expected case.
+
+It is also plain English rather than /do's, and reworded for the voice in one
+pass: a full sentence rather than a caption (*"Foot light in Ashu Room is now
+off"*), no em dashes, `COBs` lower-cased so it is not spelled out letter by
+letter, `AVR` said as *receiver*, and contractions. `/do` keeps its own wording,
+which every cron line and shortcut here was written against; the original travels
+in the reply as `said` if you need to trace one.
+
+It is honest about failure too: a room it does not know, a circuit that could be
+two things, a colour asked of a lamp with no second channel, or a hub that did
+not answer all come back as a sentence you can hear rather than as silence.
+
+`node tools/say-speech-review.js` prints every sentence the endpoint can produce,
+as written and as spoken, and fails on anything the voice reads badly.
+
+### Taking one step back
+
+Say **cancel** and the last thing *you* said is put back:
+
+```
+cancel            wapas karo        galat
+undo              nahi nahi         ulta karo
+never mind        pehle jaisa       put it back
+```
+
+Matched before the grammar and long before the model, so it costs no network
+call and cannot be mistaken for an address — nothing in this house is named any
+of these words. `nahi` has to be doubled, so "nahi, fan band karo" stays a
+command with a correction in front of it rather than being swallowed.
+
+**Per phone, not per house.** With `who` set, your cancel reverses your own last
+command and nobody else's — several people speak to this place, and a shared slot
+would mean the thing you undo is whatever somebody else said last.
+
+**One step, and five minutes.** Cancel does not become a new cancel point, so a
+second one says there is nothing left. Past five minutes the snapshot is
+discarded rather than trusted: the house has probably moved on.
+
+What it can and cannot put back, which is the whole of the honesty here:
+
+| what you said | what cancel does |
+|---|---|
+| lights, fans, relays, a whole room, a cue | reads the levels before the write and restores them — *"the cobs in Living are back as they were"* |
+| a curtain open or close | **reverses the verb** and says so: *"Closing Main Curtain again. It has no position to report, so this isn't exactly where it was."* |
+| a curtain stop | refuses — stop has no opposite |
+| a television or receiver volume, mute | exact, because a set reports its own state — *"Ashu TV volume is back to 12"* |
+| a television on or off | **refuses, and explains why**: switching it back on lands on the home screen, not on what was playing |
+
+Only what was *spoken*. `/do`, a cron line and the dashboard leave no cancel
+point — a URL firing at 07:15 is not something anybody is about to say "cancel"
+at, and capturing for them would cost every one of those a hub read.
+
+A refusal or a question never overwrites the slot, so asking "what is on" between
+the command and the cancel is safe.
+
+### Saying it so it lands
+
+You do not have to talk like a manual. But three habits make the difference
+between a sentence that works every time and one that sometimes needs repeating.
+
+**Name the room.** There is no notion of "this room" — the phone does not know
+where you are standing, and neither does the hub. *"fan band karo"* has to be
+guessed at; *"ashu ka fan band karo"* cannot be got wrong.
+
+**Name the thing in English.** Verbs in Hindi, nouns in English — which is how
+Hinglish already works, and it happens to match the house: `cobs`, `foot light`,
+`main curtain` are the installer's own labels and the only names the hub knows.
+Every one of them is listed in the family guide below, which is generated from the
+house so it cannot drift.
+
+**One thing per sentence.** *"ashu ki light aur fan band karo"* asks for two
+switches and will get one. Say it twice; each takes about a second.
+
+That is the whole of it. Beyond those, say it however you like — *please*,
+*kindly*, *thoda*, *zara*, *kar do*, *kar dena* all land, and word order is
+loose.
+
+**What each phrasing costs.** Two to four words of terse English never leave the
+box — they hit a grammar on the hub, resolve in about 200 ms, and cost nothing.
+Everything else goes to the model, which is what reads the Hindi, and takes about
+a second.
+
+| you say | how it goes | note |
+|---|---|---|
+| `living off` | free | room + action |
+| `ashu cobs 40` | free | room + circuit + level |
+| `turn off the living lights` | free | *turn*, *the* are filler and drop out |
+| `master warmth-70` | free | the hyphen matters — `warmth 70` is two words |
+| `living room ki light band kar do` | model | too many words for the grammar |
+| `ashu mein kya chalu hai` | model | every question goes to the model |
+
+**Prefixes are enough, until they are not.** `ashu` finds ASHU ROOM and `cob`
+finds the cobs, because a unique prefix matches. Where two things share one, the
+hub says so rather than picking — ask Living for `a` and it answers *"Living mein
+ye all ya ac ho sakta hai — kaunsa?"*. Give it one more letter.
+
+**Numbers mean brightness**, or volume on a screen. `40` is 40% bright;
+`warmth-40` is colour, where 0 is cool and 100 is warm. *garam*, *peela* and
+*warm* all mean warm.
+
+**A curtain only opens, closes or stops.** *"main curtain band karo"* closes it —
+"band" on a curtain is understood as close, not off. It reports nothing back, so
+there is never a position to ask for.
+
+**A television takes power and volume, and nothing cleverer.** on, off, volume,
+louder, quieter, mute. *"netflix laga do"* will tell you the app has to be picked
+on the board — launching one needs a name in the request, which a spoken address
+has nowhere to put.
+
+**The receiver answers to *receiver* as well as to *AVR*.** Its record is named
+AVR and the reply calls it a receiver, so it has to accept both — a device that
+is named one thing and spoken about as another has a name nobody can guess.
+
+**Questions never change anything.** *"kya chalu hai"*, *"AC chal raha hai"*,
+*"TV band hai"* are all read as questions, and a question is never allowed near
+the terse grammar — it always goes to the model, which is the half that knows the
+difference. That guard is why *"is the ashu fan on"* answers instead of switching
+the fan on, which is what it used to do. If you want something switched, use a
+verb: *"band karo"*, not *"band hai"*.
+
+### The guide for everybody else
+
+`data/speaking-to-the-house.html` is a single self-contained page to send to the
+family: how to phrase things, every circuit in every room with what each one can
+actually do, and what each refusal means. No setup instructions — their phones get
+set up for them — and no network requests, so it opens from Messages or Files with
+no Wi-Fi and adapts to a dark phone.
+
+**English for everything explained, Hinglish for everything said.** The prose,
+the headings and the troubleshooting advice are English, because an instruction is
+*read* and reads better in one language. The only Hinglish on the page is the
+phrases themselves — the things you actually say out loud — and they are drawn as
+filled speech bubbles so they cannot be mistaken for prose. A circuit name is an
+outlined chip instead, since a name is a word *inside* a sentence rather than a
+whole one.
+
+Three things stay English inside the phrases too, and each is load-bearing:
+
+- **Every room and circuit name.** They are the installer's labels and the only
+  names the hub knows, so this is the page's loudest line: *pankha* will not work,
+  *fan* will. A guide that let somebody infer Hindi nouns would teach a command
+  that fails.
+- **The left column of the troubleshooting table**, which is the exact English the
+  phone speaks. They have to match what they heard, word for word.
+- **The action words** — `on`, `off`, `up`, `down`, `warm`, `cool`, a number —
+  since those are the free grammar path.
+
+**Every room is collapsed behind a `<details>`.** A reference is scrolled *past*
+far more often than it is read, and seven stacked tables of eight rows each is the
+version nobody scrolls to the end of. Nothing is left out — a name missing from
+this page is a name somebody has to guess — it just opens at a tap, natively, with
+no script on the page at all. Each room carries its own hue, which is doing real
+work: the family find their own room by its colour before they read the word.
+
+```bash
+node tools/make-guide.js http://192.168.1.3:3000
+```
+
+It reads a **running** server rather than `devices.json`, because `/do/<room>`
+already resolves each circuit's kind and the actions it will take by reading the
+dispatch — deriving that a second time is how a guide starts quietly lying, which
+is worse than no guide when the whole point is that nobody has to guess a name.
+Re-run it after a vendor visit or a rename.
+
+Two things it does deliberately. Eleven rows reading *cob 1 … cob 11* fold to one,
+the same reasoning as folding them in a spoken answer: nobody reads to the end.
+And it **drops the hub's shadowed television record**, which `/do` still addresses
+on purpose — offering it to somebody who does not know the difference is the one
+thing this page must not do, since commanding it moves a database row, answers as
+though it worked, and the set carries on playing.
+
+### Setting it up on the hub
+
+The key lives in one file on the box, mode 600, and never on any phone:
+
+```bash
+ssh abneo@192.168.1.3
+umask 077 && cat > ~/dashboard/data/openai-key    # paste the key, then Ctrl-D
+sudo -n systemctl restart neo-dashboard
+```
+
+**Put a spend cap on that key.** This hub has FTP open on port 21 and an
+unauthenticated vendor API on 8090, so a billing limit is the mitigation that
+actually holds — not the file mode.
+
+Optional, in `config.json`: `"openai_model": "gpt-5.6-luna"` is the default and
+costs roughly 10–15p a month at household volumes, since the grammar catches the
+common commands for nothing. `OPENAI_API_KEY` and `OPENAI_MODEL` in the
+environment both win over the file, which is how a test instance runs without
+touching the house's key.
+
+With no key set the endpoint still works for the terse English commands and says
+*"No model key is set on the hub"* for anything else.
+
+---
+
 ## Fire a cue when you get home
 
 The closest this house can get to knowing you have arrived, with no extra

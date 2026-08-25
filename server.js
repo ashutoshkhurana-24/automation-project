@@ -48,6 +48,24 @@ const HUB_PORT = process.env.HUB_PORT || config.hub_port || '8090';
 const HUB_URL = `ws://${HUB_IP}:${HUB_PORT}/bms/1/0/A/`;
 const PORT = process.env.PORT || config.port || 3000;
 
+/* The spoken-command model. Its own file rather than config.json, because
+   /setup rewrites that one from the form and would drop a key it has no field
+   for. The environment still wins, which is how a test instance runs without
+   touching the house's key.
+ *
+ * It cannot live in the systemd unit on this hub: `sudo -n` is refused for
+ * everything except `systemctl restart neo-dashboard`, so Environment= is not
+ * reachable without the password. A mode-600 file read as abneo is what is
+ * actually available. FTP is open on 21 here, so the mitigation that holds is a
+ * spend cap on the key rather than the file mode. */
+const KEY_PATH = path.join(__dirname, 'data', 'openai-key');
+function readKeyFile() {
+  try { return fs.readFileSync(KEY_PATH, 'utf8').trim(); } catch { return ''; }
+}
+const OPENAI_KEY = process.env.OPENAI_API_KEY || readKeyFile();
+const OPENAI_MODEL = process.env.OPENAI_MODEL || config.openai_model || 'gpt-5.6-luna';
+const OPENAI_BASE = process.env.OPENAI_BASE || 'https://api.openai.com';
+
 const JSON_PATH = path.join(__dirname, 'data', 'devices.json');
 const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
 const SCENES_PATH = path.join(__dirname, 'scenes.json');
@@ -3902,6 +3920,35 @@ const UNDO_WINDOW_MS = 5 * 60 * 1000;
 let undoable = null;
 
 /**
+ * One step back per speaker, for "cancel" on /api/say.
+ *
+ * Keyed by who said it, rather than one slot for the house, because several
+ * people speak to this place: a shared slot means the thing your "cancel"
+ * reverses is whatever somebody else said last, which is a worse failure than
+ * not offering cancel at all. The Shortcut sends `who`; a request without one
+ * gets its own anonymous slot, so a phone nobody has updated yet still works.
+ *
+ * Bounded, because `who` arrives in a request body and an unbounded map keyed on
+ * request input grows for as long as somebody feels like sending new names.
+ */
+const spokenBack = new Map();
+const SPOKEN_BACK_MAX = 8;
+
+/** Files one step back against a speaker, dropping the oldest if it is full. */
+function rememberFor(who, step) {
+  const key = String(who || '');
+  /* Deleted before it is set, because Map keeps a key at its original position
+     when you overwrite it — without this the person who speaks most often sits
+     at the front of the queue and is the first one evicted. */
+  spokenBack.delete(key);
+  spokenBack.set(key, { ...step, at: Date.now() });
+  while (spokenBack.size > SPOKEN_BACK_MAX) {
+    // Insertion order, so the first key is now genuinely the least recent.
+    spokenBack.delete(spokenBack.keys().next().value);
+  }
+}
+
+/**
  * How the circuits a cue is about to touch stand right now — a cue built to put
  * them back. Only those circuits: a cue that lights the Living room should undo
  * to the Living room as it was, not reach into rooms it never touched.
@@ -4273,6 +4320,47 @@ function pick(want, candidates) {
   if (near.length === 1) return { hit: near[0] };
   if (near.length > 1) return { ambiguous: near.map(c => c.slug) };
   return { none: true };
+}
+
+/* The two Hindi nouns this house actually says, resolved by **kind** and never
+ * by name — which is the whole reason they are here rather than in a synonym
+ * table. `parda` aliased to the word "curtain" would be matched by pick() as a
+ * prefix, and in LIVING the only circuit *starting* with it is CURTAIN ROPE,
+ * which is a light (`app_type` L) sitting beside two motors that are not. So
+ * "living ka parda kholo" would have addressed a lamp.
+ *
+ * Deliberately just these two. Every other Hindi noun stays out: a table of them
+ * is a table of guesses, and a guess that resolves switches something on in a
+ * room somebody is sitting in. The model reads the rest of the sentence anyway —
+ * these two are here so the *grammar* path gets them too, for nothing.
+ *
+ * Returns null when the word is not one of them, an array otherwise — which may
+ * be empty (no such thing in this room) or hold several (say which).
+ */
+const HINDI_FAN = /^(?:pankha|pankhe|pankhaa|pankhaaa)$/;
+const HINDI_CURTAIN = /^(?:parda|parde|pardaa|pardah|pardey|pardae)$/;
+
+/* The same two words as they arrive inside a whole sentence, which is how the
+   model path needs them — see the note at the `control` branch of /api/say. */
+const HINDI_NOUN_SAID =
+  /\b(pankha|pankhe|pankhaa|pankhaaa|parda|parde|pardaa|pardah|pardey|pardae)\b/i;
+
+function hindiCircuits(want, circuits) {
+  /* `every` rather than `some`, so a collective name is not swept in: ASHU's
+     `all` holds the fan among ten other things, and "pankha" does not mean the
+     room. A group of one fan still qualifies, which is what every room has. */
+  const allOf = (test) => circuits.filter(
+    (c) => c.records.length && c.records.every(test));
+
+  if (HINDI_FAN.test(want)) {
+    /* The same test circuitsOf() uses, override first — this hub's own isFan
+       flag reads false for all four of the actual fans in the house. */
+    return allOf((r) => (KIND_OVERRIDES[String(r.record_id)] || '') === 'fan'
+      || (!KIND_OVERRIDES[String(r.record_id)]
+          && (r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || '')))));
+  }
+  if (HINDI_CURTAIN.test(want)) return allOf((r) => (r.app_type || '') === 'C');
+  return null;
 }
 
 /** Every circuit of a room, plus the collective names worth having. */
@@ -4817,7 +4905,14 @@ app.all('/do/:room/:circuit/:action/:also', (req, res) =>
   runAddress(req, res, req.params.room, req.params.circuit,
              req.params.action + '+' + req.params.also));
 
-async function runAddress(req, res, roomWord, circuitWord, actionWord) {
+/**
+ * @param remember Optional. Called with one step back if the write succeeds, so
+ *   a spoken command can be cancelled. `/do` passes nothing and is unchanged by
+ *   this: a URL somebody typed or a cron line firing is not something a person
+ *   is about to say "cancel" at, and capturing for them would cost every one of
+ *   those a hub read they do not need.
+ */
+async function runAddress(req, res, roomWord, circuitWord, actionWord, remember) {
   if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
   // Split before slugging, not after: slug() turns every run of punctuation
   // into a hyphen, so a '+' joiner would be eaten and `40+warm` would arrive
@@ -4844,8 +4939,12 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
     roomName = found.hit.name;
   }
 
-  // A relative or toggling action is only as good as its reading of now.
-  if (words.some(w => ['toggle', 'up', 'down', 'warmer', 'cooler'].includes(w))
+  /* A relative or toggling action is only as good as its reading of now — and so
+     is a cancel, one step further on. Undoing to a reading that was already
+     stale when we took it puts the room somewhere it never was, which is the
+     failure fireCue guards against for cues; the same guard, for the same
+     reason, when somebody is going to be able to say "cancel" at this. */
+  if ((remember || words.some(w => ['toggle', 'up', 'down', 'warmer', 'cooler'].includes(w)))
       && (!hubSync.taken || Date.now() - hubSync.taken > 4000)) {
     await readHubStateFresh().catch(() => {});
   }
@@ -4856,14 +4955,36 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
     target = { slug: 'all', label: 'Everything',
       records: all.filter(r => (r.app_type || '') !== 'C') };
   } else {
-    const found = pick(slug(circuitWord), circuitsOf(roomName));
-    if (!found.hit) {
-      return res.status(found.ambiguous ? 300 : 404).json({
-        ok: false, error: found.ambiguous ? 'That could be more than one circuit' : 'No such circuit here',
-        known: found.ambiguous || circuitsOf(roomName).map(c => c.slug),
-        spoken: 'I cannot find that one' });
+    const here = circuitsOf(roomName);
+    const asked = slug(circuitWord);
+    const hindi = hindiCircuits(asked, here);
+    if (hindi) {
+      /* Named by kind, so the answer is "which one" rather than a prefix list —
+         and it says the names out loud, since somebody who reached for the Hindi
+         word does not know what the installer called it. */
+      if (hindi.length !== 1) {
+        const what = HINDI_CURTAIN.test(asked) ? 'curtain' : 'fan';
+        return res.status(hindi.length ? 300 : 404).json({
+          ok: false,
+          error: hindi.length ? 'More than one ' + what + ' here' : 'No ' + what + ' here',
+          known: hindi.map(c => c.slug),
+          spoken: hindi.length
+            ? 'There is more than one ' + what + ' in ' + title_(roomName) + '. Say '
+              + hindi.map(c => c.label).join(' or ')
+            : 'There is no ' + what + ' in ' + title_(roomName),
+        });
+      }
+      target = hindi[0];
+    } else {
+      const found = pick(asked, here);
+      if (!found.hit) {
+        return res.status(found.ambiguous ? 300 : 404).json({
+          ok: false, error: found.ambiguous ? 'That could be more than one circuit' : 'No such circuit here',
+          known: found.ambiguous || here.map(c => c.slug),
+          spoken: 'I cannot find that one' });
+      }
+      target = found.hit;
     }
-    target = found.hit;
   }
   const label = target.label.charAt(0).toUpperCase() + target.label.slice(1);
 
@@ -4878,6 +4999,15 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
     }
     try {
       for (const rec of curtains) await sendToHub(rec.record_id, {}, CURTAIN_VERB[action]);
+      /* The verb, not a position — a curtain reports none, so the only thing
+         there is to remember is what it was told. Cancel reverses the verb and
+         says as much out loud. `stop` is kept deliberately, so cancel can
+         explain that there is nothing to reverse rather than claim no command
+         was ever given. */
+      if (remember) {
+        remember({ kind: 'curtain', label, room: roomName, action,
+                   ids: curtains.map(r => r.record_id) });
+      }
       return res.json({ ok: true, room: roomName, circuit: target.slug, action,
         count: curtains.length, spoken: label + ' ' + (action === 'stop' ? 'stopped' : action) });
     } catch (err) {
@@ -4904,8 +5034,16 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
       spoken: label + ' cannot change colour' });
   }
 
+  /* Read before the write, or there is nothing left to read. Kept aside and only
+     filed once the hub has taken it, so a command that failed does not leave a
+     cancel behind that would "put back" something that never moved. */
+  const back = remember ? captureBefore(target.records).before : null;
+
   try {
     const wrote = await setRecords(target.records, sent);
+    if (remember && back && back.length) {
+      remember({ kind: 'records', label, room: roomName, steps: back });
+    }
     res.json({ ok: true, room: roomName === 'HOUSE' ? 'house' : slug(roomName),
       circuit: target.slug, action, count: target.records.length, sent: wrote,
       ...sent, spoken: spokenFor(label, roomName, sent) });
@@ -4914,6 +5052,1132 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord) {
     res.status(502).json({ ok: false, error: err.message, spoken: 'The hub did not answer' });
   }
 }
+
+/* Asking the house a question rather than telling it something.
+ *
+ * The model's only job here is to name the room, and optionally the circuit —
+ * the *answer* is written below, in code. That split is deliberate and it is the
+ * whole reason this is safe: the reading of this house is not uniform, and a
+ * model handed a list of levels would flatten the difference. A relay reports
+ * back, so a lamp at 40% is a fact. An infrared air conditioner reports nothing
+ * ever, so its state is only what the hub last sent. A curtain has no position
+ * to read at all. Those three have to be said in three different ways, every
+ * time, and that is not something to leave to a sentence generator that has
+ * been asked to be helpful.
+ *
+ * One round trip, therefore: no second call to hand the state back and ask for
+ * prose. Latency is the product here, and the wording is ours anyway. */
+
+/* The televisions and the receiver, as addresses a question can name.
+ *
+ * They are not in `devices` and never were — they are spoken to directly, over
+ * SSAP and Denon's control port — so circuitsOf() cannot see them. For the
+ * board that is handled; for a question it was the worst hole available,
+ * because these are the only things in the house whose state is a genuine
+ * reading. "Living room mein kya chalu hai" that omits the television answers
+ * the easy half of the question and sounds authoritative doing it.
+ *
+ * Shaped like a circuit — slug and label — so pick() works on them unchanged,
+ * but carrying its own link and its own sentence, because neither the level
+ * arithmetic nor the wording in readingOf() applies to a screen. */
+function directlyRead(roomName) {
+  const here = roomKey(roomName);
+  const out = [];
+  const add = (link, snap, read) => out.push({
+    slug: slug(String(snap.name || '')), label: String(snap.name || ''),
+    on: !!snap.status, link, snap, read,
+  });
+  // The same var guards deviceList() uses: this can be called before the links
+  // are wired, and reading a const too early throws rather than answering falsy.
+  if (TV_READY) {
+    for (const t of tvs.values()) {
+      if (roomKey(t.room) !== here) continue;
+      const snap = t.snapshot();
+      add(t, snap, () => tvReading(snap));
+    }
+  }
+  if (AVR_READY) {
+    for (const a of avrs.values()) {
+      if (roomKey(a.room) !== here) continue;
+      const snap = a.snapshot();
+      add(a, snap, () => avrReading(snap));
+    }
+  }
+  return out;
+}
+
+/** A television, which answers for itself — so no hedging clause on this one. */
+function tvReading(snap) {
+  const name = String(snap.name || 'TV');
+  if (!snap.status) return name + ' is off';
+  /* tv_app is the launcher's own id — `youtube.leanback.v4` and such — and the
+     set sends the titles alongside it, so the title is what gets said and the
+     id is only the fallback. Nobody asks whether the television is showing
+     netflix dot app. */
+  const app = (snap.tv_apps || []).find((a) => a.id === snap.tv_app);
+  const bits = [];
+  if (snap.tv_app) bits.push('showing ' + (app ? app.title : snap.tv_app));
+  if (snap.tv_muted) bits.push('muted');
+  else if (snap.tv_volume != null) bits.push('volume ' + snap.tv_volume);
+  return name + ' is on' + (bits.length ? ', ' + bits.join(', ') : '');
+}
+
+/** The receiver, in the three states the board's own panel distinguishes, and
+    in the same words — this unit answers in standby, so silence means it is
+    off at the wall rather than merely asleep. */
+function avrReading(snap) {
+  const name = String(snap.name || 'AVR');
+  if (!snap.avr_online) return name + ' is not answering \u2014 off at the wall, or unplugged';
+  if (!snap.status) return name + ' is in standby';
+  // The source's own label, not its code: GAME is called PS5 on this unit.
+  const src = (snap.avr_sources || []).find((x) => x.code === snap.avr_input);
+  return name + ' is on, playing ' + (src ? src.name : snap.avr_input)
+    + ' at ' + snap.avr_volume + (snap.avr_muted ? ', muted' : '');
+}
+
+/** One circuit, said the way its own hardware allows. Never names the room —
+    the caller puts that in front, because these end in clauses and a room
+    appended after one reads as "...and cannot check in Ashu Room". */
+function readingOf(label, records) {
+  /* A group's label already carries its article — "the cobs" — so it stays
+     lowercase mid-sentence, while a single circuit's name is the installer's own
+     and reads as a proper noun. And several circuits take a plural verb: "the
+     cobs is at 60%" is the sort of thing nobody says out loud. */
+  const group = /^the\s/.test(label);
+  const name = group ? label : label.charAt(0).toUpperCase() + label.slice(1);
+  const be = records.length > 1 ? ' are' : ' is';
+  const lvl = levelOf(records);
+  const on = lvl > 0;
+
+  // Nothing to read, and never has been. Saying "closed" would be inventing it.
+  if (records.some(isCurtainRecord)) {
+    return name + ' has no position to report \u2014 a curtain tells the hub nothing';
+  }
+
+  // One-way infrared: this is the hub's own note of what it last sent, which is
+  // a different claim from a reading and has to sound like one.
+  if (records.some((r) => isAcRecord(r) || isPrjRecord(r))) {
+    return 'the hub last sent ' + name + ' ' + (on ? 'on' : 'off') + ', and cannot check';
+  }
+
+  if (!on) return name + be + ' off';
+  const dimmable = records.some((r) => r.is_dimmable === 'true' || r.is_tunable === 'true');
+  const tune = records.some((r) => r.is_tunable === 'true') ? tuneOf(records) : null;
+  return name
+    + (dimmable && lvl < 100 ? be + ' at ' + lvl + '%' : be + ' on')
+    + (tune != null ? ', ' + warmthName(tune) : '');
+}
+
+/** The spoken answer to "what is on". */
+function houseReading(roomWord, circuitWord) {
+  const index = roomsIndex();
+  const want = slug(roomWord || 'house');
+
+  if (want === 'house' || want === 'everywhere') {
+    const lit = [];
+    const screens = [];
+    for (const [, name] of index) {
+      const n = liveCircuits(name).filter((c) => c.records.length === 1
+        && !isCurtainRecord(c.records[0])
+        && decodeLevel(c.records[0].device_status) > 0).length;
+      if (n) lit.push(n + ' in ' + title_(name));
+      /* Named rather than folded into the count, because a television left on
+         is the one thing somebody leaving the house actually wants told, and
+         "4 in Living" buries it among the lamps. */
+      for (const d of directlyRead(name)) {
+        if (d.on) screens.push(d.label + ' in ' + title_(name));
+      }
+    }
+    const say = [];
+    if (lit.length) say.push('On now: ' + lit.join(', '));
+    if (screens.length) say.push((lit.length ? 'Also on: ' : 'On now: ') + screens.join(', '));
+    if (!say.length) {
+      return 'Nothing is on anywhere \u2014 though the air conditioners and the projector cannot be checked';
+    }
+    return say.join('. ');
+  }
+
+  const found = pick(want, [...index].map(([sl, name]) => ({ slug: sl, name })));
+  if (!found.hit) return 'I do not know that room';
+  const roomName = found.hit.name;
+  const where = 'In ' + title_(roomName) + ', ';
+  const circuits = liveCircuits(roomName);
+  const direct = directlyRead(roomName);
+
+  // A named circuit is answered on its own, however it reads.
+  if (circuitWord && slug(circuitWord) !== 'all') {
+    /* The two Hindi nouns resolve by kind here too. A wrong *reading* is milder
+       than a wrong action, but it is still the house saying something untrue —
+       "Curtain rope is off" to somebody who asked about the curtain. */
+    const asked = slug(circuitWord);
+    const hindi = hindiCircuits(asked, circuits);
+    if (hindi) {
+      const what = HINDI_CURTAIN.test(asked) ? 'curtain' : 'fan';
+      if (!hindi.length) return 'There is no ' + what + ' in ' + title_(roomName);
+      if (hindi.length > 1) {
+        return 'In ' + title_(roomName) + ' that could be '
+          + hindi.map((c) => c.label).join(' or ') + ' \u2014 which one?';
+      }
+      return where + readingOf(hindi[0].label, hindi[0].records);
+    }
+    const one = pick(asked, [...circuits, ...direct]);
+    /* Ambiguity said out loud rather than swallowed. pick() already refuses to
+       guess; answering "I cannot find that one" when the truth is that two
+       things match would send somebody looking for a name that is there. */
+    if (one.ambiguous) {
+      return 'In ' + title_(roomName) + ' that could be '
+        + one.ambiguous.join(' or ') + ' \u2014 which one?';
+    }
+    if (!one.hit) return 'I cannot find that one in ' + title_(roomName);
+    return where + (one.hit.read ? one.hit.read() : readingOf(one.hit.label, one.hit.records));
+  }
+
+  /* Singles only, so a lamp is not counted again as a member of `cobs` and
+     `lights`. The groups are addresses for commanding, not things in the room. */
+  const singles = circuits.filter((c) => c.records.length === 1);
+  const isIr = (c) => isAcRecord(c.records[0]) || isPrjRecord(c.records[0]);
+  const on = singles.filter((c) => !isCurtainRecord(c.records[0]) && !isIr(c)
+    && decodeLevel(c.records[0].device_status) > 0);
+  const irOn = singles.filter((c) => isIr(c) && decodeLevel(c.records[0].device_status) > 0);
+
+  /* Where a whole group is on at one level, the group's name says it.
+   *
+   * Read out one circuit at a time, Living came back as eleven consecutive
+   * "Cob 3 is on" clauses — about fifteen seconds of speech, and nobody is still
+   * listening by the fourth. "The cobs are on" is the same fact in four words,
+   * in the name the installer gave them, which is what they are called in the
+   * room anyway.
+   *
+   * Only groups whose label is already a plural noun phrase — "the cobs", "the
+   * lights" — because readingOf() puts a plural verb after a multi-record group
+   * and `all` is labelled "everything", which would come out as "everything are
+   * on". Largest first, so eleven cobs fold into `the lights` if that group is
+   * wholly on too rather than being said twice. Three is the floor: folding a
+   * pair loses both names to save no time at all. */
+  const onIds = new Set(on.map((c) => String(c.records[0].record_id)));
+  const spent = new Set();
+  const folded = [];
+  const foldable = circuits
+    .filter((c) => c.records.length >= 3 && /^the\s/.test(c.label))
+    .sort((a, b) => b.records.length - a.records.length);
+  for (const g of foldable) {
+    const ids = g.records.map((r) => String(r.record_id));
+    if (!ids.every((id) => onIds.has(id) && !spent.has(id))) continue;
+    // One level across the group, or the sentence would have to name them all
+    // anyway — and "the cobs are on" about a group at four different levels is
+    // the kind of averaging this whole function exists to avoid.
+    if (new Set(g.records.map((r) => decodeLevel(r.device_status))).size > 1) continue;
+    folded.push(readingOf(g.label, g.records));
+    for (const id of ids) spent.add(id);
+  }
+  const loose = on.filter((c) => !spent.has(String(c.records[0].record_id)));
+
+  const parts = [];
+  const lit = [...folded, ...loose.map((c) => readingOf(c.label, c.records))];
+  if (lit.length) parts.push(lit.join(', '));
+  // The screens next, and stated flatly: they are readings, like the lamps.
+  const directOn = direct.filter((d) => d.on);
+  if (directOn.length) {
+    parts.push((parts.length ? 'and ' : '') + directOn.map((d) => d.read()).join(', '));
+  }
+  if (irOn.length) {
+    /* The leading "and" only when there is something for it to follow.
+       Unconditional, it produced "In Living, and the hub last sent AC on" in
+       the one case where the infrared unit was all there was. */
+    parts.push((parts.length ? 'and ' : '') + 'the hub last sent '
+      + irOn.map((c) => title_(c.label)).join(' and ') + ' on, which it cannot check');
+  }
+  if (!parts.length) {
+    return 'Nothing is on in ' + title_(roomName)
+      + (singles.some(isIr) ? ' \u2014 though the infrared units cannot be checked' : '');
+  }
+  return where + parts.join(' ');
+}
+
+/* Circuits worth reading out, which is not quite the set worth commanding.
+ *
+ * The hub keeps its own record for a television it can no longer speak for —
+ * 517 "T.V" in ASHU ROOM — and the board already hides it wherever the set is
+ * driven directly, for exactly this reason. Left in a spoken answer it is
+ * worse than clutter: the room would report two things called TV, one read from
+ * the set and one remembered by the hub, with nothing in the sentence saying
+ * which to believe. /do still addresses it, deliberately, so the filter lives
+ * here rather than in circuitsOf(). */
+function liveCircuits(roomName) {
+  return circuitsOf(roomName)
+    .filter((c) => !c.records.every((r) => shadowedByTv(r, roomName)));
+}
+
+/* Commanding a screen, which runAddress cannot do — and the other half of the
+ * same hole rather than a second feature.
+ *
+ * Once `look` can say the television is on, "TV band karo" is the next sentence
+ * anybody says. Without this it resolves to the hub's shadowed record, moves a
+ * row in a database, and answers "Done" while the set plays on. A confident lie
+ * is the one outcome worth spending code to avoid, and both link classes already
+ * implement these verbs.
+ *
+ * Only the verbs both classes share. Launching an app, picking a source and
+ * casting a video stay on /api/tv and /api/avr, where they have an argument to
+ * carry a name — squeezed into a three-word address they would need a grammar
+ * of their own.
+ *
+ * Returns null when the address is not a screen, which is the signal to the
+ * caller to carry on to runAddress as before. */
+async function screenCommand(roomWord, circuitWord, action, remember) {
+  const index = roomsIndex();
+  const room = pick(slug(roomWord || ''), [...index].map(([sl, name]) => ({ slug: sl, name })));
+  if (!room.hit) return null;
+  /* The record is named AVR and the reply calls it a receiver, so it has to
+     answer to one: a device that names itself differently from the way it is
+     spoken about is a name nobody can guess. */
+  const asked = slug(circuitWord || '').replace(/^receivers?$/, 'avr');
+  const found = pick(asked, directlyRead(room.hit.name));
+  if (!found.hit) return null;
+  const it = found.hit;
+
+  const acts = String(action || '').split('+').filter(Boolean);
+  if (acts.length !== 1) return { ok: false, spoken: it.label + ' takes one thing at a time' };
+  const a = slug(acts[0]);
+  // Resolved here rather than passed down, because only this side knows the
+  // current state — and for a screen that state is read, not remembered.
+  const want = a === 'toggle' ? (it.on ? 'off' : 'on') : a;
+  const vol = /^\d{1,3}$/.test(want) ? Number(want) : null;
+  const refuse = {
+    ok: false,
+    spoken: it.label + ' takes on, off, a volume, up, down, mute or unmute',
+  };
+
+  try {
+    /* What it would take to put this back, worked out before anything is sent —
+       once it has, the reading is the new one.
+       Volume and mute only, and that is the honest limit rather than a shortcut:
+       both are read off the set, so cancel restores a fact. Power is remembered
+       as a refusal instead, because switching a television back on lands it on
+       its home screen rather than on what was playing, and a cancel that
+       interrupts you a second time is not a cancel. */
+    const undoStep = (() => {
+      if (!remember) return null;
+      if (want === 'on' || want === 'off') return { kind: 'screen-power', label: it.label };
+      const wasVol = it.snap.is_tv ? it.snap.tv_volume : it.snap.avr_volume;
+      const wasMute = it.snap.is_tv ? it.snap.tv_muted : it.snap.avr_muted;
+      if (want === 'mute' || want === 'unmute') {
+        return wasMute == null ? null
+          : { kind: 'screen', label: it.label, link: it.link, want: { mute: !!wasMute } };
+      }
+      if (want === 'up' || want === 'down' || vol != null) {
+        return wasVol == null ? null
+          : { kind: 'screen', label: it.label, link: it.link, want: { volume: wasVol } };
+      }
+      return null;   // a refusal changed nothing, so there is nothing to cancel
+    })();
+    /* The link is held rather than the address, so cancel talks to the same set
+       even if the words would resolve differently by then. */
+    const keep = (out) => {
+      if (undoStep && out && out.ok !== false) remember(undoStep);
+      return out;
+    };
+
+    if (it.snap.is_tv) {
+      // A television's own methods already word their replies, for /do and Siri.
+      if (want === 'on' || want === 'off') return keep(await it.link.setPower(want === 'on'));
+      if (want === 'up' || want === 'down') return keep(await it.link.stepVolume(want === 'up' ? 1 : -1));
+      if (want === 'mute' || want === 'unmute') return keep(await it.link.setMute(want === 'mute'));
+      if (vol != null) return keep(await it.link.setVolume(vol));
+      return refuse;
+    }
+
+    /* The receiver's methods return bare promises — the unit's own pushes are
+       what update the state — so the wait and the wording are done here, with
+       the same avrSettle and avrSpoken /api/avr uses. Waiting for the unit to
+       confirm rather than for a fixed interval is the whole reason its replies
+       can be trusted as readings. */
+    const asked = {};
+    if (want === 'on' || want === 'off') { asked.on = want === 'on'; await it.link.setPower(asked.on); }
+    else if (want === 'up' || want === 'down') { asked.step = want === 'up' ? 1 : -1; await it.link.stepVolume(asked.step); }
+    else if (want === 'mute' || want === 'unmute') { asked.mute = want === 'mute'; await it.link.setMute(asked.mute); }
+    else if (vol != null) { asked.volume = vol; await it.link.setVolume(vol); }
+    else return refuse;
+
+    await avrSettle(it.link, () => {
+      if (asked.on != null && it.link.power !== asked.on) return false;
+      if (asked.mute != null && it.link.muted !== asked.mute) return false;
+      return true;
+    });
+    pushSoon();
+    return keep({ ok: true, spoken: avrSpoken(it.link, asked) });
+  } catch (err) {
+    // The receiver rejects outright when nothing is listening, which on this
+    // unit means unplugged rather than asleep. Worth saying, not swallowing.
+    return { ok: false, spoken: it.label + ' did not answer \u2014 ' + err.message };
+  }
+}
+
+
+/* ── the reply, tuned for the phone's own voice ───────────────────────
+ *
+ * The Shortcut hands the reply to iOS `Speak Text`, so it has to be pleasant
+ * *aloud* rather than merely correct on a screen. `spokenFor` and `readingOf`
+ * were written for /do, where a reply is read as JSON and where every cron line
+ * and shortcut in this house already depends on the exact words — so nothing
+ * there moves. The rewrite happens at one boundary, the `say()` wrapper below,
+ * and the original travels beside it as `said`.
+ *
+ * A rewriter over the finished English rather than a second set of sentence
+ * builders, because every producer is ours and the set of shapes is therefore
+ * closed: spokenFor, readingOf, houseReading, tvReading, avrReading, avrSpoken,
+ * the television's own replies, and about twenty fixed strings. A shape that is
+ * missed falls through unchanged, which is the right way to fail — still true
+ * and still understandable, only clipped.
+ *
+ * Four things the voice wants, each of them something it does badly otherwise:
+ *
+ *  - A verb. "Foot light in Ashu Room off" is a caption; spoken, it is three
+ *    unrelated words with no shape to them. "Foot light in Ashu Room is now
+ *    off." falls at the stop, which is how a listener hears that it has ended.
+ *  - Lower case for an acronym meant to be read as a word. iOS spells a
+ *    capitalised one out, so "the COBs" arrives as "the C O B s". `AC`, `TV` and
+ *    `LED` are *wanted* letter by letter and stay upper case, while `AVR`
+ *    becomes "receiver" — easier to say, and what anybody here calls it.
+ *  - No em dash. It reads as a pause of unguessable length, and what hangs off
+ *    one in these sentences is always their wordiest half. Two short sentences.
+ *  - Contractions. "I can't find that" is speech; "I cannot find that" is a
+ *    manual, and the voice makes the difference audible.
+ */
+
+/** "the cobs are", "Cob 1 is". The label carries the number, so this reads the
+    label rather than counting records — spokenFor says "the lights" for a group
+    of one, and "the lights is now on" is the sort of thing nobody says. */
+const SPEAK_PLURAL = /^the\s+\S*s\b/i;
+
+/** A reading must never reach the rules below: it can end in "at 40%" or
+    "muted" exactly as a confirmation does, and "Reading Light is is now at 40%"
+    is what happens when one of them gets at it. The ambiguity refusal also
+    opens with "In", hence the exclusion rather than a bare prefix test. */
+const SPEAK_READING =
+  /^(?:In (?!.+ that could be )|Nothing is on\b|On now:|Also on:)/;
+
+/** Whole-sentence rules, first match wins. These give a confirmation its verb;
+    everything they capture as $1 is the subject, so the agreement is decided
+    once, in `be()`. */
+const SPEAK_WHOLE = [
+  // A curtain is still moving when we answer, so it is not "is open".
+  [/^(.+) open$/, (s) => s + ' is opening'],
+  [/^(.+) close$/, (s) => s + ' is closing'],
+  [/^(.+) stopped$/, (s) => s + ' has stopped'],
+
+  // The receiver states its source and volume together. Before the bare
+  // on/off rule, which would otherwise never see it, and before the level
+  // rules, whose "at" is a percentage rather than a dial reading.
+  [/^(.+) on, (.+) at ([\d.]+)$/, (s, what, vol) => s + ' is on, playing ' + what + ' at ' + vol],
+
+  [/^(.+) at volume (\d+)$/, (s, vol) => s + ' is at volume ' + vol],
+  [/^(.+) (waking up|louder|quieter|muted|unmuted|unchanged)$/, (s, w) => s + ' ' + be(s) + ' ' + w],
+
+  [/^(.+) at (\d+%) and set to (.+)$/,
+    (s, lvl, warm) => s + ' ' + be(s) + ' now at ' + lvl + ' and set to ' + warm],
+  [/^(.+) at (\d+%)$/, (s, lvl) => s + ' ' + be(s) + ' now at ' + lvl],
+  [/^(.+) set to (.+)$/, (s, warm) => s + ' ' + be(s) + ' now set to ' + warm],
+  [/^(.+) (on|off)$/, (s, w) => s + ' ' + be(s) + ' now ' + w],
+
+  // Scenes. "was already out" is true of a light and odd about a scene.
+  [/^(.+) was already out$/, (s) => s + ' was already off'],
+  [/^(.+) set, but (\d+) did not take$/, (s, n) => s + ' is set, but ' + n + ' did not take'],
+  [/^(.+) (set|cleared)$/, (s, w) => s + ' ' + be(s) + ' ' + w],
+];
+
+/** Rewritten in place, so these are safe on a reading and on a whole-room
+    answer that carries several of them. Each one replaces a clause written to
+    be *read* with one that can be said in a breath. */
+const SPEAK_CLAUSE = [
+  // "a curtain tells the hub nothing" is the reason, and the reason is not
+  // what somebody standing in the room asked for.
+  [/ has no position to report \u2014 a curtain tells the hub nothing/g,
+    ' does not report its position'],
+
+  // The hedge has to survive: this is what the hub last sent, not a reading.
+  [/, and cannot check\b/g, ', but cannot check it'],
+  [/, which it cannot check\b/g, ', but cannot check it'],
+
+  [/ is not answering \u2014 off at the wall, or unplugged/g,
+    ' is not answering. It may be switched off at the wall'],
+  [/ did not answer \u2014 .*$/, ' did not answer'],
+
+  // An em dash with "though" after it is a second sentence wearing a costume.
+  [/ \u2014 though /g, '. '],
+
+  [/ takes on, off, a volume, up, down, mute or unmute$/,
+    ' only does on, off, volume, louder, quieter and mute'],
+  [/ takes one thing at a time$/, ' can only do one thing at a time'],
+  [/^A curtain only opens, closes or stops$/, 'A curtain can only open, close or stop'],
+  [/^(.+) cannot find that one\b/, '$1 cannot find that'],
+];
+
+/** Applied to every reply, whichever road it came down. */
+const SPEAK_TIDY = [
+  /* Spelled out is what these want — but only in capitals. A slug from pick()'s
+     ambiguity error, or a television naming itself "ashu tv", arrives lower case
+     and the voice reads it as a word ("ack"), so they are lifted first. */
+  [/\b(ac|tv|led|hdmi)\b/g, (m) => m.toUpperCase()],
+
+  // iOS spells a capitalised acronym out, so this is the difference between
+  // "the cobs" and "the C O B s". AC, TV and LED are wanted spelled and stay.
+  [/\bCOBs\b/g, 'cobs'],
+  [/\bCOB\b/g, 'Cob'],
+  // Nobody in the house says "A V R", and the voice would.
+  [/\bAVR\b/gi, 'receiver'],
+  [/(^|, )receiver\b/g, '$1the receiver'],
+
+  // Any em dash still standing is a pause of unguessable length.
+  [/\s*\u2014\s*/g, '. '],
+
+  [/\bcannot\b/g, "can't"],
+  [/\bdid not\b/g, "didn't"],
+  [/\bdoes not\b/g, "doesn't"],
+  [/\bdo not\b/g, "don't"],
+  [/\bis not\b/g, "isn't"],
+  [/\bwas not\b/g, "wasn't"],
+  [/\bcould not\b/g, "couldn't"],
+];
+
+/** "is" or "are" for a subject, which may carry a room: "the cobs in Living". */
+function be(subject) {
+  return SPEAK_PLURAL.test(String(subject)) ? 'are' : 'is';
+}
+
+function speakable(text) {
+  let out = String(text || '').trim();
+  if (!out) return out;
+
+  if (!SPEAK_READING.test(out)) {
+    for (const [re, build] of SPEAK_WHOLE) {
+      const m = out.match(re);
+      if (m) { out = build(...m.slice(1)); break; }
+    }
+  }
+
+  for (const [re, to] of SPEAK_CLAUSE) out = out.replace(re, to);
+  for (const [re, to] of SPEAK_TIDY) out = out.replace(re, to);
+
+  // The voice needs to know where a sentence ends, and where the next begins.
+  out = out.charAt(0).toUpperCase() + out.slice(1);
+  out = out.replace(/([.!?])\s+([a-z])/g, (m, stop, c) => stop + ' ' + c.toUpperCase());
+  return /[.!?]$/.test(out) ? out : out + '.';
+}
+
+
+/* ── spoken commands ──────────────────────────────────────────────────────
+ *
+ * POST /api/say {text} — a sentence in, a sentence out. A Shortcut dictates,
+ * posts here, and speaks the reply; the phone does the listening and the
+ * talking, both of which iOS does for free and on-device.
+ *
+ * Almost nothing happens here, and that is the point: `runAddress` above is
+ * already the executor for every /do shape, so this only has to turn a sentence
+ * into three words and hand them over. Everything that matters — unique-prefix
+ * matching, ambiguity as an error rather than a guess, the stale-cache re-read
+ * before a relative action, the curtain verb path, refusing a colour to a lamp
+ * that has no second channel, and the spoken wording itself — is already there
+ * and is not restated.
+ *
+ * Two paths. Terse input that is already in the command bar's grammar
+ * (`living off`, `ashu cobs 40`) resolves here for nothing and never leaves the
+ * box. Everything else goes to the model, which is what carries **Hinglish** —
+ * the main language this is spoken in. Hand-writing a Hindi vocabulary was
+ * tried on paper and abandoned: `band karo` means *off* for a lamp and *close*
+ * for a curtain, "thoda kam" is a judgement rather than a number, and every one
+ * of those is a silent wrong answer. A model reads it correctly and costs a
+ * fifth of a penny. */
+
+/* Filler only — never a word that carries meaning. `on` and `off` are actions
+   and must survive; `room` goes because rooms slug as `ashu-room` and match on
+   prefix, so "ashu room ka fan" wants to become "ashu fan". Nothing in this
+   house is called ROOM, checked against all 34 circuit names. */
+const SAY_FILLER = new Set(['turn', 'switch', 'set', 'make', 'put', 'the', 'a', 'an',
+  'please', 'to', 'and', 'in', 'my', 'of', 'is', 'it', 'room', 'kindly', 'just']);
+
+const SAY_NUMBER = { ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, full: 100, half: 50 };
+
+/* A question must never reach the command grammar.
+ *
+ * "is the ashu fan on" strips down to [ashu, fan, on] once `is` and `the` are
+ * dropped as filler — a perfectly good command, and that is what it became:
+ * asking whether the fan was on **switched it on**. Found against the live house.
+ * "what is on" fared differently and no better, parsing as a command addressed to
+ * a room called `what` and answering "I do not know that room" while the guide
+ * promised it worked.
+ *
+ * The grammar has no notion of a question and cannot be given one — it matches
+ * three words against an address, and an address has no mood. So questions are
+ * kept away from it and handed to the model, which does have the notion.
+ *
+ * Deliberately generous, because the two mistakes do not cost the same. A command
+ * mistaken for a question still works: it goes to the model and comes back right,
+ * for a fraction of a paisa. A question mistaken for a command switches something
+ * on in a room somebody is sitting in. When in doubt, it is a question. */
+const SAY_ASKS = new RegExp([
+  /* A question mark, wherever it falls. Dictation rarely produces one, but this
+     endpoint takes typed text on the same grammar. */
+  '\\?',
+  // An interrogative opening. None of these begins a command in either language.
+  '^\\s*(?:what|which|where|when|why|how|who|is|are|was|were|do|does|did|can|could'
+    + '|kya|kaun|kitna|kitne|kahan|kaisa|kaisi|kaise|kab)\\b',
+  // Or the Hinglish shapes that ask without opening with a question word.
+  '\\b(?:chal raha|chal rahi|chalu hai|band hai|on hai|off hai|khula hai|batao)\\b',
+].join('|'), 'i');
+
+/**
+ * A sentence to three words, or null.
+ *
+ * Null is the safe answer and is chosen freely: a wrong guess switches the
+ * wrong thing silently, while falling through to the model costs 300ms. So
+ * this only ever succeeds on input that is already the command bar's grammar.
+ */
+function speechWords(text) {
+  if (SAY_ASKS.test(String(text))) return null;
+  const w = String(text).toLowerCase()
+    /* Hyphens survive, and that is not cosmetic: they are inside the grammar's
+       own words — `warmth-70`, `main-curtain`, `foot-light`. Stripping them made
+       `warmth-70` parse as the circuit "warmth" at level 70, and put
+       `main-curtain` one word over the limit. Dictation will not produce them,
+       but this endpoint takes typed text on the same grammar as the field. */
+    .replace(/[^a-z0-9\s+-]/g, ' ')
+    .split(/\s+/).filter(Boolean)
+    .map((x) => (SAY_NUMBER[x] != null ? String(SAY_NUMBER[x]) : x))
+    .filter((x) => !SAY_FILLER.has(x));
+  if (w.length < 2 || w.length > 4) return null;
+
+  /* Actions come off the end, as the command bar reads them. English puts the
+     verb first — "switch on the fan" — so the front is tried too, which costs
+     three lines and catches the shape anybody types without thinking. */
+  let acts = [];
+  while (w.length > 1 && acts.length < 2 && isAction(slug(w[w.length - 1]))) acts.unshift(w.pop());
+  if (!acts.length) {
+    while (w.length > 1 && acts.length < 2 && isAction(slug(w[0]))) acts.push(w.shift());
+  }
+  if (!acts.length || w.length < 1 || w.length > 2) return null;
+
+  return { room: w[0], circuit: w[1] || 'all', action: acts.join('+') };
+}
+
+/* The tool the model is given, generated from the house rather than written
+   down. Rooms are an enum because the set is small and closed; a circuit cannot
+   be, since which ones exist depends on the room and a flat schema has no way
+   to say that — so every room's circuits go in the prompt instead, and the
+   validator is `pick()` inside runAddress. That matters: a circuit the model
+   invents is refused by the same code that refuses a mistyped URL, and the
+   caller hears "I cannot find that one" rather than a cheerful success. */
+function sayTools() {
+  const rooms = [...roomsIndex().keys()];
+  return [{
+    type: 'function',
+    name: 'control',
+    description: 'Switch, dim or colour one circuit, a named group, a television, '
+      + 'the receiver, or a whole room.',
+    parameters: {
+      type: 'object',
+      properties: {
+        room: { type: 'string', enum: [...rooms, 'house'] },
+        circuit: { type: 'string',
+          description: 'A circuit or group slug from the list for that room. "all" for the whole room.' },
+        action: { type: 'string',
+          description: 'One of: ' + ACTIONS.join(', ')
+            + '. A bare 0-100 is brightness, or volume on a screen. warmth-0-100 is '
+            + 'colour. Two may be joined with + , e.g. "40+warm". A curtain takes only '
+            + 'open, close or stop. A television or the receiver also takes mute or unmute.' },
+      },
+      required: ['room', 'circuit', 'action'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }, {
+    type: 'function',
+    name: 'cue',
+    description: 'Set or clear a saved scene.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', enum: scenes.map((sc) => sc.id) },
+        action: { type: 'string', enum: CUE_ACTIONS },
+      },
+      required: ['id', 'action'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }, {
+    type: 'function',
+    name: 'look',
+    description: 'Answer a question about what is on right now \u2014 lights, fans, '
+      + 'curtains, air conditioners, televisions and the receiver. Use for any '
+      + 'question rather than a command \u2014 "what is on", "is the fan running", '
+      + '"kya chalu hai", "TV chal raha hai".',
+    parameters: {
+      type: 'object',
+      properties: {
+        room: { type: 'string', enum: [...rooms, 'house'],
+          description: 'Use "house" when no room is named.' },
+        circuit: { type: 'string',
+          description: 'A circuit slug, when the question is about one thing. Otherwise "all".' },
+      },
+      required: ['room', 'circuit'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }];
+}
+
+function sayPrompt() {
+  const rooms = [...roomsIndex()].map(([sl, name]) => {
+    const cs = liveCircuits(name).map((c) => c.slug + ' (' + circuitKind(c.records) + ')');
+    /* The screens listed among the circuits, because to whoever is speaking they
+       are things in the room like any other. Marked as answering for themselves
+       so the model has no reason to reach for the hub's stale record of a
+       television, which is filtered out of the list above for the same reason. */
+    for (const d of directlyRead(name)) {
+      cs.push(d.slug + ' (' + (d.snap.is_tv ? 'television' : 'receiver')
+        + ', answers for itself)');
+    }
+    return '  ' + sl + ': ' + cs.join(', ');
+  }).join('\n');
+  return [
+    'You turn a spoken command into exactly one tool call for a home in India.',
+    '',
+    'The speaker uses Hinglish — Hindi written in Latin script, mixed with English.',
+    'Room and circuit names are always English, because they are the installer\u2019s',
+    'own labels. Read the Hindi for the verb and the English for the thing.',
+    'Examples: "living room ki light band kar do" = the lights in living, off.',
+    '"ashu ka fan chalu karo" = the fan in ashu, on. "sab band karo" = house, all, off.',
+    '"cobs thoda kam karo" = that room\u2019s cobs, down. "garam" or "peela" means warm.',
+    '',
+    'Rooms and what is wired in each:',
+    rooms,
+    '',
+    'Saved scenes: ' + (scenes.length ? scenes.map((sc) => sc.id).join(', ') : '(none)'),
+    '',
+    'Rules. Pick the circuit whose slug best matches what was said; use "all" for a',
+    'whole room and room "house" for the entire home. A curtain takes only open,',
+    'close or stop \u2014 "band karo" on a curtain means close, not off. Only a tunable',
+    'light takes warmth.',
+    '',
+    'A television or receiver takes on, off, toggle, up, down, mute, unmute, or a',
+    'number \u2014 which is its volume, not a brightness.',
+    '',
+    'It cannot be sent an app, a channel or a source. When the request names one \u2014',
+    '"netflix laga do", "youtube chala do", "PS5 par daal do" \u2014 do not call a tool',
+    'at all, and in particular do not switch the screen on instead: coming on',
+    'without the app is not what was asked, and the reply would not say so. Answer',
+    'in one sentence that only power and volume are wired and the app has to be',
+    'picked on the board.',
+    '',
+    'A question is not a command: "kya chalu hai", "what is on", "is the fan',
+    'running", "AC chal raha hai" all want `look`, never `control`. Do not answer',
+    'the question yourself \u2014 call `look` and the reading is filled in for you.',
+    '',
+    'If the request is neither a command nor a question about this house, do not',
+    'call a tool: reply with one short sentence saying you can only control and',
+    'report on the lights, fans, curtains, air conditioners and screens.',
+    '',
+    /* Read aloud by the phone, so it is asked for in the register the voice
+       handles best. English whatever the request was written in: the speaker
+       reads Hinglish perfectly well and iOS `Speak Text` does not speak it. */
+    'Whatever language the request is in, answer in plain English \u2014 a short,',
+    'simple sentence, because a phone reads it out loud.',
+  ].join('\n');
+}
+
+/* Captures what runAddress would have answered, so /api/say can re-emit it.
+ *
+ * It has to, because Shortcuts' "Get Contents of URL" treats a non-2xx as an
+ * error and stops — it never reads the body. So every failure reached through a
+ * shortcut would be silence rather than a spoken reason, which is the worst
+ * outcome available: the house looks broken when it merely misheard. A shim
+ * rather than a refactor of runAddress, which is the path every shortcut and
+ * every cron line in this house already goes through. */
+function grabResponse() {
+  const out = { code: 200, body: null };
+  const shim = {
+    status(c) { out.code = c; return shim; },
+    json(b) { out.body = b; return shim; },
+    send(b) { out.body = b; return shim; },
+    set() { return shim; },
+    type() { return shim; },
+  };
+  return { shim, out };
+}
+
+/** Ask the model. Returns a tool call, a sentence, or null if it could not be reached. */
+async function askModel(text) {
+  if (!OPENAI_KEY) return { spoken: 'No model key is set on the hub' };
+  /* A spoken command that has not answered in six seconds has already failed as
+     a spoken command — somebody is standing there having said something to a
+     phone. Better a sentence saying so than a Shortcut spinning. */
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 6000);
+  try {
+    const r = await fetch(OPENAI_BASE + '/v1/responses', {
+      method: 'POST',
+      signal: stop.signal,
+      headers: { 'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + OPENAI_KEY },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        instructions: sayPrompt(),
+        input: [{ role: 'user', content: String(text) }],
+        tools: sayTools(),
+        tool_choice: 'auto',
+        // Choosing between a dozen circuits is recognition, not deliberation,
+        // and the latency is the whole product here.
+        reasoning: { effort: 'none' },
+      }),
+    });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '');
+      console.error('say: model answered ' + r.status + ' ' + detail.slice(0, 200));
+      return { spoken: 'The model refused that' };
+    }
+    const data = await r.json();
+    for (const item of data.output || []) {
+      if (item.type === 'function_call') {
+        let args = {};
+        try { args = JSON.parse(item.arguments || '{}'); } catch { /* below */ }
+        return { call: item.name, args };
+      }
+    }
+    // No tool call means it declined, and what it said is worth speaking.
+    const said = (data.output || []).flatMap((i) => i.content || [])
+      .map((c) => c.text).filter(Boolean).join(' ').trim();
+    /* Marked verbatim, because the model writes a whole sentence rather than one
+       of our fixed shapes, and it has been asked for the same plain English the
+       rewriter is aiming at. Running it through anyway would only find rules
+       written for other sentences. The fallback below is ours, and is reworded. */
+    if (said) return { spoken: said, verbatim: true };
+    return { spoken: 'I did not understand that' };
+  } catch (err) {
+    if (err.name === 'AbortError') return { spoken: 'The model did not answer in time' };
+    console.error('say: model unreachable:', err.message);
+    return { spoken: 'I could not reach the model' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ── cancel: one step back, for whoever said it ────────────────────────
+ *
+ * "Cancel" has to be cheap and certain. It is matched here, before the grammar
+ * and before the model, so it costs no network call and cannot be mistaken for
+ * an address — and since nothing in this house is named any of these words,
+ * nothing is shadowed by matching them first.
+ *
+ * Both languages, because the commanding language is Hinglish and a person who
+ * has just said something wrong reaches for whichever word comes first. `nahi`
+ * has to be doubled: "nahi, fan band karo" is a command with a correction in
+ * front of it, not a cancel, and swallowing it would be the worst kind of bug —
+ * one that eats a sentence and answers as though it did something.
+ */
+const SAY_CANCEL = new RegExp(
+  '^(?:'
+  + 'cancel(?:\\s+karo|\\s+kar\\s+do|\\s+that)?'
+  + '|undo(?:\\s+that|\\s+karo)?'
+  + '|revert'
+  + '|never\\s*mind'
+  + '|no\\s+no'
+  + '|put\\s+(?:it|that)\\s+back'
+  + '|(?:back\\s+)?as\\s+it\\s+was'
+  + '|wapas(?:\\s+karo|\\s+kar\\s+do)?'
+  + '|nahi\\s+nahi'
+  + '|galat(?:\\s+ho\\s+gaya|\\s+bol\\s+diya)?'
+  + '|ulta\\s+karo'
+  + '|pehle\\s+jaisa(?:\\s+karo|\\s+kar\\s+do)?'
+  + ')[\\s.!,]*$', 'i');
+
+/**
+ * Puts back the last thing this speaker changed, and says what it did.
+ *
+ * Never becomes a new cancel point. One step deep is deliberate: a second
+ * "cancel" answering "nothing to cancel" is understandable, whereas a cancel
+ * that toggles back and forth is a thing nobody can keep track of by ear.
+ */
+async function runCancel(who) {
+  const key = String(who || '');
+  const step = spokenBack.get(key);
+  if (!step) {
+    return { ok: false, cancelled: false,
+      spoken: 'You have not said anything I can cancel' };
+  }
+  /* Taken out first, whatever happens next. A snapshot that failed to replay is
+     not worth a second attempt against a house that has moved on again, and
+     leaving it in place would offer exactly that. */
+  spokenBack.delete(key);
+
+  if (Date.now() - step.at > UNDO_WINDOW_MS) {
+    return { ok: false, cancelled: false,
+      spoken: 'That was too long ago to put back safely' };
+  }
+
+  try {
+    if (step.kind === 'screen-power') {
+      /* Opens with the label rather than "I cannot put <label> back", because a
+         television names itself in lower case ("ashu tv") and the speech pass
+         only capitalises the first word of a sentence — mid-sentence it would
+         stay uncapitalised and read as an aside. */
+      return { ok: false, cancelled: false, spoken: step.label
+        + ' can be switched back on, but not back to what you were watching,'
+        + ' so I have left it alone' };
+    }
+
+    if (step.kind === 'screen') {
+      if (step.want.mute != null) {
+        await step.link.setMute(step.want.mute);
+        return { ok: true, cancelled: true, spoken: step.label + ' is '
+          + (step.want.mute ? 'muted again' : 'unmuted again') };
+      }
+      await step.link.setVolume(step.want.volume);
+      /* Deliberately not "is back at volume 12": that is the shape the speech
+         pass reads as a screen being *set* to a volume, and it would insert a
+         second verb — "is back is at volume 12". */
+      return { ok: true, cancelled: true,
+        spoken: step.label + ' volume is back to ' + step.want.volume };
+    }
+
+    if (step.kind === 'curtain') {
+      /* Stop has no opposite. Saying so beats sending a curtain somewhere it
+         was not, and beats claiming there was nothing to cancel. */
+      const flip = { open: 'close', close: 'open' }[step.action];
+      if (!flip) {
+        return { ok: false, cancelled: false, spoken: step.label
+          + ' was only stopped, so there is nothing to reverse' };
+      }
+      for (const id of step.ids) await sendToHub(id, {}, CURTAIN_VERB[flip]);
+      /* The hedge is the point. A curtain reports no position, so this reverses
+         the verb and cannot know where it started — said plainly, because the
+         alternative is a confident "put back" that may not be true. */
+      return { ok: true, cancelled: true,
+        spoken: (flip === 'close' ? 'Closing ' : 'Opening ') + step.label
+          + ' again \u2014 it has no position to report, so this is not exactly'
+          + ' where it was' };
+    }
+
+    // records and cues alike: a snapshot, replayed through the usual machinery,
+    // which is what brings verify-and-resend with it.
+    const name = step.kind === 'cue' ? step.name
+      : step.label + (step.room && step.room !== 'HOUSE' ? ' in ' + title_(step.room) : '');
+    const result = await applyScene({ id: 'cancel', name: 'Cancel', steps: step.steps });
+
+    /* applyScene's residual count is not reliable enough to say out loud. A
+       dimmable light fades, and a fade still in flight reads as a level that is
+       not the one asked for — measured live, one cancel in four came back
+       claiming three lamps had missed when a moment later all five sat at zero.
+       In JSON on a dashboard that is a curiosity; spoken aloud it is a warning
+       that cries wolf, and a reply nobody believes is worse than a shorter one.
+       So the count is only spoken if it survives one more look, which costs
+       nothing in the ordinary case because the ordinary case is zero. */
+    let missed = result.missed;
+    if (missed) {
+      await sleep(SETTLE_MS);
+      await readHubStateFresh().catch(() => {});
+      missed = outstanding({ steps: step.steps }).length;
+    }
+    logEvent({ e: 'cancel', who: key, kind: step.kind, name,
+               set: result.set, missed, first_pass: result.missed });
+    /* Both halves have to agree, not just the verb: "the cobs are back as it
+       was" is what you get from fixing only the first one. */
+    const many = SPEAK_PLURAL.test(name);
+    const head = name + (many ? ' are back as they were' : ' is back as it was');
+    if (missed) {
+      return { ok: true, cancelled: true,
+        spoken: head + ', but ' + missed + ' did not take' };
+    }
+    return { ok: true, cancelled: true, spoken: head };
+  } catch (err) {
+    console.error('cancel failed:', err.message);
+    return { ok: false, cancelled: false, error: err.message,
+      spoken: 'The hub did not answer' };
+  }
+}
+
+app.post('/api/say', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  const text = String((req.body && req.body.text) || '').trim();
+  /* Always 200 from here down, whatever went wrong — see grabResponse above.
+     `ok` and `spoken` carry the verdict; the status code cannot.
+
+     And this is the one place the reply is reworded for the voice. Every path
+     below funnels through here — the free grammar path, the model's tool calls,
+     its own refusals, and each of the fixed strings — so one wrapper covers all
+     of them, and /do, which shares runAddress and every word of spokenFor, is
+     untouched. `said` keeps the original beside it: the log and any caller that
+     wants the canonical wording still has it, and a reply that reads oddly can
+     be traced back to the sentence it came from. */
+  const say = (body) => {
+    const out = { ...body };
+    if (out.spoken && !out.verbatim) {
+      out.said = out.spoken;
+      out.spoken = speakable(out.spoken);
+    }
+    return res.status(200).json(out);
+  };
+  if (!text) return say({ ok: false, via: 'none', spoken: 'I did not catch that' });
+
+  /* Who is speaking, so "cancel" reverses what *they* said. Trimmed and capped
+     because it is used as a map key and arrives in a request body; a Shortcut
+     that does not send it shares the anonymous slot rather than failing. */
+  const who = String((req.body && req.body.who) || '').trim().slice(0, 40).toLowerCase();
+  const remember = (step) => rememberFor(who, step);
+
+  /* Before the grammar and well before the model, because a cancel should cost
+     nothing and wait for nobody — and because "cancel" is not an address, so
+     letting speechWords see it first would only produce "I cannot find that".
+     No circuit, room or cue in this house answers to any of these words. */
+  if (SAY_CANCEL.test(text)) return say({ ...(await runCancel(who)), via: 'cancel', heard: text });
+
+  const run = async (words, via) => {
+    /* Screens first, because runAddress cannot reach them and would answer for
+       the hub's shadowed record instead. One check here covers both the grammar
+       path and the model path, which is why it is not in either. */
+    const screen = await screenCommand(words.room, words.circuit, words.action, remember);
+    if (screen) return say({ ...screen, via, heard: text, ...words });
+
+    const { shim, out } = grabResponse();
+    await runAddress(req, shim, words.room, words.circuit, words.action, remember);
+    const body = out.body || {};
+    /* 300, not 400: an ambiguity — "there is more than one curtain in Living" —
+       is a refusal, and reporting it as ok would have a Shortcut branch as
+       though something had been switched. Success here is 2xx only. */
+    const won = out.code < 300;
+    return say({ ...body, ok: won, via, heard: text,
+      spoken: body.spoken || (won ? 'Done' : 'That did not work') });
+  };
+
+  const quick = speechWords(text);
+  if (quick) return run(quick, 'grammar');
+
+  const answer = await askModel(text);
+  if (answer.spoken) {
+    return say({ ok: false, via: 'model', heard: text, spoken: answer.spoken,
+      verbatim: !!answer.verbatim });
+  }
+
+  if (answer.call === 'control') {
+    const a = answer.args || {};
+    if (!a.room || !a.action) {
+      return say({ ok: false, via: 'model', heard: text, spoken: 'I did not understand that' });
+    }
+    /* The model translates a Hindi noun itself, and it translates it by *name* —
+       which is the one thing hindiCircuits() exists to prevent. Measured on the
+       live house: "Ashu ka parda khol do" came back as circuit `curtain-rope`
+       and **switched a light on**, and "Living ka parda khol do" picked one of
+       the two curtains and opened it rather than asking which.
+       So where the sentence itself carries one of the two words, the model's
+       choice of circuit is discarded and the word is passed through — leaving
+       hindiCircuits() the single authority for them on both roads. The model is
+       still doing the work that needs it: the room, and the verb. */
+    const said = String(text).match(HINDI_NOUN_SAID);
+    const circuit = said ? said[1].toLowerCase() : (a.circuit || 'all');
+    return run({ room: a.room, circuit, action: a.action }, 'model');
+  }
+
+  if (answer.call === 'look') {
+    const a = answer.args || {};
+    /* A question deserves a current answer, and it is the one place where the
+       hub's belief being wrong is heard out loud — "Fan is off" about a fan you
+       can hear. So ask the hardware first, then read. The poll is rate-limited,
+       so a run of questions costs one round of packets, and it resolves false
+       and harmlessly if the bus does not answer. */
+    await pollHardware();
+    if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
+      await readHubStateFresh().catch(() => {});
+    }
+    // The same override as the control branch, for the same reason.
+    const asked = String(text).match(HINDI_NOUN_SAID);
+    const look = asked ? asked[1].toLowerCase() : a.circuit;
+    return say({ ok: true, via: 'model', heard: text, asked: 'look',
+      room: a.room, circuit: look || 'all',
+      spoken: houseReading(a.room, look) });
+  }
+
+  if (answer.call === 'cue') {
+    const scene = scenes.find((sc) => sc.id === (answer.args || {}).id);
+    if (!scene) return say({ ok: false, via: 'model', heard: text, spoken: 'I do not know that scene' });
+    const action = ((answer.args || {}).action || 'set').toLowerCase();
+    try {
+      if (action === 'off' || action === 'clear') {
+        /* Clearing a cue is a spoken command too, and being able to cancel one
+           but not the other is the sort of gap a person walks straight into.
+           clearCue takes no snapshot of its own — it is also a cron path — so
+           the reading is taken here, and taken fresh, for the same reason
+           fireCue insists on one. */
+        const lights = cueLights(scene);
+        if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
+          await readHubStateFresh().catch(() => {});
+        }
+        const back = captureBefore(lights).before;
+        const sent = await clearCue(scene);
+        if (sent && back.length) remember({ kind: 'cue', name: scene.name, steps: back });
+        return say({ ok: true, via: 'model', heard: text, cue: scene.id, cleared: true, sent,
+          spoken: sent ? scene.name + ' cleared' : scene.name + ' was already out' });
+      }
+      const result = await fireCue(scene);
+      /* fireCue has already taken the snapshot, freshness and all, into the
+         house-wide slot that /api/scenes/undo reads. Copied rather than taken
+         again: two reads of the same moment, one of them later, is one too many. */
+      if (undoable) remember({ kind: 'cue', name: scene.name, steps: undoable.steps });
+      return say({ ok: true, via: 'model', heard: text, cue: scene.id, ...result,
+        spoken: result.missed ? scene.name + ' set, but ' + result.missed + ' did not take'
+          : scene.name + ' set' });
+    } catch (err) {
+      return say({ ok: false, via: 'model', heard: text, error: err.message,
+        spoken: 'The hub did not answer' });
+    }
+  }
+
+  return say({ ok: false, via: 'model', heard: text, spoken: 'I did not understand that' });
+});
+
+/* Ask the hardware on demand, and report what changed.
+ *
+ * Its real job is verification: the poll is proven to draw replies and the
+ * vendor is proven to save them, but nobody has yet watched it *correct* a wrong
+ * belief — the record and the hardware agreed every time it was tested. So this
+ * reads, polls, reads again, and names every circuit whose reading moved. A
+ * deliberate desync run through here either shows the correction or shows that
+ * it does not happen, and both are worth knowing. */
+app.all('/api/poll', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  const snap = () => {
+    const out = {};
+    for (const [id, { record }] of devices) out[id] = decodeLevel(record.device_status);
+    return out;
+  };
+  try {
+    await readHubStateFresh().catch(() => {});
+    const before = snap();
+    const polled = await pollHardware(true);
+    await readHubStateFresh().catch(() => {});
+    const after = snap();
+
+    const changed = [];
+    for (const id of Object.keys(after)) {
+      if (before[id] !== after[id]) {
+        const entry = devices.get(Number(id));
+        changed.push({
+          record_id: Number(id),
+          name: String((entry && entry.record.device_name) || '').trim(),
+          room: entry ? roomKey(entry.room) : '',
+          was: before[id], now: after[id],
+        });
+      }
+    }
+    res.json({ ok: true, polled, modules: relayModules(),
+      circuits: Object.keys(after).length, changed,
+      spoken: changed.length
+        ? changed.length + (changed.length === 1 ? ' circuit' : ' circuits')
+          + ' disagreed with the hub, and the hardware won'
+        : 'The hub already agreed with the hardware' });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
 
 /**
  * Captures the house as it stands. Every device in a room that has something
