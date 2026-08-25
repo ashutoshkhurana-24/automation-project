@@ -5117,7 +5117,10 @@ const DEFAULT_SETTINGS = {
   // Which of data/backdrops/ is showing. null keeps the original file.
   backdrop: null,
   // Left-on watching. Advisory only — it reports, it never switches anything off.
-  nudges: { on: true, ac_hours: 4, fan_hours: 8, light_hours: 6 },
+  // `toast` puts the same advisory on any television that is already on, which is
+  // where people are when they are not looking at the dashboard. On by default:
+  // it is the whole point of noticing, and it still cannot touch a device.
+  nudges: { on: true, ac_hours: 4, fan_hours: 8, light_hours: 6, toast: true },
 };
 let settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
@@ -5371,6 +5374,7 @@ function trackLit() {
     else if (!on && litSince.has(id)) {
       litSince.delete(id);
       dismissedNudges.delete(id);                        // it can nudge again next time
+      toastedNudges.delete(id);                          // and can be said again too
       changed = true;
     }
   }
@@ -5412,6 +5416,60 @@ function nudgeList() {
     });
   }
   return out.sort((a, b) => b.hours - a.hours);
+}
+
+/* ------------------------------------------ saying it out loud
+ *
+ * The advisories were only ever visible to somebody who opened the dashboard,
+ * which is the one thing a person sitting in front of a television is not doing.
+ * The televisions can show words, so an advisory can go to where people actually
+ * are.
+ *
+ * Three rules, all of them about not being a nuisance:
+ *
+ *   It never wakes a set. Only a screen already on gets a line, so this can
+ *   never be the thing that turns the living room television on at midnight.
+ *
+ *   It names the room. The user's call is that it goes to every set that is on,
+ *   so a message about the study lands in the bedroom — "has been on" with no
+ *   room named would be actively misleading.
+ *
+ *   It is said once, and only once it has actually landed. An advisory raised
+ *   while every screen is off is kept, not spent, and goes out when one comes
+ *   on. Memory-only, like dismissedNudges: after a restart the house is allowed
+ *   to mention it again, which is the right way round for something advisory. */
+
+// record_id -> the `on_since` already spoken for, so a nudge is said once per
+// time the thing was left on rather than once every fifteen seconds.
+const toastedNudges = new Map();
+
+async function toastNudges() {
+  if (!settings.nudges.on || !settings.nudges.toast) return;
+  const pending = nudgeList().filter((n) => toastedNudges.get(n.record_id) !== n.on_since);
+  if (!pending.length) return;
+
+  // `online && power` is the honest test, and the same one /api/health reports
+  // as "on": a live socket alone only means the set answered, and a panel in
+  // standby answers perfectly well.
+  const awake = [...tvs.values()].filter((t) => t.online && t.power);
+  if (!awake.length) return;                 // kept for later, not spent
+
+  for (const n of pending) {
+    const hrs = n.hours >= 2 ? Math.round(n.hours) + ' hours' : n.hours + ' hours';
+    // The same sentence the dashboard shows, so the house has one voice. The
+    // device name keeps the hub's own casing — sentence() would turn AC into Ac.
+    const message = n.name + ' in ' + sentence(n.room) + ' has been on ' + hrs;
+    let landed = false;
+    for (const t of awake) {
+      try { await t.say(message); landed = true; }
+      catch { /* that set dropped between the filter and here; the others stand */ }
+    }
+    if (landed) {
+      toastedNudges.set(n.record_id, n.on_since);
+      logEvent({ e: 'nudge', id: n.record_id, room: n.room, kind: n.kind,
+                 hours: n.hours, said_on: awake.length });
+    }
+  }
 }
 
 /* ------------------------------------------------------------- timers */
@@ -5560,6 +5618,7 @@ app.post('/api/settings', (req, res) => {
   if (body.circadian && typeof body.circadian.on === 'boolean') settings.circadian.on = body.circadian.on;
   if (body.nudges) {
     if (typeof body.nudges.on === 'boolean') settings.nudges.on = body.nudges.on;
+    if (typeof body.nudges.toast === 'boolean') settings.nudges.toast = body.nudges.toast;
     for (const k of ['ac_hours', 'fan_hours', 'light_hours']) {
       const v = Number(body.nudges[k]);
       if (Number.isFinite(v) && v >= 0.5 && v <= 24) settings.nudges[k] = v;
@@ -9996,6 +10055,10 @@ const HTML = /* html */ `<!doctype html>
        it the only chip on the rail that looked different. */
     text-decoration: none;
   }
+  /* A chip that has no effect until the switch above it is on says so by going
+     quiet, rather than by disappearing and leaving you doubting you saw it. */
+  .setting:disabled { opacity: .42; cursor: default; }
+  .setting:disabled:hover { background: transparent; border-color: transparent; }
   .setting:hover { background: var(--pane); border-color: var(--edge); }
   .setting .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--edge-up); }
   .setting.on .dot { background: var(--warm); box-shadow: 0 0 8px -1px var(--warm); }
@@ -10850,6 +10913,12 @@ const HTML = /* html */ `<!doctype html>
         <button class="setting" id="setnudge" type="button" aria-pressed="true">
           <span class="dot"></span>
           <span>Tell me what's been left on</span>
+        </button>
+        <!-- Sits directly under the switch it depends on, because it is the same
+             advisory going somewhere else rather than a second feature. -->
+        <button class="setting" id="settoast" type="button" aria-pressed="true">
+          <span class="dot"></span>
+          <span>Say it on the TV too</span>
         </button>
         <button class="setting" id="setdark" type="button">
           <span class="dot"></span>
@@ -16562,6 +16631,14 @@ function drawSettings() {
   const n = el('#setnudge');
   n.classList.toggle('on', auto.settings.nudges.on);
   n.setAttribute('aria-pressed', String(auto.settings.nudges.on));
+  /* Dimmed rather than hidden when the watching itself is off: a control that
+     vanishes leaves you wondering whether you imagined it, and this one has no
+     effect at all without the switch above it. */
+  const tst = el('#settoast');
+  const toasting = auto.settings.nudges.on && auto.settings.nudges.toast;
+  tst.classList.toggle('on', toasting);
+  tst.setAttribute('aria-pressed', String(toasting));
+  tst.disabled = !auto.settings.nudges.on;
 }
 
 async function saveSetting(patch) {
@@ -16578,6 +16655,7 @@ async function saveSetting(patch) {
 
 el('#setcirc').onclick = () => saveSetting({ circadian: { on: !auto.settings.circadian.on } });
 el('#setnudge').onclick = () => saveSetting({ nudges: { on: !auto.settings.nudges.on } });
+el('#settoast').onclick = () => saveSetting({ nudges: { toast: !auto.settings.nudges.toast } });
 
 /* the timer panel */
 const timerpop = el('#timerpop');
