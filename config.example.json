@@ -11,7 +11,6 @@
   "hub_ip": "192.168.1.3",
   "hub_port": "8090",
   "port": 3000,
-
   "_televisions": [
     "LG webOS sets, driven directly rather than through the hub. The MAC is the",
     "identity: DHCP moves the address, and a set moving between Wi-Fi and",
@@ -20,15 +19,55 @@
     "id must be unique and stable; it is what the API and cues address."
   ],
   "televisions": [
-    { "id": "tv-living", "name": "TV", "room": "LIVING", "mac": "aa:bb:cc:dd:ee:ff" }
+    {
+      "id": "tv-living",
+      "name": "TV",
+      "room": "LIVING",
+      "mac": "aa:bb:cc:dd:ee:ff"
+    }
   ],
-
+  "_goodnight": [
+    "Who sleeps where. Saying \"good night\" puts the speaker's own room to bed:",
+    "lights and screens off, the fan and the air conditioner left running.",
+    "The key is the name the phone sends as `who` (case does not matter); the",
+    "value is a room exactly as the hub names it. Leave it out and good night is",
+    "simply not set up, which it says rather than guessing at somebody's room.",
+    "Two names can share a room, as a couple does."
+  ],
+  "goodnight": {
+    "mum": "MASTER ROOM",
+    "dad": "MASTER ROOM"
+  },
+  "_room_aliases": [
+    "A second name a room answers to, for the families who call it something",
+    "other than what the installer typed. The key is the spoken name and the",
+    "value is a room exactly as the hub names it.",
+    "It is a way *in* only: every reply, the board, the guide and the history log",
+    "keep the hub's own name, so one room is never two names in the record.",
+    "An alias that would shadow a real room's name is ignored, because that would",
+    "make the room ambiguous and refuse every command to it rather than help."
+  ],
+  "room_aliases": {
+    "kanu room": "HARSHIT ROOM"
+  },
   "_groups": [
     "A run of identical fittings around one ceiling, controlled as one tile.",
     "Set these from the console: pick a room, pick the circuits, name it.",
     "record_ids are the hub's own numbers, as shown beside each circuit."
   ],
   "groups": [
-    { "room": "LIVING", "label": "All COBs", "record_ids": [485, 486, 487] }
-  ]
+    {
+      "room": "LIVING",
+      "label": "All COBs",
+      "record_ids": [
+        485,
+        486,
+        487
+      ]
+    }
+  ],
+  "_models": "openai_model reads a typed or transcribed sentence. transcribe_model turns a recording into words. audio_model hears the recording directly and runs beside the transcription, so a sentence the free grammar cannot take is answered in about a second and a half instead of four; set it to \"\" to switch that off. It accepts wav and mp3 only, so on a box without ffmpeg the m4a a phone records falls back to the older transcribe-then-understand path on its own.",
+  "openai_model": "gpt-5.6-luna",
+  "transcribe_model": "gpt-4o-transcribe",
+  "audio_model": "gpt-audio-mini"
 }

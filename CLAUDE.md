@@ -1350,3 +1350,503 @@ on, so firing it changed nothing; created and deleted inside the same session, w
 is the one shape of clean-up the restore rule above permits. `normal-mode` appeared
 in the cue list while this was being measured — somebody in the house made it, and
 it was left alone.
+
+### Good night, addressed by whoever said it (2026-08-25)
+
+Replaces three of the four Good Night cues. **A cue was the wrong shape for it**,
+for the reason `/do` replaced "just the fan": a cue is one fixed list of records,
+so good night needed a card per person and each card was a snapshot of a room's
+wiring that went stale the moment somebody added a lamp — record 519 HANGING,
+which this file records as having been invisible to the dashboard for a day, would
+have been silently missing from one in exactly the same way.
+
+Sleep already knows how to put a room to bed, and it is asked for **unchanged**:
+lights off, **the fan and the air conditioner left running**. So good night is a
+sleep whose scope comes from `who`, and it keeps the verify-and-resend a sleep has
+to have — a cue that drops a lamp is one you press again, a lamp dropped at
+bedtime burns all night with nobody awake to see it.
+
+**The map is per-install config, not code, and that is not tidiness.** Hard-coded,
+this family's names would have deployed to the second hub, where `MASTER ROOM` may
+not exist — so the reply would have been a confident "Nothing was on in Master
+Room" about a room that is not there. `config.goodnight` is `who` to room; absent,
+good night says **"nobody has a good night set up here yet"**, which is what the
+second hub now answers. Two names may share a room, as a couple does. It is read
+once at startup, so a change needs a restart; `/api/setup` does
+`Object.assign({}, config)` so the key survives a console save.
+
+**Three honest refusals rather than a guess**, the same shape as `hindiCircuits`:
+an unrecognised speaker is told **who is known** (built from the map, so it cannot
+drift from what works), a `who` mapped to a room the hub lacks is told so, and an
+empty map says the feature is not set up. Never a house-wide sleep — a guest phone
+must not be able to darken a room somebody is sitting in. That was the user's call
+to confirm and it is the conservative half of it.
+
+**It is cancellable**, which matters more here than anywhere: this is the largest
+thing anybody says to the house in one breath and the easiest to say into the wrong
+phone. `captureBefore` drops curtains and screens on its own, which is right here
+too, and the freshness read before the snapshot is worth paying — unlike on a terse
+command, where widening it was the regression fixed earlier the same day.
+
+**The reply never ends on the word "off", and that is load-bearing.** `SPEAK_WHOLE`
+reads a sentence ending in on or off as a circuit being set and inserts a verb, so
+"One light in Ashu Room is off" came back as **"is is now off"**. Putting the room
+last sidesteps the whole family of rules rather than dodging one: *"Good night.
+I've switched off 8 lights in Master Room."* Caught by `say-speech-review.js`,
+which is exactly what it is for, and a Good night group was added to it.
+
+Two other things the wording does deliberately. It **names what is still running**
+("the fan is still running"), from the same `sleepKeeps` test that spared it —
+lifted out of `sleepSteps` so there is one definition, because a reply that
+disagrees with what was sent is worse than one that says nothing, and a fan that
+went off with the lights is how you wake at two. And a **non-zero straggler count
+is re-counted after a settle before it is spoken**, the same guard cancel has, for
+the same measured reason: a fade still in flight reads as the wrong level.
+
+**Two bugs worth keeping, both invisible to `node --check`.**
+`sone?` is `son` plus an optional `e`, **not** `so` plus an optional `ne`, so the
+Hinglish "so raha hoon" never matched — a quantifier binds to the character before
+it. And `roomsIndex()` returns a **Map of slug to room key**, not a list of
+objects, so `.some(r => roomKey(r.name) === room)` was silently always false and
+would have refused every good night in the house. Both found by testing rather than
+by reading, which is the pattern this file keeps recording.
+
+**Tested live at 22:10**, so every deliberate case was a no-op: both refusals, both
+dark rooms, and a Hinglish phrasing. `bhai` at 102ms warm, `ashu` 1359ms with the
+freshness read.
+
+**One unintended change, and it is the standing rule earning itself again.** A
+second `bhai` run switched off COB 1 in Harshit Room — somebody had turned it on
+between my check and my test, which is precisely what "a baseline recorded two
+minutes ago is a fact about the past" means. Put back with `cancel` (100%, verified),
+which is legitimate because it was **inside the same action**: the snapshot was
+taken immediately before the write and nothing intervened. It also produced the one
+test that could not be staged — good night and cancel end to end on a real lit
+circuit. **Re-read the room immediately before each run, not once for the session.**
+
+**A good night does not switch a television off**, because a directly-driven set is
+not in `devices` and `sleepSteps` walks that map. That is sleep's existing behaviour
+and "exactly as sleep" was the ask, so it is left alone and **the guide says so** in
+as many words. Worth revisiting: bedtime is the one time somebody most wants the
+screen off.
+
+`parent-good-night` **was kept.** No `who` maps to PARENT ROOM, so deleting it would
+have left that room with no good night at all, by voice or by cue — which the
+per-person spec did not cover. The other three are gone from the hub and from
+`data/seed-scenes.json`, with all four backed up to
+`data/removed/good-night-cues.json` first.
+
+### What the voice path keeps, and where it is said (2026-08-25)
+
+Asked whether recordings are stored on the hub. **They are not, and this was
+checked on the box rather than reasoned from the code alone.**
+
+- **The audio never reaches disk.** `express.raw` hands the body in as a Buffer,
+  `transcribe()` wraps it in `new Blob([buf])` and posts it. None of the nine
+  `writeFileSync`/`appendFileSync` calls in `server.js` touch it; the buffer is
+  freed with the request.
+- **The transcript is not kept either.** No history JSONL holds a `heard` or
+  `text` field — the events are `edge`, `cue`, `cancel`, `goodnight`, `tv`,
+  `snap`, `sched`, `nudge`, `timer`, `verified`. The journal prints no transcript:
+  `hear:` appears only on error paths, zero occurrences over two days.
+- **The boundary is the API call, not the hub.** Everything else in this system is
+  LAN-only; this one sends somebody's voice out of the house. Retention there is
+  OpenAI's policy rather than ours, so check the current terms rather than
+  trusting a summary, and Zero Data Retention is the thing to ask for.
+- **Metadata is retained**, which is the honest qualification: who spoke and which
+  circuits changed, e.g. `{"e":"goodnight","who":"bhai","room":"HARSHIT ROOM"}`.
+
+**The endpoint writes no files, but testing it did.** Seventeen synthesised `.wav`
+clips were left in `/tmp` on the hub by the transcription benchmarking earlier the
+same evening, 20:04 to 21:23. Deleted. The only audio on the box now is the
+vendor's own three `static/music/*.mp3`. Worth remembering as its own hazard: the
+privacy property belongs to the running code and not to a session working on it.
+
+**It is written into the monthly report's footer, not into a section of its own.**
+`footerHtml()` is the report's honest half — where it comes from, what it cannot
+see, coverage — and it renders in **every** view, house and each room. Somebody
+reading a month of their own household is exactly the person entitled to know
+whether what they said out loud was kept, so the paragraph goes where they are
+already reading rather than behind a heading they might not open. Unconditional
+prose, because it is true whether or not anybody spoke this month. Verified
+rendering 8 times on the live report.
+
+One distinction the paragraph makes deliberately, because it is the useful one and
+it is exact: a **spoken** command sends a recording, a **typed Hinglish** command
+sends the text, and a **short English** command typed into the dashboard
+(`ashu cobs 40`) leaves the house not at all, because `speechWords` resolves it on
+the hub for nothing. That is the free grammar path stated as a privacy property.
+
+### How the house was told, in the monthly report (2026-08-25)
+
+The user asked whether the voice feature could be told as a story in the report,
+and chose two of the four offered: **how the house was told**, and the same split
+**per room**. Bedtimes-per-person and a "what the house understood" quality
+section were offered and not taken; both remain cheap to add, the first needing no
+new logging at all because `goodnight` already carries `who`, `room` and a time.
+
+**Logging is metadata only, and that was the user's explicit choice.** No
+transcript is written, so the report footer's "neither the recording nor the words
+are kept" stays literally true. A road is a fact about a circuit changing, not
+about anything anybody said.
+
+**`AsyncLocalStorage`, not an argument threaded down the send path.**
+`markCommanded` has two callers but sits beneath `sendToHub`/`sendBatchToHub`,
+reached from 17 and 6 places via `setRecords`, `sendSteps`, `acPower`, the curtain
+verbs and the projector split — so plumbing a `via` parameter would have touched
+two dozen call sites. A module-level "current road" is the obvious cheap
+alternative and is **wrong**: two overlapping awaits, one variable, so the first
+schedule firing while somebody spoke would misattribute both. Proven in isolation
+that the context survives three awaits and does not leak between four concurrent
+chains. One middleware sets it from `req.path`; `runSchedule`, `runScheduleOff` and
+`runTimer` wrap themselves, because nothing unattended has a request to read.
+
+**A spoken cue counts as `spoken`, not as `cue`.** The road is *how the person told
+the house*, and they said a sentence. Only a cue fired as a cue is `cue`.
+
+**The legacy `us` value is kept as its own bucket** rather than folded into `tap`.
+Before this, `us` meant "any of our paths" including cues and schedules, so
+reattributing 500 old edges to a road nobody recorded would have been a quiet lie
+in a report whose whole footer is about not doing that. It is labelled *"the
+dashboard, before roads were recorded"* and ages out on its own.
+
+**Both sections have a floor** — 12 for the house, 6 for a room — because a split
+of three switch-ons is noise presented as a finding. The room floor is lower
+deliberately: eight switch-ons in one bedroom is a habit where eight across the
+house is nothing.
+
+Two implementation notes. `.roads` is its own class rather than reusing `.split`,
+which styles exactly two bands by `first-child`/`last-child` and sets an opacity
+that would fight an inline background. And the **last band takes the remainder**
+rather than its own rounded percentage, because eight rounded numbers do not add
+to 100 and a bar that stops at 97% looks broken.
+
+**One bug, and it was mine: a text replacement swallowed `const room =
+roomOf(c.room)`** because it sat between the two lines I was replacing. `node
+--check` passed and `/report` returned 500 with `ReferenceError: room is not
+defined`. Caught by booting a throwaway instance on `PORT=3121` and fetching the
+page, which is the cheap check that should follow any edit to the report.
+
+**What is verified and what is not.** The report renders live: 200, 488 events,
+the house section and all seven room sections. `roadFor` is correct on nine paths
+and the context does not leak. **But no road has yet been recorded end to end**,
+because no command has gone through the new build — the log still holds only
+legacy `us` and `elsewhere`, the latter being the household turning lights on by
+switch while this was deployed. The first real command will show it, and the
+honest way to check is to read `src` in the log rather than to command the house
+for the sake of a test. ASHU ROOM was not used as a test surface this time because
+the user had just lit it.
+
+**The section is nearly empty today and that is expected.** History is 25 hours
+old and much of it is this session's own testing, so the split reads as legacy
+dashboard plus wall switch. It becomes a real picture over September.
+
+### The guide became a page on the dashboard (2026-08-26)
+
+*"put the guide on dashboard url /guide."* It is `GET /guide`, and the work was
+deciding **where the builder lives**, not adding a route.
+
+Three options, and the first two are worse for reasons this file already records.
+Serving `data/speaking-to-the-house.html` off disk reintroduces exactly the
+staleness the generator was written to avoid — it reads a running server because
+"a second derivation is how a guide starts quietly lying", and a file on disk is a
+third. Requiring `tools/make-guide.js` from server.js puts the page outside the
+deploy contract: `push.sh` copies **server.js and nothing else** by construction,
+so `/guide` would break on any box where somebody forgot a second copy — the trap
+this file already records for the icon generator.
+
+So the page builder moved **into server.js**, where `/do`'s reference page and
+`/setup` already live, and `tools/make-guide.js` became a **thin client** that
+fetches `/guide` and saves it. The file is still wanted: the guide is sent to the
+family through Messages and has to open with no network at all. One definition,
+two media, no copy step, and it cannot go stale.
+
+**The move was verified by diffing its own output.** A mechanical move should
+change nothing, and that is checkable: the page served by the moved code is
+**byte-identical** to the file the tool wrote before it. Doing it that way is what
+made the refactor safe to attempt at all — the guide embeds no live levels, only a
+date, so the comparison is exact on the same day.
+
+**Two bugs, and both are the same bug.** The rename regexes matched `roomBlock(`
+and `esc(` — a name followed by a bracket — and missed the two places a function
+is passed **by reference**: `rooms.map(roomBlock)` and `also.map(esc)`. `node
+--check` passes a ReferenceError happily, so `/guide` answered 500 on the first
+deploy. The general form, worth keeping because it will recur: **renaming by call
+site misses every callback.** Grep `\.(map|sort|filter|forEach)\(\s*\w+\s*\)`
+after any rename. Caught the second one that way rather than by another 500.
+
+**A throwaway instance is the check that should have come first.**
+`PORT=3121 node server.js` and one curl proved the page before the second deploy,
+which is the same cheap check this file already prescribes after editing the
+report — and it loads no schedules, so it cannot fire anything.
+
+**The footer had to learn which medium it was in.** It read "built from the house
+as it is today. Anything added or renamed after this will not be on this page" —
+true of a saved file, and a quiet lie on a page rebuilt per request. `guidePage`
+takes a `saved` flag and `tools/make-guide.js` asks for `/guide?saved=1`, so the
+served page says it is built fresh and the file admits it can age. One sentence
+apart, one builder.
+
+**One reporting bug of my own, mentioned because it is the shape to watch.** The
+new thin client counted rooms with `details class="room"` and said **eight** where
+there are seven — the Screens block wears the same class. It counts a marker only
+a room carries now. A tool that miscounts what it just wrote is a small lie in the
+one place you look to check the thing worked.
+
+### A room with two names (2026-08-26)
+
+*"i want to give synonyms to harshit room as kanu room."* `config.room_aliases`
+maps a spoken name onto a room — per-install, for the reason the groups, the
+good-night map and the room renames are: a family's own name for a room is
+knowledge about this house, and hard-coding it would deploy one household's
+names to another.
+
+**The design turns on one distinction: `roomsIndex()` was serving two jobs.**
+It is the *resolution* list (what does this word mean) and the *enumeration* list
+(what rooms are there), and those were the same list only because a room had one
+name. Adding aliases to it would have drawn **Harshit Room twice in the family
+guide**, twice on the reference page, and offered the model two enum values for
+one room. So `roomTargets()` is the resolution list — the index plus aliases —
+and `roomsIndex()` stays the enumeration one. Five sites resolve and take the
+new list: `/do/<room>`, `runAddress`, `houseReading`, `screenCommand` and
+`speechWords`. Everything that *enumerates* stays canonical.
+
+**It is a way in only, which was the user's call after considering the
+alternative.** The reply, the board, the guide and the log all keep the hub's own
+name: *"kanu room ki light band kar do"* is answered with *"The lights in Harshit
+Room are now off."* Echoing the spoken name was asked for and then withdrawn as
+not worth the complexity, and the reason it is complex is worth recording — the
+model answers from a **closed room enum**, so an echo cannot be sniffed out of
+the text afterwards. It would need the alias as an enum value, and then the same
+room arrives under two names in the reply and in the log. One room, one name in
+the record.
+
+**The alias has to reach five roads, and the transcriber is the one that is easy
+to forget.** `/do` and the free grammar path come free from `roomTargets`. The
+model needs it **in the prompt** rather than the enum. The command bar builds its
+whole vocabulary from `GET /do`, so the rooms there carry an `aliases` array —
+a new key, never a changed one, because `circuits` must stay an array of slugs
+that `nextWords()` concatenates with the actions. And `transcriptPrompt()` needs
+it most of all: *Kanu* is in no transcriber's vocabulary, and everything
+downstream is moot if the audio comes back as "can you".
+
+**Two ways an alias can do harm, both refused rather than honoured.** One that
+shadows a real room's slug would make that room **ambiguous** — `pick()` finds
+two candidates and refuses — so it would silently break every command to the room
+it was meant to help; the house's own names always win. And one pointing at a
+room this hub does not have is dropped rather than resolved to nothing, which
+would answer "no such circuit here" for every address under it.
+
+**`var`, beside `ROOM_RENAMES`, not `let`.** `applyConfig()` writes these before
+much of the file has been evaluated, and this file already records hitting the
+early-`let` ReferenceError twice in one session with `KIND_OVERRIDES`. Same
+reason the alias is slugged **inline** rather than through `slug()`, which is a
+const declared two thousand lines below and is not hoisted — the `GROUPS` block
+makes the same concession with the same comment.
+
+**One trap, and it is the one this file explicitly warns about.** The command bar
+lives inside the page's template literal, and the comment I wrote for `matchRoom`
+quoted a line of code **in backticks** — which ends the literal. `node --check`
+caught it; `push.sh`'s backtick audit would have too. Do not write a backtick in
+a comment inside that literal.
+
+**Tested on every road**, with HARSHIT ROOM dark and re-read immediately before
+each run rather than once for the session, so every `off` was a genuine no-op:
+five `/do` forms, the per-room listing, the grammar path (`kanu lights off`,
+0.1–1.2s, `via=grammar`), the Hinglish path, and two questions. Twelve room
+prefixes were checked for ambiguity — `h` is still ambiguous between
+`harshit-room` and `home-theatre`, which it was before. The transcriber
+vocabulary is the one part **not verified live**, since checking it needs audio;
+it is a one-line append and the alias is proven loaded by the `/do` grammar.
+
+**One pre-existing inconsistency noticed and left alone.** The command bar picks
+the *first* prefix match while the server refuses an ambiguous one, so typing
+`h lights off` in the field builds an address the server answers 300 to. That
+predates this work and is a real exception to the bar's own rule that it can
+never offer a word the server would refuse.
+
+**And a correction to the session before it:** the hub's config is
+`~/dashboard/config.json`, **not** `~/dashboard/data/config.json`. An earlier read
+of the wrong path returned nothing and was reported as "`kinds` is empty on the
+hub" — which happened to be true, checked again against the real file, but the
+evidence for it was a failed `cat`.
+
+### One kind, everywhere — and the address that threw the word away (2026-08-26)
+
+*"saare AC band kardo"* is the sentence, and answering it took two attempts
+because the first one guarded the wrong layer. **It switched off every light in
+the house, at half past seven in the evening, twice.** The road log is the only
+reason the house could be put back exactly: `src: "spoken"` against the
+household's own `elsewhere` separated my fifteen circuits from theirs.
+
+**The fault was in the address, not in the model.** The `house` branch of
+`runAddress` built `everything` and **never read the circuit word at all** — so
+`/do/house/acs/off`, `/do/house/parda/close` and `/do/house/xyzzy/off` were one
+address: all eighty-eight circuits, silently, reported as a success. The model
+answering `house` + `acs` was a reasonable reading of the sentence; it was the
+executor that widened it.
+
+**The first guard checked `house` + `all` and never fired, which is what proved
+it.** Its word test matched the sentence, the room was `house`, and it did not
+trigger — so `circuit` was not `all`, so the model *had* named the kind and the
+address had discarded it. **A guard on the voice road cannot fix a fault that
+lives in the address**, and a guard that does not fire is indistinguishable from
+no guard until something goes dark.
+
+So `HOUSE_KINDS` gives the house four collective circuits — `lights`, `fans`,
+`curtains`, `acs` — and **a word it cannot honour is a 404** naming the four,
+never the whole house. `/do/house/all` is unchanged, which is what the
+dashboard's all-off and `/do/house/off` have always used.
+
+What is left on the voice road is smaller and is about the model only: if it
+still answers `all` for a sentence that named a kind, the target is **narrowed**
+to that kind. Narrowing can only ever do less than was asked, which is
+recoverable; widening is the one answer that never is. `cobs` and `tv` are named
+in the sentence test and *not* in `HOUSE_KINDS`, so those refuse — a cob is a
+room's business, and "everything" is not a near-enough answer for it.
+
+**Two questions that look like one, and conflating them said something untrue out
+loud.** `isAcRecord` asks *how this is sent* — an IR unit needs the IR path, which
+is why every bulk sender splits on it. A kind needs *what it is*. The house has
+both: six IR units and HOME THEATRE 496, a relay on module 195. Asking the
+routing question of "every air conditioner" did **six of the seven** and then
+reported *"Every air conditioner is now off."* `isClimateRecord` is the second
+question. Under-doing is the safe direction; claiming it was everything is not.
+
+`isFanRecord` and `isLightRecord` were extracted in the same pass — the fan test
+was spelled out three times, in `circuitsOf`, in `hindiCircuits` and in the new
+kinds, with a comment at each apologising for it. They were one edit from
+disagreeing about whether a circuit is a fan.
+
+**Adding `house` to `GET /do`'s room list broke `tools/make-guide.js`**, which is
+worth keeping as the shape of the hazard rather than the bug. The command bar
+builds its vocabulary from that list precisely so the field cannot offer a word
+the server would refuse, so the house belonged in it — but the guide **walks the
+same list and fetches `/do/<room>` for each**, and there is no `/do/house`, so
+one unguarded fetch would have thrown and taken the whole guide with it. It is
+appended rather than prepended for a second reason: the bar matches a room by
+prefix, and `house` ahead of `harshit-room` would quietly change what a typed
+"h" means.
+
+**Verified end to end, and honest about which:** the ACs (`saare AC band kardo`
+and the English, `room=house circuit=acs`, seven sent, fifteen lit circuits
+byte-identical before and after — every AC was already off, so it was a hardware
+no-op) and the curtains (`saare parde rok do`, `stop`, which releases both relays
+and so cannot move a motor). The four refusals change nothing and were run.
+**`lights` and `fans` were not run end to end**, because the only way to do it is
+to darken or still an occupied house; their resolution is proven offline against
+the live device list — 70 lights, 4 fans, 5 curtains, 7 ACs, 86 circuits, no
+overlap, nothing orphaned, screens in no kind — and the re-aim makes the
+whole-house outcome unreachable for those sentences whatever the model answers.
+
+**The multi-target path was finished in the same session** and tested on rooms
+that were already dark, so it was a true no-op: two and three targets, correct
+slugs, and `title_` given the hyphens stripped so the voice says "Harshit Room"
+rather than one hyphenated word.
+
+**One measurement note.** The log's timestamps are UTC and the house is IST, so
+`13:54` in the JSONL is 19:24 in the room. I read it as eleven at night and wrote
+that into a comment before the hub's own clock corrected it. Ask the box what
+time it is.
+
+### Making the voice path four times faster (2026-08-27)
+
+Eight changes in one pass, all measured on the hub rather than over the tunnel. The baseline they were chosen against:
+
+| | before | after |
+|---|---|---|
+| spoken command, free grammar | 0.93–1.08s | unchanged |
+| **spoken command, model** | **4.31s** | **1.59–1.84s** |
+| spoken command said again | 4.31s | **0.91s** |
+| **question, whole house** | **4.31s** | **2.62s** |
+| question said again | 4.31s | 1.74s |
+| typed, grammar | 0.10–0.23s | unchanged |
+| transcription alone | 0.79s | unchanged |
+| bare OpenAI round trip from the hub | 0.89s | the floor for any of it |
+
+**The free path is four times faster than the model path, and that ratio is the whole economics of `/api/say`.** Everything below is either "get more sentences onto it" or "make the model path cheaper".
+
+**`gpt-audio` and `gpt-audio-mini` are on the key now, and the note above saying otherwise is out of date.** Measured: audio in, tool call out, **1.26–1.49s**, against 0.79s of transcription plus 2.6s of text model. It read `master room ke cobs full kar do` correctly and split `living ka main curtain khol do aur dining ke cobs thoda kam kar do` into two calls.
+
+**It races the transcription rather than replacing it, and that is the design.** Both start the moment the request arrives. The transcript still lands first and still gets the free grammar path; the audio call is only there to have already finished when the grammar declines. Replacing would have cost two things worth keeping: `heard`, which is the only way to find out what the house thought you said, and the free path itself. The price is one discarded call whenever the grammar wins, and `audio_model: ""` turns it off.
+
+**It accepts wav and mp3 only** — `m4a` is refused outright and calling an m4a "wav" is refused as *does not support the format you provided*. Shortcuts records m4a and this hub has no ffmpeg, so **the race is currently inert for the phone** and the serial path runs exactly as before. `toWav()` pipes through ffmpeg when it is there, detected once at startup, so `sudo apt install ffmpeg` is the whole of what turns it on. Piped rather than via a temp file deliberately: the endpoint's stated property is that the recording is never written down.
+
+**A question was doing its hub work *after* the model answered, and it did not have to.** `look` polls the hardware and re-reads the hub, and neither depends on what the model says. Started beside the call instead, keyed on `SAY_ASKS` — the same test that keeps a question away from the command grammar, so it fires on exactly the sentences that can reach `look` and never on a command. 4.31s to 2.62s, no behaviour change.
+
+**Three words were costing a fourfold slowdown each, and nothing had recorded it.** `kar`, `karo` and `thoda` survived the split, so `master cobs full kar do` (2.60s), `master ke cobs full karo` (3.08s) and `master cobs thoda tez karo` (2.95s) all paid a model call while `master cobs full` resolved locally in 0.95s. They are particles and filler now. Safe by the argument already in this file: nothing here is named any of them, the noun is untouched, and the worst outcome is a refusal from `pick()`.
+
+**The verb tails had drifted, which is why they are now written once.** `chalu kar do` matched and `chalu kar dena` did not — the same command, 1.75s against 0.1s, decided by how somebody ended the sentence. `SAY_DO` is the one spelling and `hinglishVerb()` builds each rule from it.
+
+**English puts the room last, and the grammar only understood room-first.** "turn on the fan in ashu" strips to `[on, fan, ashu]` and failed on `fan` not being a room. Tried only when the first word is not a room, so a normal sentence can never be reordered by accident, and the fallback is what it always was — the model.
+
+**The model answers with a word where the grammar answers with a number.** `gpt-audio-mini` returned `action: "full"` on one run of three, and `/do/master/cobs/full` is `No such action` — so the sentence was understood and then refused on a word `SAY_NUMBER` already maps. The grammar path never hit this because it translates before the address sees it. `normalAction()` now sits at the top of `actOn`, so the screens and the hub circuits cannot disagree about what "full" means either.
+
+**Repeated sentences are remembered, because a household says the same dozen things every night.** What is cached is the *resolution* and nothing else, which is safe because it does not depend on the state of the house: a relative action is still resolved against live readings inside `runAddress`, and `look` still recomputes its reading. Keyed on the words plus `houseShape()`, so a renamed room cannot be answered from a memory of the old one, and **punctuation is stripped from the key** — the identical clip came back as `chalu rakh ho.` once and `chalu rakh ho` the next, which is two sentences to a Map and one to a person. That is why the first repeat missed.
+
+**`houseShape()` had to be given a TTL of its own**, or it defeated the thing it serves: it is the key for two caches, so it is computed several times per sentence, and computing it walks every room's circuits. Ten seconds, and `applyConfig()` clears it outright so a console save is not made to wait.
+
+**The one number that mattered was not being recorded anywhere.** The history log carries `src` — voice, tap, schedule — but nothing said whether the words were resolved on the hub for nothing or paid a model call, which is the figure that decides whether any of this helped. `stats.said` counts every road, `/api/health` reports it, and the health panel says `N commands, X% free`. A `said` event goes to history carrying **the road, whether it came from a microphone, and whether it worked — and no transcript**, so the report footer's "neither the recording nor the words are kept" stays literally true.
+
+**`tools/say-eval.js` is what makes all of the above safe to change.** `say-speech-review.js` checks the wording of replies; nothing checked whether a sentence is *understood*, or whether it got there free. It lifts the parser out of `server.js` with the same trick and runs it against this house's own rooms and circuits — offline, no key, nothing sent, so it can be run on every edit. 42 cases, 32 of which must resolve locally and 10 of which must **not**: every question, every kind-across-the-house sentence, every ambiguity. That direction is the one that matters, because a wrong local resolution switches the wrong thing in silence while falling through to the model only costs time.
+
+It earned itself immediately: it caught that the new `SAY_DO`/`hinglishVerb` had to be lifted too, and four of my own expectations were wrong rather than the code — a room-first sentence returns the room **as it was said** (`pick()` resolves the prefix) while only a room-last one is canonicalised, and `light` reaches `lights` without the parser knowing about plurals.
+
+**Two traps, both already in this file and both hit again.** Building the eval's fixture, `area_devices` is a comma-separated **string** and the room's name is in `name`, not `sub_area_name` — copied from the wrong guess first and found every room empty. And **`applyConfig()` runs at line 1551 while the three new caches were declared at 6853**: a `let` reached before its declaration is a startup `ReferenceError` that `node --check` cannot see. Third time. They are `var`, up beside `ROOM_ALIASES`, where the others already sit for this exact reason — caught only by booting.
+
+**What was deliberately not changed.** The model timeout went 6s to 5s and no lower: a text call measured 2.6–3.3s at worst here, so the 3.5s that would suit the audio path would time out on the road that is still doing most of the work. And multi-target still runs sequentially — this file's own measurement about concurrent sockets holds whatever the model costs.
+
+### direct lights and indirect lights (2026-08-25)
+
+*"A lot of times the word cobs gets misheard."* It is not a word any transcriber
+expects, and a wrong guess there addresses the wrong circuit. So the declared group
+answers to **direct lights** as well, and the lights outside it to **indirect
+lights** — ordinary English that dictation gets right first time, and a description
+of what the fittings do rather than what they are called. `cobs` still works; this
+adds names rather than replacing one.
+
+**Membership comes from the declared group, never from the device name.** The
+`/^COB\b/` regex on names is exactly what stopped the ceiling tile working in
+anybody else's house, and inferring "this fitting is direct" from its label would
+be that same mistake in a new coat.
+
+**Both names, or neither — and that was a correctness bug caught in testing.**
+"Indirect" is defined as the lights *outside* the group, so in a room with no group
+it swallowed every light there including the downlights: HARSHIT ROOM has a single
+ungrouped COB, and `harshit indirect lights off` would have switched off a
+downlight while calling it indirect. A name that is wrong is worse than one that is
+missing, so a room with no declared group is offered neither and answers with the
+ordinary "I cannot find that". Six of seven rooms have both; Harshit has neither,
+and its one COB is addressed as `cob 1`. Note a config group would **not** fix that
+on its own: `GROUPS` filters `record_ids.length > 1`, so a one-lamp group is
+dropped before `groupsIn` ever sees it.
+
+**`speechWords` now accepts a two-word circuit**, which it had to for this to be
+worth anything: it capped the circuit at one word, so `ashu direct lights on` was
+four words and fell to the model — the whole point of the synonym being that it is
+said out loud. The two words are joined with a hyphen, which is how those slugs are
+already spelled, and **kept only if they resolve**: `ashu all lights off` joins to
+`all-lights`, which is not a circuit, so it returns null and goes to the model
+exactly as before rather than being refused. It resolves with the same `pick` that
+`runAddress` uses, so the two cannot disagree.
+
+That fixed a gap nobody had noticed: **every multi-word circuit name was paying a
+model call.** Measured after, all on the free grammar path — `ashu direct lights
+on` 426ms, `ashu indirect lights off` 496ms, `ashu direct on` 369ms (a unique
+prefix, so the word "lights" is optional), and `ashu foot light off` now
+`via=grammar` where it used to be `via=model`.
+
+**`SPEAK_PLURAL` could not see these, and it would have said "the direct lights is
+now on".** It was `/^the\s+\S*s\b/`, which tests only the *first* word after
+"the" — fine for "the cobs" and "the lights", wrong for any two-word plural. Now
+`/^the\s+.*s\b/`, and the `\b` is what keeps it honest: it still needs a word
+that *ends* in s, so "the bed spot" and "the main curtain" stay singular. Checked
+against ten real labels.
+
+Kept out of the transcriber's vocabulary hint (`COLLECTIVE_SAY`) deliberately —
+they are plain English that every model already gets right, which is the entire
+reason they exist. `cobs` stays in the hint.
+
+**Tested as no-ops throughout**, ASHU being lit at the time: the cobs were already
+on at 100% and every indirect light already off, so both commands were verified to
+resolve and change nothing, confirmed by reading the room back.

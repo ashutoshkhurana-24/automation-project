@@ -30,13 +30,48 @@ http://192.168.1.3:3000/do/ashu/cobs/down
 http://192.168.1.3:3000/do/ashu/cobs/40
 http://192.168.1.3:3000/do/living/main-curtain/open
 http://192.168.1.3:3000/do/master/off          ← the whole room
-http://192.168.1.3:3000/do/house/off
+http://192.168.1.3:3000/do/house/off           ← the whole house
+http://192.168.1.3:3000/do/house/acs/off       ← every AC, and nothing else
 http://192.168.1.3:3000/do/cue/movie-night
 ```
 
 **Rooms and circuits are the names on screen**, lowercased with hyphens, and any
 **unambiguous prefix** works — `/do/ashu/foot/off` finds Ashu Room's Foot Light.
 Three collective names exist in every room: `all`, `lights` and `cobs`.
+
+**A room can answer to a second name.** `config.room_aliases` maps a spoken name
+onto a room, so Harshit Room also answers to `kanu`:
+
+```
+http://192.168.1.3:3000/do/kanu-room/lights/off
+http://192.168.1.3:3000/do/kanu/lights/off      ← a prefix, as usual
+```
+
+It is a way **in** only. Every reply, the board, the family guide and the history
+log keep the hub's own name, so *"kanu room ki light band kar do"* is answered
+with *"The lights in Harshit Room are now off."* One room is never two names in
+the record. An alias that would shadow a real room's name is ignored rather than
+honoured — it would make that room ambiguous and refuse every command to it.
+
+### The whole house takes a kind
+
+`house` is a room meaning all of them, and it carries a circuit word like any
+other room. Four kinds reach across the house:
+
+| | |
+|---|---|
+| `/do/house/lights/off` | every light — the fans and the ACs keep running |
+| `/do/house/fans/off` | every fan |
+| `/do/house/curtains/close` | every curtain (`open`, `close` or `stop` only) |
+| `/do/house/acs/off` | every air conditioner, the relay one included |
+| `/do/house/all/off` | everything except the curtains, which is what `/do/house/off` has always meant |
+
+**A word it cannot honour is a 404, not the whole house.** `/do/house/cobs/off`
+and `/do/house/anything/off` refuse and name the four kinds. That is worth
+knowing because it did not always: the house address used to read the room and
+**throw the circuit word away**, so every one of those switched off all
+eighty-eight circuits and reported success. If a shortcut of yours relied on
+that, it was not doing what it said.
 
 ### The actions
 
@@ -272,6 +307,27 @@ Terse English works too, and never leaves the box — `living off`,
 command bar takes, so they resolve on the hub in about 200ms with no model call
 and no cost. Everything else goes to the model, which is what reads the Hindi.
 
+### One kind, across the whole house
+
+*"Saare AC band kardo"* switches off every air conditioner and leaves the lights
+alone. Four kinds work this way — the lights, the fans, the curtains and the air
+conditioners — and each touches only its own kind:
+
+```
+saare AC band kardo
+saare pankhe band karo
+turn off all the lights
+saare parde band kar do
+sab band kar do            ← this one really is the whole house
+```
+
+**It will not answer a kind with the whole house.** That is not a nicety: the
+sentence at the top of that list once switched off every light in the house at
+half past seven in the evening, because the address behind it read the room and
+discarded the word `acs`. Both halves are fixed — the address honours the kind,
+and a kind it does not know is refused rather than widened. `cobs` and `tv` are
+deliberately refused house-wide, because a cob is a room's business.
+
 ### Two Hindi nouns that work
 
 `pankha` and `parda` resolve, so *"ashu ka pankha band karo"* and *"living ka
@@ -458,6 +514,10 @@ the fan on, which is what it used to do. If you want something switched, use a
 verb: *"band karo"*, not *"band hai"*.
 
 ### The guide for everybody else
+
+**It is on the dashboard at `/guide`** — `http://192.168.1.3:3000/guide` — built
+fresh on every request, so it is never out of date with the house. That is the
+link to give anybody at home.
 
 `data/speaking-to-the-house.html` is a single self-contained page to send to the
 family: how to phrase things, every circuit in every room with what each one can

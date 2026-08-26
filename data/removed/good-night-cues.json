@@ -1,0 +1,196 @@
+[
+  {
+    "id": "ashu-good-night",
+    "name": "Good Night · Ashu",
+    "note": "ashu room",
+    "steps": [
+      {
+        "record_id": 449,
+        "on": true,
+        "level": 59,
+        "tune": 100
+      },
+      {
+        "record_id": 450,
+        "on": true,
+        "level": 59,
+        "tune": 100
+      },
+      {
+        "record_id": 451,
+        "on": true,
+        "level": 59,
+        "tune": 100
+      },
+      {
+        "record_id": 452,
+        "on": true,
+        "level": 59,
+        "tune": 100
+      },
+      {
+        "record_id": 453,
+        "on": true,
+        "level": 58,
+        "tune": 100
+      },
+      {
+        "record_id": 454,
+        "on": false
+      },
+      {
+        "record_id": 455,
+        "on": false
+      },
+      {
+        "record_id": 456,
+        "on": false
+      },
+      {
+        "record_id": 459,
+        "on": false
+      },
+      {
+        "record_id": 460,
+        "on": false
+      },
+      {
+        "record_id": 461,
+        "on": false
+      }
+    ]
+  },
+  {
+    "id": "master-good-night",
+    "name": "Good Night · Master",
+    "note": "Master Room, foot light on",
+    "steps": [
+      {
+        "record_id": 463,
+        "on": false
+      },
+      {
+        "record_id": 464,
+        "on": false
+      },
+      {
+        "record_id": 465,
+        "on": false
+      },
+      {
+        "record_id": 466,
+        "on": false
+      },
+      {
+        "record_id": 467,
+        "on": false
+      },
+      {
+        "record_id": 468,
+        "on": false
+      },
+      {
+        "record_id": 469,
+        "on": false
+      },
+      {
+        "record_id": 470,
+        "on": false
+      },
+      {
+        "record_id": 471,
+        "on": false
+      },
+      {
+        "record_id": 472,
+        "on": false
+      },
+      {
+        "record_id": 473,
+        "on": true
+      }
+    ]
+  },
+  {
+    "id": "harshit-good-night",
+    "name": "Good Night · Harshit",
+    "note": "Harshit Room, foot light on",
+    "steps": [
+      {
+        "record_id": 440,
+        "on": false
+      },
+      {
+        "record_id": 441,
+        "on": false
+      },
+      {
+        "record_id": 442,
+        "on": false
+      },
+      {
+        "record_id": 443,
+        "on": false
+      },
+      {
+        "record_id": 444,
+        "on": false
+      },
+      {
+        "record_id": 445,
+        "on": false
+      },
+      {
+        "record_id": 446,
+        "on": false
+      },
+      {
+        "record_id": 447,
+        "on": true
+      }
+    ]
+  },
+  {
+    "id": "parent-good-night",
+    "name": "Good Night · Parent",
+    "note": "Parent Room, foot light on",
+    "steps": [
+      {
+        "record_id": 429,
+        "on": false
+      },
+      {
+        "record_id": 431,
+        "on": false
+      },
+      {
+        "record_id": 432,
+        "on": false
+      },
+      {
+        "record_id": 433,
+        "on": false
+      },
+      {
+        "record_id": 434,
+        "on": false
+      },
+      {
+        "record_id": 435,
+        "on": false
+      },
+      {
+        "record_id": 436,
+        "on": false
+      },
+      {
+        "record_id": 437,
+        "on": false
+      },
+      {
+        "record_id": 438,
+        "on": true
+      }
+    ]
+  }
+]

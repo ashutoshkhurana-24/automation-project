@@ -20,6 +20,7 @@ const dgram = require('dgram');
 const path = require('path');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const express = require('express');
 const WebSocket = require('ws');
 
@@ -73,6 +74,27 @@ const OPENAI_BASE = process.env.OPENAI_BASE || 'https://api.openai.com';
    key. Overridable, because the ranking is a measurement and not a law. */
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL
   || config.transcribe_model || 'gpt-4o-transcribe';
+
+/* The model that hears the command itself, skipping the words entirely.
+ *
+ * The note above says gpt-4o-audio-preview was not on this key. That has
+ * changed: `gpt-audio` and `gpt-audio-mini` both are, and both answer with a
+ * tool call straight from the recording. Measured on the hub against the same
+ * clips — 1.26-1.49s for gpt-audio-mini, against 0.79s of transcription plus
+ * 2.6s of text model, and it read "master room ke cobs full kar do" and a
+ * two-room sentence correctly.
+ *
+ * It runs *beside* the transcription rather than instead of it, which is the
+ * whole design (see /api/hear): the transcript still arrives, still gets the
+ * free grammar path first, and is still what `heard` reports when the house does
+ * the wrong thing. The audio call is only there to be already finished when the
+ * grammar declines.
+ *
+ * Set it to an empty string to switch the race off and pay latency instead of
+ * the second call. */
+const AUDIO_MODEL = process.env.OPENAI_AUDIO_MODEL != null
+  ? process.env.OPENAI_AUDIO_MODEL
+  : (config.audio_model != null ? config.audio_model : 'gpt-audio-mini');
 
 const JSON_PATH = path.join(__dirname, 'data', 'devices.json');
 const CSV_PATH = path.join(__dirname, 'data', 'neo_console_devices.csv');
@@ -181,6 +203,23 @@ function roomKey(room) {
 
 var ROOM_RENAMES = {};
 var DEVICE_RENAMES = {};
+/* `var`, beside ROOM_RENAMES and for its reason: applyConfig() writes these
+   before much of the file has been evaluated, and a `let` reached early is a
+   startup ReferenceError that node --check cannot see — which this file records
+   having hit twice in one session with KIND_OVERRIDES. */
+var ROOM_ALIASES = {};
+
+/* Up here with the rest, and `var` rather than `let`, for the reason this file
+   already records twice: applyConfig() runs long before the voice code is
+   reached and clears all three, and a `let` touched before its declaration is a
+   startup ReferenceError that `node --check` cannot see. It happened again
+   writing these — caught only by booting.
+   What they hold: the shape of the house as a cache key, the prompt built from
+   it, and the resolutions the model has already given for sentences somebody
+   says every night. */
+var houseShapeCache = { at: 0, key: '' };
+var sayPromptCache = { shape: null, text: '' };
+var sayMemory = new Map();
 
 /**
  * Both brightness and colour temperature ride the same encoding: "false" is 0,
@@ -479,6 +518,34 @@ const isAcRecord = (rec) => !!rec
   && rec.device_type === 'IR';
 const itemIsAc = (it) => !!it.entry && isAcRecord(it.entry.record);
 
+/* Fan and light, written once. Three callers have to agree about whether a
+   circuit is a fan — circuitsOf() for /do/<room>/lights and the board's Lights
+   section, hindiCircuits() for "pankha", and the house-wide kinds — and while the
+   test was spelled out at each of them they were one edit away from disagreeing.
+   The install's declared kind wins; this hub's own isFan flag reads false for all
+   four of the actual fans, so the device name is the fallback. Read at call time,
+   because /setup reassigns KIND_OVERRIDES. */
+/* Two different questions, and conflating them said something untrue out loud.
+   isAcRecord above asks **how this is sent** — an IR air conditioner needs the IR
+   path, and every bulk sender in this file splits on it for that reason. This asks
+   **what it is**, which is the question a kind has to answer. The house has both:
+   six IR units and the Home Theatre's relay one on module 195, `device_type: 'RL'`.
+   Asking the routing question of "every air conditioner" quietly did six of the
+   seven and then reported "Every air conditioner is now off." Under-doing is the
+   safe direction; claiming it was everything is not. */
+const isClimateRecord = (rec) => !!rec && (rec.app_type || '') === 'AC';
+
+const isFanRecord = (rec) => {
+  const declared = KIND_OVERRIDES[String(rec.record_id)];
+  if (declared) return declared === 'fan';
+  return rec.isFan === 'true' || /\bFAN\b/i.test(String(rec.device_name || ''));
+};
+const isLightRecord = (rec) => {
+  const declared = KIND_OVERRIDES[String(rec.record_id)];
+  return (declared ? declared === 'light' : (rec.app_type || 'L') === 'L')
+    && !isFanRecord(rec);
+};
+
 /** The sentence a schedule reads as, used by the API and spoken back. */
 function scheduleSays(sch) {
   const t = scheduleTarget(sch);
@@ -535,6 +602,11 @@ const scheduleList = () => schedules.map(sch => ({
 
 /** Do the thing. Shared by the tick and by "run it now" in the UI. */
 async function runSchedule(sch) {
+  /* Nobody is at the dashboard when this fires, and that is the whole point of
+     recording it: a schedule and a tap look identical in the hub's record. */
+  return road.run('schedule', () => runSchedule_(sch));
+}
+async function runSchedule_(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return fireCue(t.scene);
@@ -616,6 +688,9 @@ async function fireTargets(items, want) {
  * cue" — a schedule that lights the porch at dusk should leave the porch dark
  * two hours later and touch nothing else. */
 async function runScheduleOff(sch) {
+  return road.run('schedule', () => runScheduleOff_(sch));
+}
+async function runScheduleOff_(sch) {
   const t = scheduleTarget(sch);
   if (!t) throw new Error('what this schedule points at is gone');
   if (t.kind === 'cue') return clearCue(t.scene);
@@ -786,7 +861,68 @@ let reading = null;
 // When we last commanded each circuit, so a read that predates the command can
 // be told apart from one that reflects it.
 const commandedAt = new Map();
-const markCommanded = (recordId) => commandedAt.set(recordId, Date.now());
+
+/* Which road a command came down, so the monthly report can say how the house
+ * was told rather than only that it was told by us.
+ *
+ * An AsyncLocalStorage rather than an argument threaded through the send path:
+ * `markCommanded` has exactly two callers but sits under sendToHub and
+ * sendBatchToHub, which are reached from seventeen and six places through
+ * setRecords, sendSteps, acPower, the curtain verbs and the projector split. A
+ * module-level "current road" would have been a bug the first time a schedule
+ * fired while somebody was speaking — two overlapping awaits, one variable —
+ * and this is the standard library's answer to exactly that.
+ */
+const road = new AsyncLocalStorage();
+const commandedVia = new Map();
+
+const markCommanded = (recordId) => {
+  commandedAt.set(recordId, Date.now());
+  /* `tap` is the floor rather than `unknown`: everything that reaches here has
+     been commanded by this process, and the only paths with no road set are the
+     dashboard's own endpoints, which is what a tap is. */
+  commandedVia.set(recordId, road.getStore() || 'tap');
+};
+
+/* The roads, in the order the report reads them out: the deliberate ones first,
+ * the unattended ones next, and the two that mean "somebody was here but not on
+ * this dashboard" last. `us` is the legacy value written before roads were
+ * recorded at all — kept so a month that straddles the change is not silently
+ * reattributed, and it will age out on its own.
+ */
+const ROADS = ['voice', 'spoken', 'address', 'cue', 'schedule', 'timer', 'tap', 'us', 'elsewhere'];
+const ROAD_LABEL = {
+  voice: 'spoken out loud',
+  spoken: 'typed as a sentence',
+  address: 'a shortcut or a widget',
+  cue: 'a cue',
+  schedule: 'a schedule',
+  timer: 'a sleep timer',
+  tap: 'tapped on the dashboard',
+  us: 'the dashboard, before roads were recorded',
+  elsewhere: 'a wall switch, or another app',
+};
+const ROAD_COLOUR = {
+  voice: 'var(--accent)', spoken: '#f2a233', address: '#7fb2e0', cue: '#b98cc4',
+  schedule: '#7fc4a8', timer: '#c4b98c', tap: 'rgba(159,176,189,.85)',
+  us: 'rgba(159,176,189,.6)', elsewhere: 'rgba(159,176,189,.32)',
+};
+/** An unknown or missing value is "elsewhere", never a guess at a road. */
+const roadOf = (v) => (ROADS.includes(String(v)) ? String(v) : 'elsewhere');
+
+/** Which road a request is, decided from its own path so no handler has to say. */
+function roadFor(req) {
+  const at = req.path || '';
+  if (at === '/api/hear') return 'voice';
+  /* A spoken cue stays `spoken`: the road is how the person told the house, and
+     they said a sentence. Only a cue fired as a cue counts as one. */
+  if (at === '/api/say') return 'spoken';
+  if (/^\/api\/cue\/[^/]+\/fire$/.test(at)) return 'cue';
+  if (at === '/do' || at.startsWith('/do/')) {
+    return at.startsWith('/do/cue/') ? 'cue' : 'address';
+  }
+  return 'tap';
+}
 
 // Counters behind /api/health. This runs unattended on a box nobody looks at,
 // so "is it still talking to the hub?" has to be answerable without reading logs.
@@ -794,6 +930,16 @@ const startedAt = Date.now();
 const stats = {
   readsOk: 0, readsFailed: 0, consecutiveReadFailures: 0,
   commandsSent: 0, commandsFailed: 0, cuesFired: 0, schedulesFired: 0,
+  /* Which road a spoken sentence took, and whether it arrived as audio.
+   *
+   * This is the number the whole of /api/say turns on and it was not being
+   * recorded anywhere: the history log carries `src` (voice, tap, schedule) but
+   * nothing said whether the words were resolved on the hub for nothing or paid
+   * a model call. Measured on the live house, that is 0.9s against 4.3s for the
+   * same spoken sentence — so "how often does the free path win" is the one
+   * figure that says whether a change to the tables or the prompt helped. */
+  said: { grammar: 0, model: 0, cancel: 0, goodnight: 0, none: 0, cached: 0, audio: 0 },
+  heard: 0,
 };
 
 /* ── asking the hardware, rather than the hub ──────────────────────────────
@@ -1127,6 +1273,10 @@ function sendBatchToHub(commands, gapMs) {
 const app = express();
 app.use(express.json());
 
+/* Every request runs inside its own road, so markCommanded can name it without a
+   single handler being changed. First, so nothing routes outside a context. */
+app.use((req, res, next) => road.run(roadFor(req), () => next()));
+
 /* Nothing this box served was compressed, and it is mostly text. The page is
    358KB of HTML on every walk-up and /api/devices is 29KB every time the house
    moves; gzipped they are 98KB and 2.4KB. On a wall tablet over Wi-Fi that is
@@ -1353,6 +1503,12 @@ let KIND_OVERRIDES = {};
  * and the hub sockets are already open, so those two say "restart to apply" and
  * mean it. */
 function applyConfig() {
+  /* The prompt and the answer cache are both keyed on the shape of the house, and
+     that key is held for ten seconds. A console save must not wait them out. */
+  houseShapeCache = { at: 0, key: '' };
+  sayPromptCache = { shape: null, text: '' };
+  sayMemory.clear();
+
   GROUPS = (config.groups || [])
     .filter((g) => g && g.room && Array.isArray(g.record_ids) && g.record_ids.length > 1)
     .map((g) => ({
@@ -1379,6 +1535,23 @@ function applyConfig() {
   for (const k of Object.keys(dn)) {
     const to = String(dn[k]).trim();
     if (to) DEVICE_RENAMES[String(Number(k))] = to;
+  }
+
+  /* A second name a room answers to — "kanu room" for HARSHIT ROOM. Config
+     rather than code, for the reason the groups and the good-night map are:
+     a family's own name for a room is knowledge about this house, and hard-coding
+     it would deploy one household's names to another. After ROOM_RENAMES, so
+     roomKey() below resolves a rename first and an alias can point at either
+     spelling. */
+  ROOM_ALIASES = {};
+  const ra = config.room_aliases || {};
+  for (const k of Object.keys(ra)) {
+    /* Slugged inline, the same concession GROUPS makes above: slug() is a const
+       declared a couple of thousand lines below and is not hoisted. */
+    const sl = String(k).trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const to = roomKey(ra[k]);
+    if (sl && to) ROOM_ALIASES[sl] = to;
   }
 
   KIND_OVERRIDES = {};
@@ -2854,6 +3027,10 @@ app.get('/api/health', (req, res) => {
       address: t.ip, fails: t.fails, apps: t.apps.length,
     })),
     cues_fired: stats.cuesFired,
+    /* The free path against the paid one, since the process started. `grammar`
+       high is the goal: it is the road that costs nothing and answers four
+       times faster. */
+    said: { ...stats.said, heard: stats.heard },
     devices: devices.size,
     scenes: scenes.length,
     clients: sseClients.size,
@@ -4341,6 +4518,40 @@ function roomsIndex() {
   return out;
 }
 
+/**
+ * Every word a room answers to, for **resolving** an address — the house's own
+ * names plus any declared alias.
+ *
+ * Deliberately not folded into roomsIndex(), which is the *enumeration* list:
+ * the reference page, the `/do` grammar, the model's room enum, the family guide
+ * and the transcriber's vocabulary all walk that one, and an alias added there
+ * would have drawn Harshit Room twice in the guide and offered the model two
+ * values for one room. Resolution wants every name; enumeration wants each room
+ * once. They were the same list until a room had two names.
+ */
+function roomTargets() {
+  const index = roomsIndex();
+  const out = [...index].map(([sl, name]) => ({ slug: sl, name }));
+  const known = new Set(index.values());
+  for (const sl of Object.keys(ROOM_ALIASES)) {
+    /* The house's own names always win. An alias that shadows a real room slug
+       would make that room *ambiguous* rather than aliased — pick() would find
+       two candidates and refuse — so it would silently break every command to
+       the room it was meant to help. And one pointing at a room this hub does
+       not have is dropped rather than resolved to nothing, which would answer
+       "no such circuit here" for every address under it. */
+    if (index.has(sl) || !known.has(ROOM_ALIASES[sl])) continue;
+    out.push({ slug: sl, name: ROOM_ALIASES[sl] });
+  }
+  return out;
+}
+
+/** The alias slugs pointing at one room, for the places that teach the names. */
+function aliasesOf(roomName) {
+  return Object.keys(ROOM_ALIASES)
+    .filter((sl) => ROOM_ALIASES[sl] === roomName && !roomsIndex().has(sl));
+}
+
 /** Matches a slug exactly, then as a unique prefix. Ambiguity is an error, not a guess. */
 function pick(want, candidates) {
   const exact = candidates.filter(c => c.slug === want);
@@ -4381,16 +4592,54 @@ function hindiCircuits(want, circuits) {
   const allOf = (test) => circuits.filter(
     (c) => c.records.length && c.records.every(test));
 
-  if (HINDI_FAN.test(want)) {
-    /* The same test circuitsOf() uses, override first — this hub's own isFan
-       flag reads false for all four of the actual fans in the house. */
-    return allOf((r) => (KIND_OVERRIDES[String(r.record_id)] || '') === 'fan'
-      || (!KIND_OVERRIDES[String(r.record_id)]
-          && (r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || '')))));
-  }
-  if (HINDI_CURTAIN.test(want)) return allOf((r) => (r.app_type || '') === 'C');
+  if (HINDI_FAN.test(want)) return allOf(isFanRecord);
+  if (HINDI_CURTAIN.test(want)) return allOf(isCurtainRecord);
   return null;
 }
+
+/**
+ * The kinds that mean the same thing in every room, so that `house` can carry a
+ * circuit word: /do/house/acs/off is every air conditioner, not the whole house.
+ *
+ * This exists because of a real fault, and it is worth stating plainly. The
+ * `house` branch of runAddress built `everything` and **never read the circuit
+ * word at all** — so /do/house/acs/off, /do/house/parda/close and even
+ * /do/house/xyzzy/off were all the same address: all eighty-eight circuits.
+ * Nothing refused, nothing warned. A spoken "saare AC band kar do" came down that
+ * path, the model quite reasonably answered `house` + `acs`, and the house went
+ * dark on people who were in it.
+ *
+ * Two lessons, both already in this file and both re-learned the hard way:
+ * an address that cannot do what was asked must **refuse**, because widening it
+ * to something larger is the one answer that is never right; and a guard placed
+ * on the voice road cannot fix a fault that lives in the address — the guard
+ * written for this bug was correct, and useless, because it was checking for
+ * `all` while the word being discarded downstream was `acs`.
+ */
+const HOUSE_KINDS = [
+  { slug: 'lights', label: 'every light', test: isLightRecord,
+    words: /^(?:light|lights|lamp|lamps|batti|battiyan|battian)$/ },
+  { slug: 'fans', label: 'every fan', test: isFanRecord,
+    words: /^(?:fan|fans)$/, hindi: HINDI_FAN },
+  { slug: 'curtains', label: 'every curtain', test: isCurtainRecord,
+    words: /^(?:curtain|curtains|blind|blinds)$/, hindi: HINDI_CURTAIN },
+  { slug: 'acs', label: 'every air conditioner', test: isClimateRecord,
+    words: /^(?:ac|acs|a-c|a-c-s|climate|air-con|air-cons|aircon|aircons|air-conditioner|air-conditioners|air-conditioning)$/ },
+];
+
+/** The kind a word names, or null when it names none of them. */
+function houseWideKind(word) {
+  const w = slug(word || '');
+  if (!w) return null;
+  return HOUSE_KINDS.find(
+    (k) => k.words.test(w) || (k.hindi && k.hindi.test(w))) || null;
+}
+
+/** Whether a word means the whole place rather than a kind within it. */
+const meansEverything = (word) => {
+  const w = slug(word || '');
+  return !w || w === 'all' || w === 'everything';
+};
 
 /** Every circuit of a room, plus the collective names worth having. */
 function circuitsOf(roomName) {
@@ -4398,17 +4647,9 @@ function circuitsOf(roomName) {
     .filter(({ room }) => roomKey(room) === roomName)
     .map(({ record }) => record);
 
-  /* The same override the board honours, so /do/<room>/lights and the Lights
-     section of the board cannot disagree about whether a circuit is a fan. */
-  const declared = (r) => KIND_OVERRIDES[String(r.record_id)];
-  const isFan = (r) => declared(r) ? declared(r) === 'fan'
-    : (r.isFan === 'true' || /\bFAN\b/i.test(String(r.device_name || '')));
-  const isLight = (r) => (declared(r) ? declared(r) === 'light'
-    : (r.app_type || 'L') === 'L') && !isFan(r);
-
   const groups = [
     { slug: 'all', label: 'everything', records: here.filter(r => (r.app_type || '') !== 'C') },
-    { slug: 'lights', label: 'the lights', records: here.filter(isLight) },
+    { slug: 'lights', label: 'the lights', records: here.filter(isLightRecord) },
     /* Whatever this install has declared — one address per group, named by the
        group rather than by a word this code happened to know. */
     ...groupsIn(roomName).map((g) => ({
@@ -4416,6 +4657,36 @@ function circuitsOf(roomName) {
       records: here.filter(r => g.record_ids.includes(Number(r.record_id))),
     })),
   ].filter(g => g.records.length > 1);          // a group of one is just the circuit
+
+  /* "cobs" is misheard constantly — it is not a word any transcriber expects, and
+   * a wrong guess there addresses the wrong circuit. So the declared group answers
+   * to **direct lights** as well, and the lights outside it to **indirect
+   * lights**: both are ordinary English that dictation gets right first time, and
+   * they say what the fittings actually do rather than what they are called.
+   *
+   * Membership still comes from the declared group, never from the name — the
+   * regex on device names was the thing that stopped this working in anybody
+   * else's house, and guessing which fittings are "direct" from their labels
+   * would be the same mistake in a new coat.
+   *
+   * Both names, or neither. "Indirect" means the lights *outside* the declared
+   * group, so in a room with no group it would swallow every light there
+   * including the downlights — HARSHIT ROOM has a single ungrouped COB, and
+   * "harshit indirect lights off" would have switched off a downlight while
+   * calling it indirect. A name that is wrong is worse than one that is missing,
+   * so a room that has never declared which fittings are direct is offered
+   * neither and answers with the ordinary "I cannot find that".
+   */
+  const inGroup = new Set(groupsIn(roomName)
+    .flatMap((g) => g.record_ids.map(Number)));
+  if (inGroup.size) {
+    const direct = here.filter((r) => isLightRecord(r) && inGroup.has(Number(r.record_id)));
+    const indirect = here.filter((r) => isLightRecord(r) && !inGroup.has(Number(r.record_id)));
+    /* One record is enough, unlike a group's own name above: this is a phrase
+       somebody says from habit, and a room where it half works is worse. */
+    if (direct.length) groups.push({ slug: 'direct-lights', label: 'the direct lights', records: direct });
+    if (indirect.length) groups.push({ slug: 'indirect-lights', label: 'the indirect lights', records: indirect });
+  }
 
   // The hub writes one label with full stops in it — T.V — and `t-v` is not an
   // address anybody would guess, so the stops come out before slugging.
@@ -4644,7 +4915,13 @@ function doPage(host) {
         + '<td class="acts">' + escHtml(actionsFor(c.records).join(' ')) + '</td>'
         + '<td class="now">' + escHtml(state) + '</td></tr>';
     });
+    /* Named where somebody is reading the room's own addresses, because an alias
+       nobody can find is an alias nobody uses. The heading stays the house's own
+       name: this is a second way in, not a rename. */
+    const also = aliasesOf(name);
     return '<section><h2>' + escHtml(title_(name)) + '</h2>'
+      + (also.length ? '<p class="why">Also answers to '
+          + also.map((a) => code('/do/' + a + '/off')).join(' ') + '</p>' : '')
       + '<p class="why">Also ' + code('/do/' + sl + '/off') + ' for the whole room, and '
       + '<a href="/do/' + sl + '">/do/' + sl + '</a> to list it as JSON. '
       + 'Any address here also answers to a unique prefix — ' + code('/do/' + sl.split('-')[0] + '/all/off') + '.</p>'
@@ -4734,7 +5011,8 @@ function doPage(host) {
 + '     This page is the same data the dashboard’s own command bar loads, so it cannot drift\n'
 + '     from what the server accepts. Click any address to copy it.</p>\n'
 + '  <p class="nav"><a href="/">← The board</a> <a href="/setup">Setup</a>\n'
-+ '     <a href="/do?json=1">This page as JSON</a> <a href="/api/health">Health</a></p>\n'
++ '     <a href="/do?json=1">This page as JSON</a> <a href="/api/health">Health</a>\n'
++ '     <a href="/guide">The family guide</a></p>\n'
 + '\n'
 + '  <section>\n'
 + '    <h2>The four shapes</h2>\n'
@@ -4744,6 +5022,9 @@ function doPage(host) {
 + '    <table><tbody>\n'
 + '      <tr><td>' + code('/do/<room>/<circuit>/<action>') + '</td><td class="what">One circuit, or one group of them.</td></tr>\n'
 + '      <tr><td>' + code('/do/<room>/<action>') + '</td><td class="what">The whole room. <code>house</code> is a room meaning all of them.</td></tr>\n'
++ '      <tr><td>' + code('/do/house/<kind>/<action>') + '</td><td class="what">One kind everywhere: '
++       HOUSE_KINDS.map(k => '<code>' + k.slug + '</code>').join(', ')
++       '. A word the house cannot honour is a 404, never the whole house.</td></tr>\n'
 + '      <tr><td>' + code('/do/cue/<id>') + '</td><td class="what">Fire a cue.</td></tr>\n'
 + '      <tr><td>' + code('/do/cue/<id>/<action>') + '</td><td class="what">on, off, set, clear or toggle.</td></tr>\n'
 + '    </tbody></table>\n'
@@ -4751,7 +5032,9 @@ function doPage(host) {
 + '       at the level <i>and</i> the colour you meant rather than one then the other:\n'
 + '       ' + code('/do/ashu/cobs/40/warm') + ' or ' + code('/do/ashu/cobs/40+warm') + '.\n'
 + '       Every room has the collective names <code>all</code>, <code>lights</code> and its declared\n'
-+ '       groups. <span class="warn">These are GET requests that change the house</span> — a link\n'
++ '       groups, and <code>house</code> takes <code>all</code> or one of the four kinds \u2014 so\n'
++ '       ' + code('/do/house/acs/off') + ' is every air conditioner and leaves the lights alone.\n'
++ '       <span class="warn">These are GET requests that change the house</span> — a link\n'
 + '       is a command, which is why nothing on this page is clickable except the JSON listings.</p>\n'
 + '  </section>\n'
 + '\n'
@@ -4812,6 +5095,643 @@ function doPage(host) {
 }
 
 /** The whole map, so you can see every address you can type. */
+
+/* ── the family guide ─────────────────────────────────────────────────────
+ *
+ * The page at GET /guide: one self-contained page for the people who live here,
+ * naming every circuit in every room and what each one will actually take.
+ *
+ * It lives in server.js rather than in tools/make-guide.js, where it was written,
+ * for two reasons. `deploy/push.sh` copies **server.js and nothing else** by
+ * construction, so a page built anywhere else could not be served by the hub
+ * without a second copy step nobody would remember — this file already records
+ * that trap for the icon generator. And building it per request from live state
+ * means it cannot go stale: the whole reason the generator read a running server
+ * instead of devices.json was that a second derivation starts quietly lying, and
+ * a file on disk is a third.
+ *
+ * The tool is now a thin client that fetches this page and saves it, which is
+ * still wanted — the guide is sent to the family through Messages and has to work
+ * with no network at all.
+ *
+ * Everything below was moved verbatim; the only edits are names. `esc` became
+ * escHtml, which it was byte-for-byte, and the generic helpers took a `guide`
+ * prefix so a grep in a fifteen-thousand-line file stays honest.
+ */
+/** A slug is hyphenated; a person says the words. "foot-light" -> "foot light".
+    An acronym is lifted, because "ac" printed lower case reads as a word. */
+const guideSaid = (slug) => String(slug).replace(/-/g, ' ')
+  .replace(/\b(ac|tv|led)\b/g, (m) => m.toUpperCase());
+
+/** cob 2 before cob 10, which the installer's own order does not manage. */
+function guideNaturally(a, b) {
+  const key = (x) => x.replace(/\d+/g, (n) => n.padStart(6, '0'));
+  return key(a).localeCompare(key(b));
+}
+
+/* Eleven rows reading "cob 1 … cob 11", every one of them identical, is the same
+   problem as eleven identical clauses in a spoken answer: nobody reads to the
+   end. A run of numbered siblings of one kind folds to a single row, which is
+   also how anybody actually addresses them — by saying "cobs". */
+function guideFold(circuits) {
+  const out = [];
+  const spent = new Set();
+  for (const c of circuits) {
+    if (spent.has(c.circuit)) continue;
+    const m = c.circuit.match(/^(.*?)-(\d+)$/);
+    if (!m) { out.push(c); continue; }
+    const family = circuits.filter((x) => {
+      const y = x.circuit.match(/^(.*?)-(\d+)$/);
+      return y && y[1] === m[1] && x.kind === c.kind;
+    }).sort((x, y) => guideNaturally(x.circuit, y.circuit));
+    for (const x of family) spent.add(x.circuit);
+    if (family.length < 3) { out.push(...family); continue; }
+    const first = family[0].circuit;
+    const last = family[family.length - 1].circuit;
+    out.push({
+      circuit: first,
+      label: guideSaid(first) + ' to ' + guideSaid(last),
+      kind: c.kind,
+      note: 'Say <b>' + guideSaid(m[1]) + 's</b> for all ' + family.length + '.',
+    });
+  }
+  return out;
+}
+
+const guideWords = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
+/* The kinds /do reports, in words a guide can use. The point of this column is
+   to tell somebody what a name they have never heard of actually is — HANGING is
+   a lamp, CURTAIN ROPE is a light while MAIN CURTAIN is a motor.
+
+   English, like every other explanation here. Only the things you *say* are in
+   Hinglish: an instruction is read, and reads better in one language. */
+const GUIDE_KINDS = {
+  'tunable light': 'Brightness and colour',
+  'dimmable light': 'Brightness',
+  switch: 'On / off only',
+  curtain: 'Open, close, or stop halfway',
+  'air conditioner · infrared': 'Infrared — on / off only',
+  'projector · infrared': 'Infrared — on / off only',
+  mixed: 'Everything in one go',
+};
+
+/* A deliberate order, because the alphabet put the air conditioner at the top of
+   every room: its label is the longest and its caveat the least interesting
+   thing about a bedroom. Lights first, motors and infrared last. */
+const GUIDE_KIND_ORDER = [
+  'Brightness and colour', 'Brightness', 'On / off only',
+  'Open, close, or stop halfway', 'Infrared — on / off only', 'Everything in one go',
+];
+
+/** Falls back to the raw kind, so a kind nobody has seen before shows up as
+    itself rather than as an empty column. Every kind the live house reports on
+    2026-08-25 is listed above. */
+function kindWords(kind) {
+  return GUIDE_KINDS[kind] || kind;
+}
+
+/* Collective names exist in every room and are explained once, not seven times. */
+const GUIDE_COLLECTIVE = new Set(['all', 'lights', 'cobs']);
+
+/* The hub keeps a record for a television it can no longer speak for, and /do
+   still addresses it deliberately. Offering it here would be the one thing this
+   guide must not do: commanding it moves a row in a database, answers as though
+   it worked, and the set carries on playing. The screens table is the truth. */
+const GUIDE_SHADOWED = /record, not the set/;
+
+
+/* One collapsed block per room, rather than seven tables stacked down the page.
+   Everything is still here — it is a reference, and a name left out is a name
+   somebody has to guess — but a reference is scrolled *past* far more often than
+   it is read, so it opens at a tap instead of costing forty rows of scroll.
+   `<details>` does it natively, which keeps the page free of script.
+
+   No hue per room, and that is a correction rather than a simplification: the
+   dashboard's rule is that the interface is neutral and the only colour is
+   light, so seven arbitrary room colours were speaking its language and saying
+   something untrue with it. A room card there is uniform too. Recognition comes
+   from the name and the count, and the amber is kept for the things you say. */
+function guideRoomBlock(room) {
+  const named = guideFold(room.circuits
+    .filter((c) => !GUIDE_COLLECTIVE.has(c.circuit) && !GUIDE_SHADOWED.test(c.kind))
+    .sort((a, b) => guideNaturally(a.circuit, b.circuit)));
+
+  /* Grouped by what a thing can do, not listed one per row. Six lamps that all
+     dim are one line about dimming, and the difference between MAIN CURTAIN and
+     CURTAIN ROPE — a motor and a light — is what the grouping makes obvious. */
+  const groups = new Map();
+  for (const c of named) {
+    const k = kindWords(c.kind);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+
+  const body = [...groups]
+    /* An unknown kind sorts to the end rather than to the front, which is where
+       -1 from indexOf would put it. */
+    .sort((a, b) => {
+      const rank = (k) => (GUIDE_KIND_ORDER.indexOf(k) + 1 || GUIDE_KIND_ORDER.length + 1);
+      return rank(a[0]) - rank(b[0]);
+    })
+    .map(([kind, list]) => {
+      const names = list.map((c) => '<span class="name">'
+        + escHtml(c.label || guideSaid(c.circuit)) + '</span>'
+        // c.note is ours and carries <b>; c.label is escaped above.
+        + (c.note ? '<span class="hint">' + c.note + '</span>' : '')).join('');
+      return '      <div class="grp"><span class="cat-head">' + escHtml(kind) + '</span>\n'
+        + '        <div class="names">' + names + '</div></div>';
+    }).join('\n');
+
+  const short = guideSaid(room.slug).split(' ')[0];
+  /* A second name the family gave the room. Said here rather than in the heading,
+     which stays the name the house answers with — this is a way in, not a rename,
+     and somebody who hears "Harshit Room" back should find that name at the top.
+     Both words are offered as things to say, because both are. */
+  const also = (room.aliases || []).map((a) => guideSaid(a).split(' ')[0]);
+  return '    <details class="room">\n'
+    + '      <summary><span class="rname">' + escHtml(guideWords(guideSaid(room.slug)))
+    + '</span><span class="n">' + named.length + '</span></summary>\n'
+    + '      <p class="lead">Just say <b>' + escHtml(short)
+    + '</b> — the first word is enough.'
+    + (also.length ? ' This room also answers to <b>' + also.map(escHtml).join('</b> or <b>')
+        + '</b>, though it says <i>' + escHtml(guideWords(guideSaid(room.slug))) + '</i> back.' : '')
+    + '</p>\n'
+    + body + '\n    </details>';
+}
+
+/**
+ * `saved` is the difference between the two ways this page exists, and it is only
+ * about one sentence — the footer. Served at /guide it is rebuilt per request and
+ * cannot go stale, so the old caveat about things added since would have been a
+ * quiet lie; saved to a file and sent through Messages it absolutely can, so the
+ * caveat is the honest thing to say. Same builder, one sentence apart.
+ */
+function guidePage(houseName, rooms, screens, health, saved) {
+  /* Every set here is named "TV", so the name on its own is unsayable — what a
+     person says is the room and then the screen. The receiver answers to both
+     "AVR" and "receiver", and the guide leads with the word the reply uses. */
+  const screenRows = screens.map((s) => {
+    const room = guideWords(String(s.room || '').toLowerCase());
+    const phrase = room + ' ' + (s.avr ? 'receiver' : 'TV');
+    return '      <div class="grp"><span class="cat-head">'
+      + (s.avr ? 'Home theatre sound' : 'Television') + '</span>\n'
+      + '        <div class="names"><span class="name">' + escHtml(phrase) + '</span>'
+      + (s.avr ? '<span class="hint">Also answers to <b>AVR</b>.</span>' : '')
+      + '</div></div>';
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f3ede3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12161b" media="(prefers-color-scheme: dark)">
+<title>Talking to ${escHtml(houseName)}</title>
+<style>
+  /* The dashboard's own palette and tokens, same names, so the two read as one
+     product. Paper by day and the dark theme after dark — the dashboard picks
+     that off the hub's clock, which a shared file cannot do, so this one follows
+     the phone. Every value here is the dashboard's, including the ones it had to
+     re-choose for dark: a specular lip as a fraction of white, and a lit edge as
+     a fraction of the tint, are the two things a token swap cannot carry. */
+  :root {
+    color-scheme: light dark;
+    --ink:    light-dark(#1d2228, #e6eaee);
+    --soft:   light-dark(#5c646d, #a6aeb8);
+    --faint:  light-dark(#7d848e, #7d848e);
+    --ground: light-dark(#f3ede3, #12161b);
+    --paper:  light-dark(#fbf7f0, #1b2027);
+    --paper-2:light-dark(#f6f1e8, #21262c);
+    --line:   light-dark(#e3ddd3, #2a3037);
+    --rim:    light-dark(rgba(0,0,0,.10), rgba(255,255,255,.10));
+    --lip:    light-dark(rgba(255,255,255,.34), rgba(255,255,255,.08));
+    --accent: #ff6f61;
+    --warm:   #f2a233;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    /* Instrument Serif is served from the hub and this page must make no network
+       request at all, so the display face is the nearest thing every phone has.
+       It is used for exactly one line, as on the dashboard. */
+    --display: ui-serif, "Iowan Old Style", Palatino, Georgia, serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--sans);
+    max-width: 660px; width: 100%; margin: 0 auto;
+    padding: 0 clamp(15px, 4vw, 24px) 60px;
+    line-height: 1.55; font-size: 17px;
+    color: var(--ink); background: var(--ground);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* The masthead is the dashboard's hero: it says what the thing is in display
+     type, with the one coral phrase, rather than labelling itself. */
+  header { padding: clamp(30px, 9vw, 52px) 0 22px; }
+  h1 {
+    font-family: var(--display); font-weight: 400;
+    font-size: clamp(31px, 9vw, 44px); line-height: 1.1;
+    margin: 0 0 10px; letter-spacing: -.01em;
+  }
+  h1 i { color: var(--accent); font-style: italic; }
+  .sub { color: var(--soft); margin: 0; font-size: 16.5px; max-width: 33em; }
+  .chip {
+    display: inline-block; margin: 0 0 16px; font-family: var(--mono);
+    font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 999px;
+    color: var(--faint); background: var(--paper-2);
+    border: 1px solid var(--line);
+  }
+
+  h2 {
+    font-size: clamp(19px, 5vw, 22px); margin: 38px 0 6px;
+    letter-spacing: -.015em; font-weight: 650;
+  }
+  p { margin: 9px 0; }
+  .lead { color: var(--soft); font-size: 15px; margin: 2px 0 12px; }
+  b { font-weight: 650; }
+  i { color: var(--soft); font-style: italic; }
+
+  /* A thing to say out loud is drawn as speech: the amber a lamp makes, in the
+     shape of a bubble. Amber because saying it is what lights the house — the
+     dashboard reserves colour for light, and this is the page's version of that.
+     It presses down like every control on the dashboard does: 60ms down, 240 back,
+     the asymmetry being what reads as weight rather than as an animation. */
+  .say {
+    display: inline-block; margin: 3px 5px 3px 0;
+    padding: 5px 13px 6px; border-radius: 15px 15px 15px 5px;
+    background: light-dark(
+      linear-gradient(150deg, #f7b04b, #ea8f22),
+      linear-gradient(150deg, rgba(242,162,51,.30), rgba(242,162,51,.16)));
+    color: light-dark(#241703, #f6cd8d);
+    border: 1px solid light-dark(rgba(150,88,0,.28), rgba(242,162,51,.34));
+    box-shadow: 0 1px 0 var(--lip) inset,
+                0 2px 10px light-dark(rgba(190,110,10,.20), rgba(0,0,0,.30));
+    font-weight: 600; font-size: 16px; line-height: 1.35;
+    transition: transform .24s cubic-bezier(.2,.7,.3,1);
+  }
+  .say:active { transform: scale(.97); transition-duration: .06s; }
+  .says { margin: 12px 0 4px; }
+
+  /* A name is a word inside a sentence, never a whole one, so it is outlined
+     where a phrase is filled. Neutral: it is a label, and labels are chrome. */
+  .name {
+    display: inline-block; margin: 3px 6px 3px 0; padding: 3px 10px 4px;
+    border-radius: 999px; border: 1px solid var(--line);
+    background: var(--paper-2); color: var(--ink);
+    font-weight: 600; font-size: 15.5px; white-space: nowrap;
+  }
+
+  /* The dashboard's category pill, same idea and nearly the same rule: a heading
+     makes its own contrast instead of borrowing it from whatever is behind. */
+  .cat-head {
+    display: inline-block; font-family: var(--mono);
+    font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint);
+    padding: 3px 8px; border-radius: 6px;
+    background: var(--paper-2); border: 1px solid var(--line);
+  }
+
+  ul { padding-left: 20px; margin: 9px 0; }
+  li { margin: 7px 0; }
+
+  /* A pane: the dashboard's tile, minus the blur there is no backdrop for here.
+     The rim and the specular lip along the top are what make it a pane. */
+  .card, .note, details.room {
+    background: var(--paper); border: 1px solid var(--rim);
+    border-radius: 14px;
+    box-shadow: 0 1px 0 var(--lip) inset, 0 1px 3px light-dark(rgba(0,0,0,.04), rgba(0,0,0,.20));
+  }
+  .card { padding: 15px 17px; margin: 14px 0; }
+  .card > :first-child, .note > :first-child { margin-top: 0; }
+  .card > :last-child, .note > :last-child { margin-bottom: 0; }
+
+  /* A callout is the dashboard's own advisory: an amber edge and a warm ground,
+     the same shape the left-on nudges use. Amber means "read this", and it is
+     the only place the page raises its voice. */
+  .note {
+    border-left: 3px solid var(--warm);
+    background: light-dark(#fdf8ec, #201d15);
+    border-radius: 0 13px 13px 0; padding: 13px 16px; margin: 15px 0; font-size: 15.5px;
+  }
+  .note .k {
+    display: block; font-family: var(--mono);
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    color: light-dark(#9a6b12, #d3a75a); margin: 0 0 6px;
+  }
+
+  /* One tap to open a room. The chevron replaces the default marker, which is
+     small, grey and easy to miss on a phone. */
+  details.room { margin: 8px 0; overflow: hidden; }
+  details.room summary {
+    cursor: pointer; list-style: none; padding: 13px 15px;
+    display: flex; align-items: center; gap: 10px;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform .24s cubic-bezier(.2,.7,.3,1);
+  }
+  details.room summary:active { transform: scale(.995); transition-duration: .06s; }
+  details.room summary::-webkit-details-marker { display: none; }
+  .rname { font-weight: 650; font-size: 17.5px; letter-spacing: -.01em; }
+  details.room summary::after {
+    content: ''; margin-left: auto; flex: 0 0 auto;
+    width: 8px; height: 8px; margin-right: 3px;
+    border-right: 2px solid var(--faint);
+    border-bottom: 2px solid var(--faint);
+    transform: rotate(45deg); transition: transform .2s ease;
+  }
+  details.room[open] summary::after { transform: rotate(-135deg); }
+  details.room[open] summary { border-bottom: 1px solid var(--line); }
+  details.room .n {
+    font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--paper-2); border: 1px solid var(--line); color: var(--faint);
+  }
+  details.room .lead, details.room .grp { padding: 0 15px; }
+  details.room .lead { padding-top: 11px; }
+  details.room > :last-child { padding-bottom: 13px; }
+  .grp { margin: 11px 0; }
+  .names { margin-top: 3px; }
+
+  .table-wrap { overflow-x: auto; margin: 12px 0 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+    color: var(--faint); border-bottom: 1px solid var(--line); padding-bottom: 6px;
+  }
+  td { border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; min-width: 190px; }
+  td:last-child, th:last-child { padding-right: 0; color: var(--soft); }
+  .hint { font-size: 13.5px; color: var(--faint); display: block; margin: 3px 0 0; }
+
+  footer {
+    margin-top: 44px; padding-top: 16px; font-size: 13.5px;
+    border-top: 1px solid var(--line); color: var(--faint);
+  }
+  img, svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="chip">${escHtml(houseName)}</span>
+  <h1>Say what you want, and the house <i>does it</i>.</h1>
+  <p class="sub">Press the button on your phone and speak normally. It answers out
+  loud, and nothing you say can break anything.</p>
+</header>
+
+<main>
+
+<h2>Say it like this</h2>
+<p>Three things, in this order — <b>which room</b>, <b>what in it</b>, <b>what to
+do</b>:</p>
+<div class="says">
+  <span class="say">Ashu room ka fan chalu karo</span>
+  <span class="say">Master room ke cobs 40 kar do</span>
+  <span class="say">Living ka main curtain khol do</span>
+</div>
+<p>Extra words in between are ignored, so there is no need to talk like a
+machine. These do exactly the same thing:</p>
+<div class="says">
+  <span class="say">Zara ashu ka fan on kar dijiye</span>
+  <span class="say">Ashu fan on</span>
+</div>
+<p class="lead">Short names work too — <b>ashu</b> becomes Ashu Room, <b>foot</b>
+becomes foot light. If a short name fits two things, the house asks which one
+instead of guessing.</p>
+
+<div class="note">
+<span class="k">Worth knowing</span>
+<p><b>Say the names in English.</b> Hindi verbs are fine — <i>chalu karo</i>,
+<i>band kar do</i>, <i>khol do</i> — but the name of the room and the thing should
+be the English one listed below. Those are the installer's own labels, and they
+are the names the house knows.</p>
+<p><b>Two exceptions, because everybody says them:</b>
+<span class="say">pankha</span> works for a fan and
+<span class="say">parda</span> works for a curtain. So
+<span class="say">Ashu ka pankha chalu karo</span> is fine. Anything else needs the
+English word — <span class="say">batti</span> will not work,
+<span class="say">light</span> or <span class="say">cob</span> will.</p>
+<p>Where a room has two curtains it asks which, and where it has none it says so
+rather than switching on something with a similar name.</p>
+</div>
+
+<h2>Dimming and colour</h2>
+<ul>
+  <li>A number is <b>brightness</b>, out of a hundred:
+      <span class="say">Ashu cobs 40</span></li>
+  <li><b>up</b> and <b>down</b> nudge it from where it is now:
+      <span class="say">Ashu cobs down</span></li>
+  <li>For colour, say the word — <b>warm</b>, <b>cool</b>, <b>warmer</b>,
+      <b>cooler</b> — or both at once:
+      <span class="say">Master cobs 40 warm</span></li>
+</ul>
+<p class="lead">Only the ceiling cobs and a few lamps change colour; ask a plain
+light for colour and it says so rather than ignoring you. It names colours in its
+own words, so asking for <b>warm</b> may be confirmed as <i>"set to candle"</i> —
+that is the same thing, not a mistake.</p>
+
+<h2>A whole room at once</h2>
+<div class="says">
+  <span class="say">Living off</span>
+  <span class="say">Ashu lights off</span>
+  <span class="say">Ashu cobs on</span>
+</div>
+<p class="lead">The first is everything in the room. The second is only the
+lights, so a fan keeps running. The third is the whole ceiling together.</p>
+
+<h2>One kind, everywhere in the house</h2>
+<div class="says">
+  <span class="say">Saare AC band kardo</span>
+  <span class="say">Saare pankhe band karo</span>
+  <span class="say">Turn off all the lights</span>
+  <span class="say">Saare parde band kar do</span>
+</div>
+<p class="lead">Four kinds can be reached across the whole house at once — the
+lights, the fans, the curtains and the air conditioners. Each one touches only
+that kind: switching off every light leaves the fans running.</p>
+<div class="note">
+<span class="k">It will not guess at the whole house</span>
+<p>Ask for a kind it does not have that name for and it says so, rather than
+switching off everything to be helpful. Say <span class="say">Sab band kar do</span>
+when you really do mean the whole house.</p>
+</div>
+
+<h2>You can ask, too</h2>
+<p>The same button answers questions, and a question never switches anything on
+or off by accident:</p>
+<div class="says">
+  <span class="say">Kya chalu hai?</span>
+  <span class="say">Living mein kya chal raha hai?</span>
+  <span class="say">Ashu ka pankha on hai?</span>
+</div>
+<div class="note">
+<span class="k">Two things it cannot check</span>
+<p>The air conditioners and the projector work over infrared, like an ordinary
+remote: the house can send to them but never hear back. So it says <i>"the hub
+last sent AC on, but can't check it"</i> — and if somebody used the AC's own
+remote, the house does not know. A curtain never reports its position either.</p>
+<p>Televisions and the home theatre sound are checked properly. If it says the TV
+is on, it is on.</p>
+</div>
+
+<h2>Said it by mistake?</h2>
+<p>Say any of these and your last command is put back:</p>
+<div class="says">
+  <span class="say">Cancel</span>
+  <span class="say">Wapas karo</span>
+  <span class="say">Nahi nahi</span>
+  <span class="say">Galat</span>
+  <span class="say">Pehle jaisa karo</span>
+</div>
+<p class="lead">Only <b>your</b> last command, not anybody else's — and only one
+step back, within five minutes. After that it says <i>"that was too long ago to
+put back safely"</i>, because the house has probably moved on.</p>
+<div class="note">
+<span class="k">Two it cannot put back perfectly</span>
+<p><b>A curtain</b> does not report its position, so cancel sends the opposite
+command: opened becomes closed. It tells you <i>"this isn't exactly where it
+was"</i>. If the curtain had been half open, it will not go back to half open.</p>
+<p><b>A television that was switched off.</b> Volume and mute go back exactly, but
+switching a set back on lands it on the home screen rather than on whatever was
+playing — so it leaves it alone and says why.</p>
+</div>
+
+<h2>If it keeps mishearing "cobs"</h2>
+<p>Say <b>direct lights</b> instead. It means exactly the same ceiling lights, and
+the phone gets it right first time because they are ordinary words.</p>
+<div class="says">
+  <span class="say">Ashu ke direct lights on karo</span>
+  <span class="say">Living ke direct lights 40 karo</span>
+</div>
+<p class="lead">The other lights in a room — rope, profile, hanging, spot — are the
+<b>indirect lights</b>, and they work the same way.</p>
+<div class="says">
+  <span class="say">Master ke indirect lights band karo</span>
+</div>
+<div class="note">
+<span class="k">Both names still work</span>
+<p><b>cobs</b> has not gone anywhere. Say whichever comes out — and
+<span class="say">direct</span> on its own is enough, you do not need the word
+lights.</p>
+<p>Harshit Room has only one ceiling light, so it is named
+<span class="say">cob 1</span> there rather than being a group.</p>
+</div>
+
+<h2>Going to bed</h2>
+<p>Say <b>good night</b> and <i>your own room</i> goes to sleep. Nobody else's.</p>
+<div class="says">
+  <span class="say">Good night</span>
+  <span class="say">Shubh ratri</span>
+  <span class="say">So raha hoon</span>
+  <span class="say">Sone ja raha hoon</span>
+</div>
+<p class="lead">The lights go off. <b>The fan and the AC keep running</b> — the
+point is to fall asleep, not to be woken at two by a room gone still and warm.</p>
+<div class="note">
+<span class="k">It knows whose room from the phone</span>
+<p>Each phone is set up with a name, so the same two words put a different room to
+bed. <b>Mum</b> and <b>Dad</b> put Master Room to bed, <b>Ashu</b> puts Ashu Room,
+<b>Bhai</b> puts Harshit Room.</p>
+<p>On a phone that has not been set up it says <i>"I don't know whose good night
+that is"</i> and switches nothing off, rather than guessing at somebody's room.</p>
+</div>
+<div class="note">
+<span class="k">Two things it does not do</span>
+<p><b>It does not switch the television off.</b> Say
+<span class="say">TV band karo</span> as well if it is on.</p>
+<p><b>It is one room, never the house.</b> To put a different room to bed, name it
+the ordinary way: <span class="say">Dining off</span></p>
+</div>
+<p class="lead">Said it by accident? <span class="say">Cancel</span> puts the whole
+room back, the same as any other command.</p>
+
+<h2>What is in each room</h2>
+<p class="lead">Tap a room. These are the names the house knows — say them just
+as they are written.</p>
+${rooms.map(guideRoomBlock).join('\n')}
+${screens.length ? `    <details class="room">
+      <summary><span class="rname">Screens &amp; sound</span><span class="n">${screens.length}</span></summary>
+      <p class="lead">Say <b>on</b>, <b>off</b>, a <b>volume</b>, <b>louder</b>,
+      <b>quieter</b>, <b>mute</b> or <b>unmute</b> — for example
+      <span class="say">Ashu TV ka volume 12 kar do</span></p>
+${screenRows}
+      <div class="grp"><span class="cat-head">Not wired up</span>
+        <div class="names"><span class="hint">Apps, channels and inputs are not
+        connected. Ask for <span class="say">Netflix laga do</span> and it says so
+        plainly — it will not quietly switch the TV on and show the wrong thing.
+        Pick the app on the TV itself.</span></div></div>
+    </details>` : ''}
+
+<h2>If something does not work</h2>
+<p class="lead">The left column is the English the phone says back. Match what you
+heard.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>It says</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>I didn't catch that</td><td>It heard nothing at all. Hold the button a moment longer, then speak.</td></tr>
+    <tr><td>I don't know that room</td><td>Check the room name above — try just the first word.</td></tr>
+    <tr><td>I can't find that in&nbsp;&hellip;</td><td>It found the room but not the thing. Open that room above for the right name.</td></tr>
+    <tr><td>&hellip; could be more than one</td><td>The short name fits two things. Say a little more of it.</td></tr>
+    <tr><td>There is more than one curtain in&nbsp;&hellip;</td><td>Say which one — it names them for you.</td></tr>
+    <tr><td>There is no fan in&nbsp;&hellip;</td><td>That room has none. Open it above to see what it does have.</td></tr>
+    <tr><td>A curtain can only open, close or stop</td><td>A curtain has no on or off — open it, close it, or stop it halfway.</td></tr>
+    <tr><td>&hellip; can't change colour</td><td>That one is a plain light. Give it a brightness, or just on.</td></tr>
+    <tr><td>I don't know whose good night that is</td><td>This phone has no name set, so it cannot tell which room to put to bed. Tell Ashutosh.</td></tr>
+    <tr><td>You haven't said anything I can cancel</td><td>Nothing to put back — either five minutes have passed, or that command came from a different phone.</td></tr>
+    <tr><td>The hub didn't answer</td><td>The controller is not responding. Try once more, and tell Ashutosh if it keeps happening.</td></tr>
+    <tr><td>Nothing at all</td><td>The phone has to be on the home Wi&#8209;Fi. None of this works from outside the house.</td></tr>
+  </tbody>
+</table></div>
+
+<div class="card">
+<p><b>You cannot break anything.</b> The worst that happens is a light going on or
+off in some room, and saying the opposite puts it right. If you get it wrong,
+<span class="say">cancel</span> is enough. Speak without worrying.</p>
+</div>
+
+</main>
+
+<footer>
+${escHtml(houseName)} &middot; ${new Date().toISOString().slice(0, 10)} — ${saved
+  ? 'built from the house as it stood on this date. Anything added or renamed since '
+    + 'will not be on this saved copy, so ask for a fresh one now and then.'
+  : 'built fresh each time you open it, so it is the house as it is right now.'}
+</footer>
+
+</body>
+</html>
+`;
+}
+
+
+/* Built per request. It walks every room, which is what /do's own reference page
+   does, and costs about as much — and the alternative is a file that disagrees
+   with the house the first time somebody adds a lamp. */
+app.get('/guide', (req, res) => {
+  /* `?saved=1` is what tools/make-guide.js asks for — it is writing a file that
+     will be read weeks later, so its copy carries the staleness caveat that a
+     page rebuilt on every request must not claim. */
+  const saved = 'saved' in req.query;
+  const rooms = [...roomsIndex()].map(([sl, name]) => ({
+    slug: sl,
+    circuits: roomCircuits(name),
+    aliases: aliasesOf(name),
+  }));
+  /* Screens are not hub circuits and so are in no room's list. They are the only
+     things here whose state is a real reading, which is worth a family member
+     knowing: the house is certain about a television. */
+  const screens = deviceList()
+    .filter((d) => d.is_tv || d.is_avr)
+    .map((d) => ({ name: d.name, room: d.room, avr: !!d.is_avr }));
+  res.type('html').set('Cache-Control', 'no-cache')
+    .send(guidePage(config.house_name || 'The house', rooms, screens, {}, saved));
+});
+
 app.get('/do', (req, res) => {
   /* A browser reading the reference, or a machine reading the grammar. Strict
      on text/html so curl and Shortcuts, which send only the wildcard, keep
@@ -4825,7 +5745,17 @@ app.get('/do', (req, res) => {
   const rooms = [...roomsIndex()].map(([sl, name]) => ({
     room: sl,
     circuits: circuitsOf(name).map(c => c.slug),
+    /* A new key rather than a changed one: `circuits` stays an array of slugs
+       because nextWords() concatenates it with the action words, and this file
+       already records enriching it in place as having broken the field. */
+    aliases: aliasesOf(name),
   }));
+  /* The house is an address like any other and was missing from this list, so the
+     command bar — which builds its whole vocabulary from here, precisely so the
+     field cannot offer a word the server would refuse — could not offer any of
+     them. Last, not first: the bar matches a room by prefix, and `house` ahead of
+     `harshit-room` would quietly change what a typed "h" means. */
+  rooms.push({ room: 'house', circuits: ['all', ...HOUSE_KINDS.map(k => k.slug)] });
   res.json({
     shape: ['/do/<room>/<circuit>/<action>', '/do/<room>/<action>',
             '/do/cue/<id>', '/do/cue/<id>/<action>'],
@@ -4835,15 +5765,33 @@ app.get('/do', (req, res) => {
     cues: scenes.map(sc => sc.id),
     examples: ['/do/ashu/fan/on', '/do/ashu/cobs/down', '/do/ashu/cobs/warmth-70',
                '/do/living/main-curtain/open', '/do/master/off', '/do/house/off',
+               '/do/house/acs/off', '/do/house/curtains/close',
                '/do/cue/movie-night', '/do/cue/movie-night/toggle'],
   });
 });
+
+/**
+ * A room's circuits as the API describes them — one derivation, because /do and
+ * the family guide both answer "what is in this room and what will it take", and
+ * a guide deriving that a second time is how a guide starts quietly lying.
+ */
+function roomCircuits(roomName) {
+  return circuitsOf(roomName).map((c) => ({
+    circuit: c.slug,
+    name: c.label,
+    kind: circuitKind(c.records),
+    actions: actionsFor(c.records),
+    level: levelOf(c.records),
+    tune: tuneOf(c.records),
+    circuits: c.records.length,
+  }));
+}
 
 /** One room's addresses, with what each circuit is doing right now. */
 app.get('/do/:room', (req, res, next) => {
   const want = slug(req.params.room);
   if (want === 'cue') return next();
-  const found = pick(want, [...roomsIndex()].map(([sl, name]) => ({ slug: sl, name })));
+  const found = pick(want, roomTargets());
   if (!found.hit) {
     return res.status(found.ambiguous ? 300 : 404).json({
       ok: false, error: found.ambiguous ? 'That could be more than one room' : 'No such room',
@@ -4854,16 +5802,12 @@ app.get('/do/:room', (req, res, next) => {
      is free to answer the question a bare list of slugs cannot: what is wired
      to each address, and therefore which actions it will take. */
   res.json({
-    room: found.hit.slug,
-    circuits: circuitsOf(found.hit.name).map(c => ({
-      circuit: c.slug,
-      name: c.label,
-      kind: circuitKind(c.records),
-      actions: actionsFor(c.records),
-      level: levelOf(c.records),
-      tune: tuneOf(c.records),
-      circuits: c.records.length,
-    })),
+    /* The room's own slug, not the word that was typed — an alias is a way in,
+       and a listing that answered `kanu-room` would put two names for one room
+       into anything that files what it reads. Every other reply here is already
+       derived from the resolved room for the same reason. */
+    room: slug(found.hit.name),
+    circuits: roomCircuits(found.hit.name),
   });
 });
 
@@ -4959,7 +5903,7 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord, remember)
   let roomName = null;
   if (wantRoom === 'house' || wantRoom === 'everywhere') roomName = 'HOUSE';
   else {
-    const found = pick(wantRoom, [...index].map(([sl, name]) => ({ slug: sl, name })));
+    const found = pick(wantRoom, roomTargets());
     if (!found.hit) {
       return res.status(found.ambiguous ? 300 : 404).json({
         ok: false, error: found.ambiguous ? 'That could be more than one room' : 'No such room',
@@ -4988,8 +5932,30 @@ async function runAddress(req, res, roomWord, circuitWord, actionWord, remember)
   let target;
   if (roomName === 'HOUSE') {
     const all = [...devices.values()].map(({ record }) => record);
-    target = { slug: 'all', label: 'Everything',
-      records: all.filter(r => (r.app_type || '') !== 'C') };
+    /* See HOUSE_KINDS: the circuit word is read here, and a word this address
+       cannot honour is refused rather than quietly widened to the whole house. */
+    const kind = meansEverything(circuitWord) ? null : houseWideKind(circuitWord);
+    if (kind) {
+      const records = all.filter(kind.test);
+      if (!records.length) {
+        return res.status(404).json({
+          ok: false, error: 'Nothing of that kind in the house',
+          known: HOUSE_KINDS.map(k => k.slug),
+          spoken: 'There are no ' + kind.label.replace(/^every /, '') + 's in the house' });
+      }
+      target = { slug: kind.slug, label: kind.label, records };
+    } else if (meansEverything(circuitWord)) {
+      /* Curtains are left out of "everything" — they have no level to return to,
+         so a house-wide off would shut them with no way to undo it. */
+      target = { slug: 'all', label: 'Everything',
+        records: all.filter(r => !isCurtainRecord(r)) };
+    } else {
+      return res.status(404).json({
+        ok: false, error: 'The whole house takes a kind, or "all"',
+        known: ['all', ...HOUSE_KINDS.map(k => k.slug)],
+        spoken: 'For the whole house I can do the lights, the fans, the curtains'
+          + ' or the air conditioners. Say one of those, or say a room' });
+    }
   } else {
     const here = circuitsOf(roomName);
     const asked = slug(circuitWord);
@@ -5233,7 +6199,7 @@ function houseReading(roomWord, circuitWord) {
     return say.join('. ');
   }
 
-  const found = pick(want, [...index].map(([sl, name]) => ({ slug: sl, name })));
+  const found = pick(want, roomTargets());
   if (!found.hit) return 'I do not know that room';
   const roomName = found.hit.name;
   const where = 'In ' + title_(roomName) + ', ';
@@ -5361,8 +6327,7 @@ function liveCircuits(roomName) {
  * Returns null when the address is not a screen, which is the signal to the
  * caller to carry on to runAddress as before. */
 async function screenCommand(roomWord, circuitWord, action, remember) {
-  const index = roomsIndex();
-  const room = pick(slug(roomWord || ''), [...index].map(([sl, name]) => ({ slug: sl, name })));
+  const room = pick(slug(roomWord || ''), roomTargets());
   if (!room.hit) return null;
   /* The record is named AVR and the reply calls it a receiver, so it has to
      answer to one: a device that names itself differently from the way it is
@@ -5484,7 +6449,12 @@ async function screenCommand(roomWord, circuitWord, action, remember) {
 /** "the cobs are", "Cob 1 is". The label carries the number, so this reads the
     label rather than counting records — spokenFor says "the lights" for a group
     of one, and "the lights is now on" is the sort of thing nobody says. */
-const SPEAK_PLURAL = /^the\s+\S*s\b/i;
+/* Any word of the subject ending in s, not just the first: written as
+   `^the\s+\S*s\b` it read "the cobs" and "the lights" as plural and **"the
+   direct lights" as singular**, which is "the direct lights is now on". The `\b`
+   is what keeps it honest — it needs a word that ends in s, so "the bed spot" and
+   "the main curtain" are still singular. */
+const SPEAK_PLURAL = /^the\s+.*s\b/i;
 
 /** A reading must never reach the rules below: it can end in "at 40%" or
     "muted" exactly as a confirmation does, and "Reading Light is is now at 40%"
@@ -5630,10 +6600,71 @@ function speakable(text) {
    prefix, so "ashu room ka fan" wants to become "ashu fan". Nothing in this
    house is called ROOM, checked against all 34 circuit names. */
 const SAY_FILLER = new Set(['turn', 'switch', 'set', 'make', 'put', 'the', 'a', 'an',
-  'please', 'to', 'and', 'in', 'my', 'of', 'is', 'it', 'room', 'kindly', 'just']);
+  'please', 'to', 'and', 'in', 'my', 'of', 'is', 'it', 'room', 'kindly', 'just',
+  /* "a bit" in both languages. Measured: `master cobs thoda tez karo` paid a
+     2.95s model call purely because `thoda` survived and made the sentence one
+     word too long. The degree is dropped rather than honoured — up and down are
+     already a fixed step — which is what the same sentence means in English
+     when it reaches `up`. */
+  'thoda', 'thora', 'zara', 'sa', 'bit', 'little']);
+
+/* Hinglish **verbs**, collapsed to the action words the grammar already has.
+ *
+ * This file records a decision against "a hand-written Hindi verb table", and
+ * that rejection was about mapping Hindi **nouns** to circuits — which is the
+ * dangerous half, and which `hindiCircuits()` exists to do by kind instead. A
+ * verb is a different object: this is a closed set of about a dozen words, each
+ * mapping to an action `/do` already accepts, and **the noun is untouched**. So
+ * the worst outcome is a refusal from `pick()`, never a wrong circuit.
+ *
+ * What it buys is measured: a Hinglish command paid ~2100ms for a model call
+ * purely to learn that "band kar do" means off. On the free grammar path the same
+ * sentence resolves on the hub in about 400ms and costs nothing.
+ *
+ * Applied to the sentence before it is split, because every one of these is two
+ * or three words and a word-at-a-time pass cannot see them.
+ */
+/* The tail every one of these verbs takes. Written once because it was written
+   six times and they had already drifted: "chalu kar do" was matched and "chalu
+   kar dena" was not, so the same command cost 1.75s of model instead of 0.1s
+   purely on which way somebody ended the sentence. */
+const SAY_DO = '(?:kar\\s*d(?:o|ena|ijiye)|kardo|karo|kro|de\\s*do|dena)';
+const hinglishVerb = (words, action) =>
+  [new RegExp('\\b(?:' + words + ')\\s*' + SAY_DO + '\\b', 'g'), ' ' + action + ' '];
+
+const SAY_HINGLISH = [
+  hinglishVerb('band|bandh', 'off'),
+  hinglishVerb('chalu|chaalu|shuru', 'on'),
+  // "on kar do" and "off kar do" — the verb is Hinglish, the action already English.
+  [new RegExp('\\b(on|off)\\s+' + SAY_DO + '\\b', 'g'), ' $1 '],
+  [/\b(?:khol|kholo)\s*(?:do|dijiye|dena)?\b/g, ' open '],
+  [/\b(?:jala|jalaa)\s*(?:do|dena|dijiye)\b/g, ' on '],
+  [/\b(?:bujha|bujhaa)\s*(?:do|dena|dijiye)\b/g, ' off '],
+  hinglishVerb('tez|tej|zyada|jyada|badha|badhao', 'up'),
+  hinglishVerb('dheema|dhima|halka|kam', 'down'),
+  [/\b(?:rok|roko)\s*(?:do|dena|dijiye)?\b/g, ' stop '],
+];
+
+/* Possessives and postpositions, dropped like the English filler. Safe because
+   nothing in this house is named any of them. `saare` and `sab` are deliberately
+   **not** here: "saare ac band kar do" has to keep its first word so the room
+   fails to resolve and the sentence goes to the model, which fans it out across
+   every room. Stripping them would leave [ac, off] and refuse. */
+const SAY_PARTICLE = new Set(['ka', 'ki', 'ke', 'mein', 'me', 'wala', 'wali', 'do', 'dena',
+  /* The bare tail of "kar do" / "karo", left behind whenever the verb in front
+     of it is not one of the Hinglish rules below — which is the common case for
+     a *value*: "cobs full kar do", "cobs 40 kar do", "volume 20 karo". Measured
+     at 2.6-3.3s each, against 0.1s once the tail is dropped.
+     Safe for the same reason the possessives are: nothing in this house is named
+     any of them, the noun is untouched, and the worst outcome is a refusal from
+     pick(). And they cannot break the verb rules, which run over the whole
+     sentence before it is split and have already consumed their own "kar do". */
+  'kar', 'kr', 'karo', 'kardo', 'kro', 'dijiye', 'dijiyega']);
 
 const SAY_NUMBER = { ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50,
-  sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, full: 100, half: 50 };
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, full: 100, half: 50,
+  // The same two words as they are actually said here.
+  poora: 100, pura: 100, puri: 100, aadha: 50, adha: 50 };
 
 /* A question must never reach the command grammar.
  *
@@ -5663,6 +6694,30 @@ const SAY_ASKS = new RegExp([
   '\\b(?:chal raha|chal rahi|chalu hai|band hai|on hai|off hai|khula hai|batao)\\b',
 ].join('|'), 'i');
 
+/* The model answers with a word where the grammar would have answered with a
+ * number, and the address refuses it.
+ *
+ * Measured: gpt-audio-mini returned `action: "full"` on one of three runs of the
+ * same clip, and `/do/master/cobs/full` is `{"ok":false,"error":"No such
+ * action"}` — so the sentence was understood and then refused on a word
+ * SAY_NUMBER already maps. The grammar path never hit this because it maps the
+ * word before the address ever sees it; the model path handed the raw string
+ * straight through.
+ *
+ * So both roads normalise now, with the one table. Compound actions are split on
+ * `+` and each half normalised, because "40+warm" is the shape /do accepts and
+ * only the numeric half can be a word. Anything unrecognised is passed through
+ * untouched — this is a translation, not a validator, and `resolveAction` is
+ * still the thing that refuses.
+ */
+function normalAction(action) {
+  const parts = String(action || '').toLowerCase().trim().split('+');
+  return parts.map((raw) => {
+    const w = raw.trim();
+    return SAY_NUMBER[w] != null ? String(SAY_NUMBER[w]) : w;
+  }).filter(Boolean).join('+');
+}
+
 /**
  * A sentence to three words, or null.
  *
@@ -5672,16 +6727,19 @@ const SAY_ASKS = new RegExp([
  */
 function speechWords(text) {
   if (SAY_ASKS.test(String(text))) return null;
-  const w = String(text).toLowerCase()
+  let said = String(text).toLowerCase()
     /* Hyphens survive, and that is not cosmetic: they are inside the grammar's
        own words — `warmth-70`, `main-curtain`, `foot-light`. Stripping them made
        `warmth-70` parse as the circuit "warmth" at level 70, and put
        `main-curtain` one word over the limit. Dictation will not produce them,
        but this endpoint takes typed text on the same grammar as the field. */
-    .replace(/[^a-z0-9\s+-]/g, ' ')
+    .replace(/[^a-z0-9\s+-]/g, ' ');
+  for (const [re, word] of SAY_HINGLISH) said = said.replace(re, word);
+
+  const w = said
     .split(/\s+/).filter(Boolean)
     .map((x) => (SAY_NUMBER[x] != null ? String(SAY_NUMBER[x]) : x))
-    .filter((x) => !SAY_FILLER.has(x));
+    .filter((x) => !SAY_FILLER.has(x) && !SAY_PARTICLE.has(x));
   if (w.length < 2 || w.length > 4) return null;
 
   /* Actions come off the end, as the command bar reads them. English puts the
@@ -5692,9 +6750,52 @@ function speechWords(text) {
   if (!acts.length) {
     while (w.length > 1 && acts.length < 2 && isAction(slug(w[0]))) acts.push(w.shift());
   }
-  if (!acts.length || w.length < 1 || w.length > 2) return null;
+  if (!acts.length || w.length < 1 || w.length > 3) return null;
 
-  return { room: w[0], circuit: w[1] || 'all', action: acts.join('+') };
+  /* Two words for the circuit, joined the way the grammar spells one.
+   *
+   * This used to cap the circuit at a single word, so every multi-word name in
+   * the house missed the free path and paid a model call: "ashu foot light off",
+   * "living main curtain open", and now "ashu direct lights on" — the whole point
+   * of which is to be said out loud. Hyphenating is exactly how those slugs are
+   * written, so no new spelling is invented here.
+   *
+   * The join is **kept only if it names something**, which is what stops this
+   * being a regression. "ashu all lights off" joins to `all-lights`, which is not
+   * a circuit, so it returns null and goes to the model precisely as it does
+   * today rather than being refused. Resolving costs nothing: both lookups are
+   * over maps already in memory, and it is the same `pick` runAddress will use,
+   * so the two cannot disagree about what resolves.
+   */
+  /* The room is resolved **here**, and an unknown one hands the sentence to the
+     model rather than being refused. That is what keeps the verb table above
+     safe: "saare ac band kar do" now reads as [saare, ac, off], and `saare` is
+     not a room — so instead of a confident "I do not know that room" it goes to
+     the model, which answers it as six control calls, one per room. The cost is
+     a model call for a genuinely mistyped room, which is the same trade this file
+     already makes for questions and for the same reason. */
+  const rooms = roomTargets().map(({ slug: sl, name }) => ({ slug: sl, key: name }));
+  let where = pick(slug(w[0]), rooms).hit;
+  /* English puts the room last — "turn on the fan in ashu" — and `in` is dropped
+     as filler, so by here the room is at the back with the circuit in front of
+     it. Tried only when the first word is not a room, so a normal room-first
+     sentence never reaches it and cannot be reordered by accident. The worst
+     case is the same one the whole function has: it resolves to nothing and the
+     sentence goes to the model. */
+  if (!where && w.length > 1) {
+    const last = pick(slug(w[w.length - 1]), rooms).hit;
+    if (last) { where = last; w.pop(); w.unshift(last.slug); }
+  }
+  if (!where) return null;
+
+  let circuit = w[1] || 'all';
+  if (w.length === 3) {
+    const joined = slug(w[1] + '-' + w[2]);
+    if (!pick(joined, circuitsOf(where.key)).hit) return null;
+    circuit = joined;
+  }
+
+  return { room: w[0], circuit, action: acts.join('+') };
 }
 
 /* The tool the model is given, generated from the house rather than written
@@ -5716,7 +6817,10 @@ function sayTools() {
       properties: {
         room: { type: 'string', enum: [...rooms, 'house'] },
         circuit: { type: 'string',
-          description: 'A circuit or group slug from the list for that room. "all" for the whole room.' },
+          description: 'A circuit or group slug from the list for that room. "all" for '
+            + 'the whole room. With room "house": lights, fans, curtains or acs for one '
+            + 'kind everywhere, or "all" for the entire house \u2014 use a kind, never '
+            + '"all", when the sentence names one.' },
         action: { type: 'string',
           description: 'One of: ' + ACTIONS.join(', ')
             + '. A bare 0-100 is brightness, or volume on a screen. warmth-0-100 is '
@@ -5763,7 +6867,42 @@ function sayTools() {
   }];
 }
 
+/* What the model is told about, reduced to a string that changes when any of it
+   changes. Both the prompt cache and the answer cache key on it, so a renamed
+   room or a new circuit invalidates the pair without either having to notice. */
+function houseShape() {
+  /* Held briefly, because this is the key for two caches and is therefore asked
+     for several times per spoken sentence — and computing it walks every room's
+     circuits, which is exactly the work the caches exist to avoid. Ten seconds
+     bounds how long a renamed circuit can be answered from an old resolution,
+     and that is harmless anyway: `pick()` still validates the address, so the
+     worst case is a refusal rather than a wrong circuit. applyConfig clears it
+     outright, so a console save takes effect at once. */
+  if (houseShapeCache.key && Date.now() - houseShapeCache.at < 10000) return houseShapeCache.key;
+  const parts = [];
+  for (const [sl, name] of roomsIndex()) {
+    parts.push(sl + ':' + liveCircuits(name).map((c) => c.slug).join(','));
+  }
+  parts.push('cues:' + scenes.map((sc) => sc.id).join(','));
+  parts.push('alias:' + Object.keys(ROOM_ALIASES).join(','));
+  const key = parts.join('|');
+  houseShapeCache = { at: Date.now(), key };
+  return key;
+}
+
 function sayPrompt() {
+  /* Rebuilt only when the house changes. It walked every device on every call,
+     which is small but paid per spoken sentence — and, more usefully, an
+     identical prompt string is the condition for the provider's own prompt
+     caching, which a freshly built one satisfies only by accident. */
+  const shape = houseShape();
+  if (sayPromptCache.shape === shape) return sayPromptCache.text;
+  const text = sayPromptBuild();
+  sayPromptCache = { shape, text };
+  return text;
+}
+
+function sayPromptBuild() {
   const rooms = [...roomsIndex()].map(([sl, name]) => {
     const cs = liveCircuits(name).map((c) => c.slug + ' (' + circuitKind(c.records) + ')');
     /* The screens listed among the circuits, because to whoever is speaking they
@@ -5774,7 +6913,14 @@ function sayPrompt() {
       cs.push(d.slug + ' (' + (d.snap.is_tv ? 'television' : 'receiver')
         + ', answers for itself)');
     }
-    return '  ' + sl + ': ' + cs.join(', ');
+    /* The alias belongs in the prompt and *not* in the room enum. Two enum
+       values for one room would let the model answer with either, so the same
+       room would arrive under two names in the log and in the reply — and the
+       house's own name is what the guide teaches and what the board says. Named
+       here, the model maps the word and still answers `harshit-room`. */
+    const also = aliasesOf(name);
+    return '  ' + sl + (also.length ? ' (also called ' + also.join(', ') + ')' : '')
+      + ': ' + cs.join(', ');
   }).join('\n');
   return [
     'You turn a spoken command into exactly one tool call for a home in India.',
@@ -5843,13 +6989,77 @@ function grabResponse() {
 }
 
 /** Ask the model. Returns a tool call, a sentence, or null if it could not be reached. */
+/* The same sentence, said again.
+ *
+ * A household says the same dozen things every night, and each repeat was a
+ * fresh 2-3s call to learn the same thing. What is cached is the *resolution* —
+ * which room, which circuit, which action — and that is safe to reuse because
+ * it does not depend on the state of the house: a relative action (up, down,
+ * toggle) is still resolved against live readings inside runAddress, and a
+ * `look` call still recomputes its reading afterwards. Only the reading of the
+ * words is remembered.
+ *
+ * Keyed on the house's shape as well as the words, so a renamed room or a new
+ * circuit cannot be answered from a memory of the old one. Bounded, and LRU by
+ * delete-then-set: a Map keeps a key at its original position when overwritten,
+ * so without the delete the phrase said most often would be evicted first.
+ */
+const SAY_MEMORY_MAX = 200;
+
+/* Punctuation out, because the transcriber does not put it in twice the same
+   way: the identical clip came back as "...chalu rakh ho." once and "...chalu
+   rakh ho" the next, which is two different sentences to a Map and one to a
+   person. Measured — it is why the first repeat missed. */
+const sayMemoryKey = (text) =>
+  String(text).toLowerCase().replace(/[.,!?;:\u2026]+/g, ' ').replace(/\s+/g, ' ').trim()
+  + '\u0000' + houseShape();
+
+function sayRemembered(text) {
+  const key = sayMemoryKey(text);
+  const hit = sayMemory.get(key);
+  if (!hit) return null;
+  sayMemory.delete(key);
+  sayMemory.set(key, hit);
+  return hit;
+}
+
+function sayRemember(text, answer) {
+  /* Only a resolution is worth keeping. A timeout or an unreachable model is a
+     fact about the network a moment ago, and remembering it would answer the
+     next attempt with a failure that has probably already passed. */
+  if (!answer || !(answer.calls || []).length) return;
+  const key = sayMemoryKey(text);
+  if (sayMemory.has(key)) sayMemory.delete(key);
+  sayMemory.set(key, answer);
+  if (sayMemory.size > SAY_MEMORY_MAX) sayMemory.delete(sayMemory.keys().next().value);
+}
+
+/* What a question needs before it can be answered honestly: the hardware asked,
+   and the hub re-read if what we hold is stale. It is the one place the hub's
+   belief being wrong is heard out loud — "Fan is off" about a fan you can hear.
+   The poll is rate-limited, so a run of questions costs one round of packets,
+   and it resolves false and harmlessly if the bus does not answer. */
+async function lookRefresh() {
+  await pollHardware().catch(() => {});
+  if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
+    await readHubStateFresh().catch(() => {});
+  }
+}
+
 async function askModel(text) {
   if (!OPENAI_KEY) return { spoken: 'No model key is set on the hub' };
-  /* A spoken command that has not answered in six seconds has already failed as
-     a spoken command — somebody is standing there having said something to a
-     phone. Better a sentence saying so than a Shortcut spinning. */
+
+  /* The memory is read by the one caller, before the audio road, so it is not
+     re-read here — this only writes to it. */
+
+  /* A spoken command that has not answered in a few seconds has already failed
+     as a spoken command — somebody is standing there having said something to a
+     phone. Measured against this house, a text call is 2.6-3.3s at worst, so
+     this is that plus headroom rather than the six seconds it was: six is long
+     enough that the reply arrives after the person has given up and said it
+     again, which is worse than being told to. */
   const stop = new AbortController();
-  const timer = setTimeout(() => stop.abort(), 6000);
+  const timer = setTimeout(() => stop.abort(), 5000);
   try {
     const r = await fetch(OPENAI_BASE + '/v1/responses', {
       method: 'POST',
@@ -5873,12 +7083,27 @@ async function askModel(text) {
       return { spoken: 'The model refused that' };
     }
     const data = await r.json();
+    /* Every call, not the first.
+     *
+     * This returned on the first `function_call` and silently dropped the rest —
+     * so "living aur dining band kar do" acted on one room and answered as though
+     * it had done both, which is the confident-lie shape this file spends most of
+     * its length avoiding. The model emits one call per target and always could.
+     *
+     * `call` and `args` still name the first, so every branch written against them
+     * is untouched; `calls` is additive and only the multi-target path reads it.
+     */
+    const calls = [];
     for (const item of data.output || []) {
-      if (item.type === 'function_call') {
-        let args = {};
-        try { args = JSON.parse(item.arguments || '{}'); } catch { /* below */ }
-        return { call: item.name, args };
-      }
+      if (item.type !== 'function_call') continue;
+      let args = {};
+      try { args = JSON.parse(item.arguments || '{}'); } catch { /* below */ }
+      calls.push({ call: item.name, args });
+    }
+    if (calls.length) {
+      const answer = { ...calls[0], calls };
+      sayRemember(text, answer);
+      return answer;
     }
     // No tool call means it declined, and what it said is worth speaking.
     const said = (data.output || []).flatMap((i) => i.content || [])
@@ -6031,12 +7256,174 @@ async function runCancel(who) {
   }
 }
 
+/* ── good night, addressed by whoever said it ──────────────────────────────
+ *
+ * This replaces four cues, and the reason a cue was the wrong shape for it is
+ * the reason /do replaced "just the fan": a cue is one fixed list of records.
+ * So "good night" needed a card per person, and each card was a snapshot of a
+ * room's wiring that went stale the moment somebody added a lamp — record 519
+ * HANGING, which this file records as having been invisible to the dashboard for
+ * a day, would have been missing from a good night cue in exactly the same way.
+ *
+ * Sleep already knows how to put a room to bed, and it is asked for unchanged:
+ * lights and screens off, **the fan and the air conditioner left running**,
+ * because the point is to fall asleep and not to be woken at two in the morning
+ * by a room gone still and warm. So good night is a sleep with its scope taken
+ * from who is speaking, and it inherits the verify-and-resend that a sleep has
+ * to have — a cue that drops a lamp is a cue you press again, whereas a lamp
+ * dropped at bedtime burns all night with nobody awake to see it.
+ *
+ * The map is four names and no pattern, which is deliberate. Deriving a room
+ * from a name would eventually put the wrong room to bed, and there is no honest
+ * default for a name that is not here: an unrecognised speaker gets a refusal
+ * that names who *is* known, never a house-wide sleep, because a guest phone
+ * must not be able to darken a room somebody is sitting in.
+ */
+/* Per install, because the names of the people in a house are the most
+   house-specific thing there could be. Hard-coded, this file's own family would
+   have been deployed to the second hub — where those rooms may not exist, so the
+   reply would have been a confident "Nothing was on in Master Room" about a room
+   that is not there. Absent from config, good night simply is not set up, and
+   says so. Keys are lower case: whoSaid has already folded the case. */
+const GOODNIGHT_ROOM = (() => {
+  const raw = config.goodnight || {};
+  const out = {};
+  for (const [who, room] of Object.entries(raw)) {
+    if (who && room) out[String(who).trim().toLowerCase()] = roomKey(room);
+  }
+  return out;
+})();
+
+/* Matched before the grammar for the same reason cancel is: none of this is an
+   address, so speechWords could only ever answer "I cannot find that", and
+   nothing in this house is named any of these words. Hinglish included, because
+   the commanding language is Hinglish and this is the last thing said each day.
+   `rah[aei]` covers raha, rahe and rahi so the phrase is gender-free, which is
+   the same choice the removed reply rewriter made. */
+const SAY_GOODNIGHT = new RegExp(
+  '^(?:'
+  + 'good\\s*night'
+  + '|night\\s*night'
+  + '|shubh\\s*(?:ratri|raatri|raat)'
+  + '|(?:main\\s+)?so(?:ne)?\\s*(?:jaa?\\s*)?rah[aei]\\s*(?:hoon|hun|hu|hain|hai)'
+  + '|sona\\s*hai'
+  + ')[\\s.!,]*$', 'i');
+
+/**
+ * Puts this speaker's own room to bed, and says what it left running.
+ */
+async function runGoodnight(who, remember) {
+  const key = String(who || '');
+  const room = GOODNIGHT_ROOM[key];
+  /* Named, not merely refused. "I do not know whose good night that is" leaves
+     somebody standing in the dark guessing, and the fix is four words long. */
+  if (!room) {
+    const known = Object.keys(GOODNIGHT_ROOM);
+    if (!known.length) {
+      return { ok: false, spoken: 'Nobody has a good night set up here yet' };
+    }
+    /* The list is read out because the fix is four words long, and somebody
+       standing in the dark being told "I do not know" learns nothing. Built from
+       the map rather than written out, so it cannot drift from what works. */
+    const names = known.length > 1
+      ? known.slice(0, -1).join(', ') + ' and ' + known[known.length - 1]
+      : known[0];
+    return { ok: false, spoken: 'I do not know whose good night that is.'
+      + ' I know ' + names };
+  }
+
+  /* A room named in config that the hub does not have. Says so rather than
+     reporting that nothing was on in a room that does not exist.
+     roomsIndex() is a Map of slug to room key, not a list of objects — reading
+     it as one is silently always false, which would have refused every good
+     night in the house and passed node --check without a murmur. */
+  if (![...roomsIndex().values()].includes(room)) {
+    return { ok: false, spoken: 'Your good night is set to a room this house does'
+      + ' not have' };
+  }
+
+  /* Fresh, because the snapshot below is all a cancel has to go on and a room
+     put back from a stale reading comes back wrong. Worth the read here in a way
+     it is explicitly not worth it on every terse command: this switches off a
+     whole room, the verified sleep underneath already takes seconds, and nobody
+     is listening for a snappy reply on their way to bed. */
+  if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
+    await readHubStateFresh().catch(() => {});
+  }
+
+  const scope = 'room:' + room;
+  const where = title_(room);
+  const steps = sleepSteps(scope);
+
+  /* Said rather than silently doing nothing. A good night that answers "already
+     done" is the difference between a command that was heard and one that was
+     not, which is the only thing the speaker cannot check for themselves. */
+  if (!steps.length) {
+    return { ok: true, room, off: 0,
+      spoken: 'Nothing was on in ' + where + '. Good night' };
+  }
+
+  /* Cancellable, because this is the largest thing anybody says to the house in
+     one breath and the easiest to say into the wrong phone. captureBefore drops
+     curtains and screens on its own, which is right here too. */
+  const { before } = captureBefore(steps);
+  if (before.length) remember({ kind: 'records', label: 'the lights', room, steps: before });
+
+  const r = await runSleep(scope, 'Good night, ' + where);
+
+  /* Re-counted before it is spoken, never taken from the first pass. A dimmable
+     light fades, and a fade still in flight reads as a level that is not the one
+     asked for — measured at one false alarm in four on the cancel path. Costs
+     nothing in the ordinary case, because the ordinary case is zero. */
+  let missed = r.missed;
+  if (missed > 0) {
+    await sleep(SETTLE_MS);
+    await readHubStateFresh().catch(() => {});
+    missed = sleepSteps(scope).length;
+  }
+
+  /* What is still running, named from the same test that spared it. This is the
+     one thing a person is likely to doubt on hearing "good night" — a fan that
+     went off with the lights is how you wake at two, so saying it is left on is
+     worth a clause. */
+  const keeps = [...devices.values()].filter(
+    (d) => roomKey(d.room) === room && decodeLevel(d.record.device_status) > 0
+      && sleepKeeps(d));
+  const kinds = [...new Set(keeps.map(
+    (d) => ((d.record.app_type || '') === 'AC' ? 'the air conditioner' : 'the fan')))];
+
+  /* Deliberately never ending on the word "off", and that is not a style choice.
+     SPEAK_WHOLE reads a sentence ending in on or off as a circuit being set and
+     inserts a verb, so "One light in Ashu Room is off" came back as "is is now
+     off" — caught by the review tool, which is what it is for. Putting the room
+     last sidesteps the whole family of rules rather than dodging one of them. */
+  const off = Math.max(0, steps.length - missed);
+  let spoken;
+  if (off === 0) {
+    spoken = 'I could not switch anything off in ' + where;
+  } else {
+    spoken = 'Good night. I have switched off '
+      + (off === 1 ? 'one light' : off + ' lights') + ' in ' + where;
+  }
+  if (kinds.length) {
+    spoken += '. ' + kinds.join(' and ')
+      + (kinds.length > 1 ? ' are still running' : ' is still running');
+  }
+  if (missed > 0) {
+    spoken += '. ' + (missed === 1 ? 'One light is' : missed + ' lights are')
+      + ' still burning';
+  }
+
+  logEvent({ e: 'goodnight', who: key, room, total: steps.length, off, missed });
+  return { ok: missed === 0, room, total: steps.length, off, missed, spoken };
+}
+
 /* One sentence in, one sentence out — and the only entry point for it, so the
  * grammar, the cancel gate, the two Hindi nouns and the speech pass cannot come
  * to mean something different depending on how the words arrived. /api/say hands
  * it typed or dictated text; /api/hear hands it what the transcriber heard.
  */
-async function answerSaid(req, res, text, who, extra) {
+async function answerSaid(req, res, text, who, extra, heardAnswer) {
   /* Always 200 from here down, whatever went wrong — see grabResponse above.
      `ok` and `spoken` carry the verdict; the status code cannot.
 
@@ -6049,6 +7436,15 @@ async function answerSaid(req, res, text, who, extra) {
      be traced back to the sentence it came from. */
   const say = (body) => {
     const out = { ...body, ...(extra || {}) };
+    /* Counted here rather than at each road, because every one of them comes
+       through this wrapper — which is the same argument that put the speech
+       rewrite here. A road not in the tally is a road that stopped existing. */
+    if (Object.prototype.hasOwnProperty.call(stats.said, out.via)) stats.said[out.via]++;
+    /* Metadata only, and deliberately: no transcript is written, so the report
+       footer's "neither the recording nor the words are kept" stays literally
+       true. What is kept is which road, whether it came from a microphone, and
+       whether it worked — which is what makes the free path measurable. */
+    logEvent({ e: 'said', via: out.via, input: (extra && extra.input) || 'text', ok: !!out.ok });
     if (out.spoken && !out.verbatim) {
       out.said = out.spoken;
       out.spoken = speakable(out.spoken);
@@ -6065,32 +7461,233 @@ async function answerSaid(req, res, text, who, extra) {
      No circuit, room or cue in this house answers to any of these words. */
   if (SAY_CANCEL.test(text)) return say({ ...(await runCancel(who)), via: 'cancel', heard: text });
 
-  const run = async (words, via) => {
+  /* Directly after cancel, and above the grammar, for the same three reasons:
+     it costs no network call, it is not an address, and nothing here answers to
+     these words. It is the one command that is *about* the speaker rather than
+     about a circuit, so it reads `who` and never the sentence. */
+  if (SAY_GOODNIGHT.test(text)) {
+    return say({ ...(await runGoodnight(who, remember)), via: 'goodnight', heard: text });
+  }
+
+  /* One target, answered but not sent — so a sentence naming several can run
+     each in turn and compose a single reply. `run` is this plus `say`, which is
+     what every single-target path still calls. `keep` overrides the cancel
+     callback, because a multi-target sentence has to leave **one** step behind
+     rather than N that overwrite each other in a single-slot map. */
+  const actOn = async (words, via, keep) => {
+    /* Once, here, so the screens and the hub circuits cannot disagree about what
+       "full" means — and so the model path gets the same translation the grammar
+       has always applied before the address ever sees it. */
+    const action = normalAction(words.action);
+
     /* Screens first, because runAddress cannot reach them and would answer for
        the hub's shadowed record instead. One check here covers both the grammar
        path and the model path, which is why it is not in either. */
-    const screen = await screenCommand(words.room, words.circuit, words.action, remember);
-    if (screen) return say({ ...screen, via, heard: text, ...words });
+    const screen = await screenCommand(words.room, words.circuit, action, keep || remember);
+    if (screen) return { ...screen, via, heard: text, ...words, action };
 
     const { shim, out } = grabResponse();
-    await runAddress(req, shim, words.room, words.circuit, words.action, remember);
+    await runAddress(req, shim, words.room, words.circuit, action, keep || remember);
     const body = out.body || {};
     /* 300, not 400: an ambiguity — "there is more than one curtain in Living" —
        is a refusal, and reporting it as ok would have a Shortcut branch as
        though something had been switched. Success here is 2xx only. */
     const won = out.code < 300;
-    return say({ ...body, ok: won, via, heard: text,
-      spoken: body.spoken || (won ? 'Done' : 'That did not work') });
+    return { ...body, ok: won, via, heard: text,
+      spoken: body.spoken || (won ? 'Done' : 'That did not work') };
+  };
+
+  const run = async (words, via) => say(await actOn(words, via));
+
+  /**
+   * Several targets in one sentence, run one after another.
+   *
+   * Sequentially and never together, which is not caution but this file's own
+   * measurement: separate sockets fired concurrently are dropped almost every
+   * time, and each target here is its own setRecords with its own shared socket
+   * and its own verify behind it. Two rooms cost two sends, about 400ms, against
+   * the model call that is already 2s.
+   */
+  const actOnMany = async (calls) => {
+    const kept = [];
+    const keep = (step) => kept.push(step);
+    const done = [];
+
+    for (const c of calls) {
+      const a = c.args || {};
+      if (!a.room || !a.action) continue;
+      // The same Hindi-noun override the single path uses, for the same reason.
+      const said = String(text).match(HINDI_NOUN_SAID);
+      let circuit = said ? said[1].toLowerCase() : (a.circuit || 'all');
+      /* The same narrowing the single path does, because a sentence naming two
+         rooms and one kind arrives here instead — and a stray `house`+`all`
+         among several calls would take the house down with the rest. */
+      if (slug(a.room) === 'house' && circuit === 'all') {
+        const named = String(text).match(SAY_KIND_NAMED);
+        const kind = named && houseWideKind(named[1]);
+        if (kind) circuit = kind.slug;
+        else if (named) continue;
+      }
+      const r = await actOn({ room: a.room, circuit, action: a.action }, 'model', keep);
+      done.push({ room: a.room, circuit, action: a.action, ok: !!r.ok });
+    }
+    if (!done.length) {
+      return { ok: false, via: 'model', heard: text, spoken: 'I did not understand that' };
+    }
+
+    /* One cancel point for the whole sentence. `spokenBack` holds one step per
+       speaker, so remembering each target in turn would leave a cancel that
+       reversed only the last room — worse than none, because it would answer as
+       though it had put everything back. Merged only when every step is a plain
+       record: a curtain and a screen carry their own shapes and cannot be
+       concatenated, so those keep the last, which is what they did before. */
+    if (kept.length === 1) remember(kept[0]);
+    else if (kept.length > 1) {
+      const plain = kept.every((k) => k.kind === 'records');
+      if (plain) {
+        remember({ kind: 'records', label: 'what you just said', room: 'HOUSE',
+          steps: kept.flatMap((k) => k.steps) });
+      } else remember(kept[kept.length - 1]);
+    }
+
+    const okd = done.filter((d) => d.ok);
+    const bad = done.filter((d) => !d.ok);
+    /* The circuit stays lower case and only the room is title-cased, because the
+       speech pass lifts a lower-case acronym — `ac` reads as "AC" and `Ac` reads
+       as "ack", which is the trap this file already records for slugs. */
+    /* Hyphens out before title-casing, or the slug leaks into speech: the model
+       answers with `harshit-room` and title_ gave "Harshit-room", which the voice
+       reads as one hyphenated word. */
+    const place = (r) => title_(String(r).replace(/-/g, ' '));
+    const label = (d) => (d.circuit === 'all' ? place(d.room)
+      : d.circuit + ' in ' + place(d.room));
+    /* Three is the floor for naming them, the same figure and the same reason as
+       folding a spoken reading: past that it is a list nobody listens to, so it
+       counts instead. A shared circuit is named, because "the AC in 6 rooms" says
+       more than "6 rooms" and is no longer. */
+    const summary = (xs) => {
+      if (xs.length === 1) return label(xs[0]);
+      if (xs.length <= 3) {
+        const names = xs.map(label);
+        return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+      }
+      const kinds = new Set(xs.map((d) => d.circuit));
+      const one = [...kinds][0];
+      return kinds.size === 1 && one !== 'all'
+        ? one + ' in ' + xs.length + ' rooms' : xs.length + ' rooms';
+    };
+
+    const verb = done.every((d) => d.action === 'off') ? 'switched off'
+      : done.every((d) => d.action === 'on') ? 'switched on' : 'set';
+    let spoken = okd.length ? 'I have ' + verb + ' ' + summary(okd)
+      : 'I could not do any of that';
+    if (okd.length && bad.length) spoken += '. I could not do ' + summary(bad);
+
+    return { ok: bad.length === 0, via: 'model', heard: text, targets: done, spoken };
   };
 
   const quick = speechWords(text);
   if (quick) return run(quick, 'grammar');
 
-  const answer = await askModel(text);
+  /* A question's reading does not depend on the model's answer, so it need not
+     wait for it.
+   *
+   * `look` asks the hardware and then re-reads the hub, and it was doing both
+   * *after* askModel returned — measured on the live house at 4.31s for a whole-
+   * house question against 1.5-2s for the model call alone. Started here instead,
+   * beside the call, the two overlap and the same question answers in about the
+   * time the model takes.
+   *
+   * Keyed on SAY_ASKS, which is the same test speechWords uses to keep a question
+   * away from the command grammar — so this fires on exactly the sentences that
+   * can reach the `look` branch, and never on a command. Deliberately not awaited
+   * here: a sentence that turns out to be a command simply leaves a refresh
+   * running, which is what the background reader does every fifteen seconds
+   * anyway, and pollHardware is itself rate-limited. */
+  const refreshed = SAY_ASKS.test(text) ? lookRefresh() : null;
+  if (refreshed) refreshed.catch(() => {});
+
+  /* The recording was handed to an audio model at the same moment it was handed
+     to the transcriber, so by here it has usually already answered. Used only
+     when it produced tool calls: a refusal from it is discarded in favour of
+     asking the text model properly, because a null from that road means the
+     format was unsupported or the call failed, and neither is a verdict on the
+     sentence. Remembered under the transcript, so the next identical sentence —
+     typed or spoken — is answered from memory by either road. */
+  let answer = null;
+  /* Said before, by anyone. Checked ahead of the audio road because a memory is
+     instant and that road is a second of network — and the recording was handed
+     over the moment the request arrived, so by here there is nothing to save by
+     waiting for it. */
+  const known = sayRemembered(text);
+  if (known) { stats.said.cached++; answer = known; }
+  if (!answer && heardAnswer) {
+    const direct = await heardAnswer.catch(() => null);
+    if (direct && (direct.calls || []).length) {
+      stats.said.audio++;
+      sayRemember(text, direct);
+      answer = direct;
+    }
+  }
+  if (!answer) answer = await askModel(text);
   if (answer.spoken) {
     return say({ ok: false, via: 'model', heard: text, spoken: answer.spoken,
       verbatim: !!answer.verbatim });
   }
+
+  /* Several targets, and only when every call is a control: a `look` mixed in
+     with commands is not a shape the model is asked for, and running the first
+     of a mixed set is what the old code did, so falling through to it is no
+     worse than before rather than a new guess. */
+  const many = (answer.calls || []).filter((c) => c.call === 'control');
+  if (many.length > 1 && many.length === (answer.calls || []).length) {
+    return say(await actOnMany(many));
+  }
+
+/* A sentence naming one *kind* must never be answered with the whole house.
+ *
+ * Found on the live house, and it is the worst thing this endpoint has done:
+ * **"saare ac band kar do" switched off every light in the house**, at half past
+ * seven in the evening, with the reply "Everything is now off." Twice, because the
+ * first fix was aimed at the wrong layer. The road log is what proved which
+ * circuits were mine and which the household's own — `src: "spoken"` against
+ * `elsewhere` — and it is the only reason the house could be put back exactly.
+ *
+ * The model was not being stupid. It had no tool for "this kind, everywhere", so
+ * it reached for the nearest thing it did have, exactly as it once switched a
+ * television on when asked for Netflix: **naming what a tool cannot do is not the
+ * same as forbidding the plausible substitute.**
+ *
+ * But the fault was not the model's, and this is the part worth remembering. The
+ * `house` branch of runAddress built `everything` and never read the circuit word
+ * at all, so `house` + `acs` and `house` + `xyzzy` were both the whole house. The
+ * first guard written here checked for `house` + `all` and never fired — which is
+ * itself the proof that the model *had* named the kind, since the guard's word
+ * test matched the sentence. **A guard on the voice road cannot fix a fault that
+ * lives in the address.** The address now honours the kind (see HOUSE_KINDS) and
+ * refuses a word it cannot honour, so the correct sentence does the correct thing
+ * on every road, /do included.
+ *
+ * What is left here is smaller and is about the model only: if it still answers
+ * `all` for a sentence that named a kind, the target is narrowed to that kind
+ * rather than run as the house. Narrowing can only ever do less than was asked,
+ * which is recoverable; widening is the one answer that never is. `house` + `all`
+ * stays perfectly legal for the dashboard's all-off and for a sentence that names
+ * no kind at all.
+ */
+/* Longest spelling first in each family, because a capture is what feeds
+   houseWideKind and `batti` matching inside "battiyan" would capture the short
+   form — which HOUSE_KINDS knows, so that one was harmless, while `\bbatti\b`
+   failing to match "battiyan" at all was not: the sentence named a kind, nothing
+   here saw it, and the target stayed the whole house. The spellings must cover
+   HOUSE_KINDS and HINDI_FAN/HINDI_CURTAIN between them; the words that appear
+   here and nowhere there — cob, television — are the ones this refuses. */
+const SAY_KIND_NAMED = new RegExp('\\b(a\\.?c\\.?s?|acs|ac'
+  + '|air\\s*con(?:ditioner|ditioning)s?|air\\s*cons?'
+  + '|pankhaaa|pankhaa|pankhe|pankha|fans|fan'
+  + '|pardaa|pardah|pardey|pardae|parde|parda|curtains|curtain|blinds|blind'
+  + '|battiyan|battian|batti|lights|light|lamps|lamp'
+  + '|cobs|cob|televisions|television|tvs|tv)\\b', 'i');
 
   if (answer.call === 'control') {
     const a = answer.args || {};
@@ -6107,21 +7704,34 @@ async function answerSaid(req, res, text, who, extra) {
        hindiCircuits() the single authority for them on both roads. The model is
        still doing the work that needs it: the room, and the verb. */
     const said = String(text).match(HINDI_NOUN_SAID);
-    const circuit = said ? said[1].toLowerCase() : (a.circuit || 'all');
+    let circuit = said ? said[1].toLowerCase() : (a.circuit || 'all');
+
+    /* See SAY_KIND_NAMED above. Narrowed where the kind is one the house knows,
+       refused where it is not — a cob or a television is a room's business, and
+       "everything" is not a near-enough answer for either. */
+    if (slug(a.room) === 'house' && circuit === 'all') {
+      const named = String(text).match(SAY_KIND_NAMED);
+      if (named) {
+        const kind = houseWideKind(named[1]);
+        if (kind) circuit = kind.slug;
+        else {
+          return say({ ok: false, via: 'model', heard: text, refused: 'kind-house-wide',
+            spoken: 'I cannot do that one across the whole house.'
+              + ' Say a room, and I will do that room' });
+        }
+      }
+    }
+
     return run({ room: a.room, circuit, action: a.action }, 'model');
   }
 
   if (answer.call === 'look') {
     const a = answer.args || {};
-    /* A question deserves a current answer, and it is the one place where the
-       hub's belief being wrong is heard out loud — "Fan is off" about a fan you
-       can hear. So ask the hardware first, then read. The poll is rate-limited,
-       so a run of questions costs one round of packets, and it resolves false
-       and harmlessly if the bus does not answer. */
-    await pollHardware();
-    if (!hubSync.taken || Date.now() - hubSync.taken > 4000) {
-      await readHubStateFresh().catch(() => {});
-    }
+    /* Already in flight if the sentence looked like a question, which is nearly
+       always. Awaited rather than repeated, and started here only for the rare
+       question SAY_ASKS did not recognise — a command word order with a
+       question's intent, which the model spotted and the regex did not. */
+    await (refreshed || lookRefresh());
     // The same override as the control branch, for the same reason.
     const asked = String(text).match(HINDI_NOUN_SAID);
     const look = asked ? asked[1].toLowerCase() : a.circuit;
@@ -6198,7 +7808,11 @@ function transcriptPrompt() {
   // Cheap, but it walks every device, and a held button can fire it repeatedly.
   if (heardVocab.text && Date.now() - heardVocab.at < 60000) return heardVocab.text;
 
+  /* Aliases included, because this is the one list that decides whether the
+     word is *heard* at all. A name like Kanu is not in any transcriber's
+     vocabulary, and everything downstream is moot if it comes back as "can you". */
   const rooms = [...roomsIndex().values()].map((r) => title_(r));
+  for (const sl of Object.keys(ROOM_ALIASES)) rooms.push(title_(sl.replace(/-/g, ' ')));
   const names = new Set();
   for (const room of roomsIndex().values()) {
     for (const c of circuitsOf(room)) {
@@ -6222,8 +7836,124 @@ function transcriptPrompt() {
   return text;
 }
 
-const COLLECTIVE_SAY = new Set(['all', 'lights']);
+/* Kept out of the vocabulary hint because they are ordinary English that every
+   transcriber already gets right — which is the entire reason they exist. `cobs`
+   stays in the hint, being a word nothing expects. */
+const COLLECTIVE_SAY = new Set(['all', 'lights', 'direct-lights', 'indirect-lights']);
 const spokenWords = (slug) => String(slug).replace(/-/g, ' ');
+
+/* Whether this recording can be heard directly, and as what.
+ *
+ * The audio models accept **wav and mp3 only** — `m4a` is refused outright and
+ * calling it `wav` is refused as "does not support the format you provided". So
+ * the race is available for those two and, when a transcoder is present, for
+ * everything else.
+ *
+ * Shortcuts records m4a, which is exactly the case that needs converting, and
+ * this box has no ffmpeg — so on a stock hub the race is off and the serial path
+ * runs as before. `ffmpeg -version` is asked once at startup rather than per
+ * request: it is a process spawn, and the answer cannot change while we run. */
+let audioTool = null;
+function haveTranscoder() {
+  if (audioTool !== null) return audioTool;
+  try {
+    require('child_process').execFileSync('ffmpeg', ['-version'],
+      { stdio: 'ignore', timeout: 4000 });
+    audioTool = 'ffmpeg';
+  } catch { audioTool = ''; }
+  if (audioTool) console.log('voice: ffmpeg found, any recording can be heard directly');
+  return audioTool;
+}
+
+/* m4a in, 16kHz mono wav out, over pipes so nothing touches the disk — which
+   matters here beyond speed: the endpoint's stated property is that the
+   recording is never written down, and a temp file would quietly break it. */
+function toWav(buf) {
+  if (!haveTranscoder()) return Promise.resolve(null);
+  return new Promise((done) => {
+    const kid = require('child_process').spawn('ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0',
+        '-ar', '16000', '-ac', '1', '-f', 'wav', 'pipe:1'],
+      { stdio: ['pipe', 'pipe', 'ignore'] });
+    const out = [];
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; done(v); } };
+    const timer = setTimeout(() => { kid.kill('SIGKILL'); finish(null); }, 6000);
+    kid.stdout.on('data', (d) => out.push(d));
+    kid.on('error', () => { clearTimeout(timer); finish(null); });
+    kid.on('close', (code) => {
+      clearTimeout(timer);
+      finish(code === 0 && out.length ? Buffer.concat(out) : null);
+    });
+    kid.stdin.on('error', () => {});
+    kid.stdin.end(buf);
+  });
+}
+
+/** The recording as something an audio model will take, or null. */
+async function audioForModel(buf, ext) {
+  if (!AUDIO_MODEL || !OPENAI_KEY) return null;
+  if (ext === 'wav' || ext === 'mp3') return { data: buf, format: ext };
+  const wav = await toWav(buf);
+  return wav ? { data: wav, format: 'wav' } : null;
+}
+
+/* The command heard directly, as the same tool calls askModel returns — so
+   every branch downstream is written once and does not care which road the
+   answer came down. */
+async function askModelAudio(buf, ext) {
+  const audio = await audioForModel(buf, ext);
+  if (!audio) return null;
+
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 8000);
+  try {
+    const r = await fetch(OPENAI_BASE + '/v1/chat/completions', {
+      method: 'POST',
+      signal: stop.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OPENAI_KEY },
+      body: JSON.stringify({
+        model: AUDIO_MODEL,
+        modalities: ['text'],
+        messages: [
+          { role: 'system', content: sayPrompt() },
+          { role: 'user',
+            content: [{ type: 'input_audio',
+              input_audio: { data: audio.data.toString('base64'), format: audio.format } }] },
+        ],
+        /* The same tools, reshaped: chat/completions nests the schema under
+           `function` where the responses API has it flat. Built from sayTools so
+           there is one definition of what the model may do. */
+        tools: sayTools().map((t) => ({ type: 'function',
+          function: { name: t.name, description: t.description, parameters: t.parameters } })),
+        tool_choice: 'auto',
+      }),
+    });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '');
+      console.error('hear: audio model answered ' + r.status + ' ' + detail.slice(0, 160));
+      return null;
+    }
+    const data = await r.json();
+    const msg = ((data.choices || [])[0] || {}).message || {};
+    const calls = [];
+    for (const c of msg.tool_calls || []) {
+      let args = {};
+      try { args = JSON.parse((c.function || {}).arguments || '{}'); } catch { /* below */ }
+      calls.push({ call: (c.function || {}).name, args });
+    }
+    if (calls.length) return { ...calls[0], calls };
+    /* It declined and said why. Marked verbatim for the same reason askModel
+       marks its own: the sentence is the model's, not one of our shapes. */
+    const said = String(msg.content || '').trim();
+    return said ? { spoken: said, verbatim: true } : null;
+  } catch (err) {
+    if (err.name !== 'AbortError') console.error('hear: audio model unreachable:', err.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /* What OpenAI needs the file called. It reads the extension, so a name is not
    cosmetic — and Shortcuts records m4a, which is the default for that reason. */
@@ -6285,10 +8015,29 @@ app.post('/api/hear', express.raw({ type: '*/*', limit: '20mb' }), async (req, r
   const buf = Buffer.isBuffer(req.body) ? req.body : null;
   if (!buf || buf.length < 1200) return nope('I did not catch that');
 
+  /* Both roads at once, and this is the shape of the whole endpoint.
+   *
+   * Serially it was transcribe (0.79s) then understand (2.6s) — measured at
+   * 4.31s end to end for a spoken sentence the grammar could not take. The
+   * understanding does not depend on the words, only on the recording, so the
+   * two run together: the transcript still lands first and still gets the free
+   * grammar path, and when the grammar declines the audio model has usually
+   * already answered. Measured at 1.26-1.49s for that call, so the slow road
+   * becomes about as quick as the transcription alone.
+   *
+   * Racing rather than replacing costs one discarded call whenever the grammar
+   * wins. That is the trade, and it is deliberate: the transcript is what
+   * `heard` reports back, which is the only way to find out what the house
+   * thought you said when it does the wrong thing, and it is what keeps the free
+   * path free. Set audio_model to "" to stop racing and pay the latency. */
+  const ext = AUDIO_EXT[String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase()] || 'm4a';
+  const direct = askModelAudio(buf, ext);
+  direct.catch(() => {});
+
   const heard = await transcribe(buf, req.headers['content-type']);
   if (heard.error) return nope(heard.error);
 
-  stats.heard = (stats.heard || 0) + 1;
+  stats.heard++;
   /* `input`, not `via`. `via` names the road the words took once they were words —
      grammar, model or cancel — and that is the thing worth knowing, because a
      better transcript is one that lands on the free path more often. Overwriting
@@ -6297,7 +8046,7 @@ app.post('/api/hear', express.raw({ type: '*/*', limit: '20mb' }), async (req, r
      The transcript rides back as `heard`, which answerSaid already sets: when the
      house does the wrong thing the only useful question is what it thought you
      said, and this is the one place that can answer it. */
-  return answerSaid(req, res, heard.text, whoSaid(req.query), { input: 'voice' });
+  return answerSaid(req, res, heard.text, whoSaid(req.query), { input: 'voice' }, direct);
 });
 
 /** Who is speaking, so "cancel" reverses what *they* said. Trimmed and capped
@@ -6693,7 +8442,10 @@ const lastSeen = new Map();
  * phone app, or a schedule on some other controller — all of which are the
  * interesting column in a family report, and none of which we can tell apart. */
 const CHANGE_WINDOW_MS = 20000;
-const changedBy = (id) => (Date.now() - (commandedAt.get(id) || 0) < CHANGE_WINDOW_MS ? 'us' : 'elsewhere');
+/* Within the window this reports the road the command came down; outside it,
+   nothing here caused the change, which is what `elsewhere` means. */
+const changedBy = (id) => (Date.now() - (commandedAt.get(id) || 0) < CHANGE_WINDOW_MS
+  ? roadOf(commandedVia.get(id) || 'tap') : 'elsewhere');
 
 /* What kind of thing a record is, asked of the record rather than of the
    projection the browser gets. The page's own kindOf() takes a projected device
@@ -6986,13 +8738,23 @@ let timerSeq = 0;
  * still and warm — switching off the climate is the one thing it must not do.
  * Curtains are skipped as ever: they have no state to set.
  */
+/**
+ * What a sleep deliberately leaves running: the fan and the air conditioner.
+ *
+ * Lifted out of sleepSteps because the good night reply now *names* these, and a
+ * reply that disagrees with what was actually sent is worse than one that says
+ * nothing. One definition, the same reason isAcRecord has one.
+ */
+function sleepKeeps({ record }) {
+  return (record.app_type || '') === 'AC'
+    || record.isFan === 'true' || /\bFAN\b/i.test(String(record.device_name || ''));
+}
+
 function sleepSteps(scope) {
   const all = [...devices.values()];
   const isOn = ({ record }) => decodeLevel(record.device_status) > 0
     && (record.app_type || '') !== 'C';
-  const keepsRunning = ({ record }) => (record.app_type || '') === 'AC'
-    || record.isFan === 'true' || /\bFAN\b/i.test(String(record.device_name || ''));
-  const wanted = (d) => isOn(d) && !keepsRunning(d);
+  const wanted = (d) => isOn(d) && !sleepKeeps(d);
 
   if (scope === 'house') return all.filter(wanted).map(({ record }) => ({ record_id: record.record_id, on: false }));
   if (scope.startsWith('room:')) {
@@ -7045,6 +8807,9 @@ async function runSleep(scope, label) {
 }
 
 async function runTimer(id) {
+  return road.run('timer', () => runTimer_(id));
+}
+async function runTimer_(id) {
   const t = timers.get(id);
   if (!t) return;
   timers.delete(id);
@@ -7674,7 +9439,7 @@ function replay(ym) {
   const openAt = new Map();        // id -> when the current on-interval began
   const runs = new Map();          // id -> [{ from, to }]
   const ons = new Map();           // id -> how many times it was switched on
-  const src = new Map();           // id -> { us, elsewhere }
+  const src = new Map();           // id -> { <road>: count }
   const days = new Set();          // local days we have any evidence for
   let firstKnown = null;           // the first moment the state was established
 
@@ -7705,8 +9470,11 @@ function replay(ym) {
       open(ev.id, ev.t);
       if (ev.t >= from) {
         ons.set(ev.id, (ons.get(ev.id) || 0) + 1);
-        const s = src.get(ev.id) || { us: 0, elsewhere: 0 };
-        s[ev.src === 'us' ? 'us' : 'elsewhere']++;
+        /* Keyed by road now. An old line says `us`, which roadOf keeps as its
+           own bucket rather than reattributing it to a road nobody recorded. */
+        const s = src.get(ev.id) || {};
+        const k = roadOf(ev.src);
+        s[k] = (s[k] || 0) + 1;
         src.set(ev.id, s);
       }
     } else close(ev.id, ev.t);
@@ -7919,7 +9687,7 @@ function houseReport(ym) {
   const rooms = new Map();
   const roomOf = (name) => {
     if (!rooms.has(name)) {
-      rooms.set(name, { room: name, all: [], lit: [], fan: [], ac: [], circuits: [], tune: [], us: 0, elsewhere: 0 });
+      rooms.set(name, { room: name, all: [], lit: [], fan: [], ac: [], circuits: [], tune: [], roads: {} });
     }
     return rooms.get(name);
   };
@@ -7927,10 +9695,9 @@ function houseReport(ym) {
   for (const [id, c] of idx) {
     if (!c.room) continue;
     const list = r.runs.get(id) || [];
-    const src = r.src.get(id) || { us: 0, elsewhere: 0 };
+    const src = r.src.get(id) || {};
     const room = roomOf(c.room);
-    room.us += src.us;
-    room.elsewhere += src.elsewhere;
+    for (const [k, n] of Object.entries(src)) room.roads[k] = (room.roads[k] || 0) + n;
     if (!list.length && !(r.ons.get(id) || 0)) continue;
     room.circuits.push({ id, name: c.name, kind: c.kind, hours: msSum(list) / 3600000,
                          times: r.ons.get(id) || 0, runs: list });
@@ -7960,8 +9727,7 @@ function houseReport(ym) {
       circuits: room.circuits.sort((a, b) => b.hours - a.hours || natural_(a.name, b.name)),
       colour: lampHex(tune),
       tune: tune == null ? null : Math.round(tune),
-      us: room.us,
-      elsewhere: room.elsewhere,
+      roads: room.roads,
       runs: all,
       screens: screenTime(r.events, room.room, r.from, r.to),
       /* The room's own charts, off the same replay as the house's. A per-room
@@ -8012,8 +9778,10 @@ function houseReport(ym) {
     if (ev.e === 'cue' && ev.t >= r.from && ev.t < r.to) cues.set(ev.name, (cues.get(ev.name) || 0) + 1);
   }
 
-  const hands = list.reduce((a, x) => ({ us: a.us + x.us, elsewhere: a.elsewhere + x.elsewhere }),
-    { us: 0, elsewhere: 0 });
+  const hands = list.reduce((a, x) => {
+    for (const [k, n] of Object.entries(x.roads || {})) a[k] = (a[k] || 0) + n;
+    return a;
+  }, {});
 
   const litHours = list.reduce((n, x) => n + x.litHours, 0);
   let busiestDay = null;
@@ -8221,6 +9989,10 @@ const REPORT_CSS = [
   '.sub { font-size:11.5px; color:var(--faint); padding-bottom:5px;',
   '  border-bottom:1px solid var(--line); margin-bottom:2px; }',
   '.split { display:flex; height:15px; border-radius:4px; overflow:hidden; background:var(--grid); }',
+  /* Its own class rather than .split, which styles exactly two bands by
+     first-child and last-child and would fight an inline background. */
+  '.roads { display:flex; height:15px; border-radius:4px; overflow:hidden; background:var(--grid); }',
+  '.roads i { display:block; }',
   '.split i:first-child { background:var(--accent); }',
   '.split i:last-child { background:var(--neutral); opacity:.55; }',
   '.keys { display:flex; flex-wrap:wrap; gap:13px; margin-top:10px; font-size:12px;',
@@ -8503,7 +10275,19 @@ function roomView(x, rep) {
       + x.screens.apps.map((a) => '<div class="row"><div class="who">' + esc(appName(a.app))
         + '</div><div class="h">' + hoursWord(a.hours) + '</div></div>').join('')
       + '<p class="note">A television reports honestly, so these hours are real readings '
-      + 'rather than commands.</p></section>\n' : '');
+      + 'rather than commands.</p></section>\n' : '')
+
+    /* A lower floor than the house, because a room is a fraction of it and eight
+       switch-ons in one bedroom is a real habit where eight across the house is
+       nothing. Still a floor: the point of this section is that rooms differ, and
+       a room with three events cannot show that. */
+    + ((() => {
+      const r = roadsHtml(x.roads, 6);
+      return r ? '<section><h2>How this room was told</h2>' + r.html
+        + '<p class="note">Of ' + r.total + ' times something here came on. Rooms differ more '
+        + 'than the house does \u2014 a bedroom is mostly spoken to, a hallway is mostly a wall '
+        + 'switch.</p></section>\n' : '';
+    })());
 }
 
 /* ── the house, which is what the report opens on ─────────────────────── */
@@ -8605,8 +10389,7 @@ function houseView(rep) {
     + dayWord(n.night - 86400000) + '</span></div>'
     + '<div class="h warn">' + hoursWord(n.hours) + '</div></div>').join('');
 
-  const hands = rep.hands.us + rep.hands.elsewhere;
-  const usPct = hands ? Math.round((rep.hands.us / hands) * 100) : 0;
+  const roads = roadsHtml(rep.hands, 12);
 
   return '<header><div class="house">' + esc(HOUSE_NAME) + '</div>'
     + '<h1 class="month">' + esc(monthName(rep.ym)) + '</h1>'
@@ -8657,16 +10440,13 @@ function houseView(rep) {
         + '</div><p class="note">Cues are house-wide. A television\u2019s hours are real '
         + 'readings \u2014 a set reports what its own remote did.</p></section>\n' : '')
 
-    + (hands ? '<section><h2>How things came on</h2>'
-      + '<div class="split"><i style="width:' + usPct + '%"></i>'
-      + '<i style="width:' + (100 - usPct) + '%"></i></div>'
-      + '<div class="keys">'
-      + '<span><i style="background:var(--accent)"></i>' + usPct + '% from the dashboard</span>'
-      + '<span><i style="background:var(--neutral)"></i>' + (100 - usPct)
-      + '% at a wall switch, or another app</span></div>'
-      + '<p class="note">Of ' + hands + ' times something in the house came on. Inferred from '
-      + 'what the dashboard had just sent, so a wall switch pressed in the same few seconds '
-      + 'as a tap is counted as the tap.</p></section>\n' : '');
+    + (roads ? '<section><h2>How the house was told</h2>' + roads.html
+      + '<p class="note">Of ' + roads.total + ' times something in the house came on. Each one '
+      + 'is recorded with the road it came down \u2014 a spoken command, a cue, a schedule \u2014 so '
+      + 'the house can say how it was asked and not merely that it was. Inferred from what had '
+      + 'just been sent, so a wall switch pressed in the same few seconds as a command is '
+      + 'counted as the command. Nothing about what was said is kept, only that something '
+      + 'was.</p></section>\n' : '');
 }
 
 function housePage(rep, opts) {
@@ -8681,6 +10461,39 @@ function housePage(rep, opts) {
     + '<div id="house">' + strip + navHtml(rep, null) + houseView(rep)
     + footerHtml(rep) + '</div>\n'
     + '</div></body></html>\n';
+}
+
+/**
+ * How the house was told, as a bar and a key.
+ *
+ * One builder for both views, because the house total and a room's own share are
+ * the same question asked at two scales and two implementations would drift.
+ * Roads with no count are dropped rather than drawn as slivers, and the whole
+ * thing returns empty below a floor: a split of three switch-ons is noise
+ * presented as a finding, and this report's own footer is built on not doing that.
+ */
+function roadsHtml(roads, floor) {
+  const seen = ROADS.filter((k) => (roads && roads[k]) > 0);
+  const total = seen.reduce((n, k) => n + roads[k], 0);
+  if (total < (floor || 1)) return '';
+
+  /* Percentages are rounded for reading and the last band takes the remainder,
+     so the bar always fills exactly: eight rounded numbers do not add to 100. */
+  let used = 0;
+  const bands = seen.map((k, i) => {
+    const pct = i === seen.length - 1 ? 100 - used : Math.round((roads[k] / total) * 100);
+    used += pct;
+    return { k, n: roads[k], pct };
+  });
+
+  return { total,
+    html: '<div class="roads">'
+      + bands.map((b) => '<i style="width:' + b.pct + '%;background:' + ROAD_COLOUR[b.k]
+        + '"></i>').join('') + '</div>'
+      + '<div class="keys">'
+      + bands.map((b) => '<span><i style="background:' + ROAD_COLOUR[b.k] + '"></i>'
+        + b.pct + '% ' + ROAD_LABEL[b.k] + '</span>').join('')
+      + '</div>' };
 }
 
 /* The board's own seven bands, so a colour is named the way the dashboard names
@@ -8705,6 +10518,19 @@ function footerHtml(rep) {
     + 'rather than measurements. Curtains report nothing at all and are left out entirely. '
     + 'The televisions do report honestly, so their hours are real. There is no meter on any '
     + 'of it, which is why this page is in hours and says nothing about units or cost.</p>'
+    /* Voice belongs in the honest half rather than in a section of its own, and
+       in this footer rather than on the house view: somebody reading a month of
+       their own household is exactly the person entitled to know whether what
+       they said out loud was kept. It sits in every room view for the same
+       reason the rest of this footer does. Unconditional prose, because it is
+       true of the house whether or not anybody spoke to it this month. */
+    + '<p><b>What is said out loud.</b> Speaking to the house sends the recording '
+    + 'out of it: the words are worked out by a service on the internet, because no '
+    + 'phone here follows Hinglish reliably. <b>Neither the recording nor the words '
+    + 'are kept</b> \u2014 not on the hub, not anywhere in the house. What is kept is '
+    + 'what this page is made of: which circuit changed, when, and whose phone '
+    + 'asked. A short English command typed into the dashboard, <i>ashu cobs 40</i>, '
+    + 'never leaves the house at all \u2014 the hub works that one out by itself.</p>'
     + '<p><b>Coverage.</b> ' + rep.days + ' ' + (rep.days === 1 ? 'day' : 'days')
     + ' of this month ' + (rep.days === 1 ? 'carries' : 'carry') + ' a record'
     + (rep.knownFrom && rep.knownFrom > rep.from
@@ -13548,6 +15374,27 @@ function parseCueCommand(q) {
   return { path: '/do/cue/' + hits[0].id, cue: hits[0].id, says: 'Set ' + hits[0].name };
 }
 
+/* A room by prefix, on its own name or on any alias the house has declared.
+   One matcher for the parser and the completion both: they were two copies of
+   the same find-by-prefix, and the field teaching a word the parser then refused
+   would be worse than not teaching it. The room object it
+   returns is always the canonical one, so every message the bar writes says the
+   house's own name. */
+function matchRoom(word) {
+  if (!grammar) return null;
+  return grammar.rooms.find(r => r.room.startsWith(word))
+    || grammar.rooms.find(r => (r.aliases || []).some(a => a.startsWith(word)))
+    || null;
+}
+
+/* Every word that can open a command — the rooms, then the aliases. Rooms first
+   so the chips read as the house before they read as somebody's nickname. */
+function roomWords() {
+  if (!grammar) return [];
+  return [...grammar.rooms.map(r => r.room),
+          ...grammar.rooms.flatMap(r => r.aliases || [])];
+}
+
 function parseCommand(q) {
   const circuit = parseRoomCommand(q);
   // A working circuit command always wins; its complaint only stands if no cue
@@ -13565,7 +15412,7 @@ function parseRoomCommand(q) {
   while (w.length > 1 && acts.length < 2 && isActionWord(w[w.length - 1])) acts.unshift(w.pop());
   if (!acts.length || w.length > 2) return null;
 
-  const room = grammar.rooms.find(r => r.room.startsWith(w[0]));
+  const room = matchRoom(w[0]);
   if (!room) return null;
 
   let circuit = null;
@@ -13608,9 +15455,9 @@ function nextWords(q) {
   const done = ended ? w : w.slice(0, -1);
 
   let pool = null, what = '';
-  if (done.length === 0) { pool = grammar.rooms.map(r => r.room); what = 'room'; }
+  if (done.length === 0) { pool = roomWords(); what = 'room'; }
   else {
-    const room = grammar.rooms.find(r => r.room.startsWith(done[0]));
+    const room = matchRoom(done[0]);
     if (!room) return null;
     const rest = done.slice(1);
     if (rest.length === 0) { pool = room.circuits.concat(PLAIN_ACTIONS); what = 'circuit or action'; }
@@ -14763,6 +16610,19 @@ function drawHealth(h) {
   row('Sent', '<b>' + h.commands.sent + '</b> commands, <b>' + h.commands.failed + '</b> failed',
     h.commands.failed > 0);
   row('Cues', h.cues_fired + ' fired');
+  /* Only once something has been said, because a row of zeroes on a house where
+     nobody uses the voice is a line of noise on a panel that is meant to be
+     read at a glance. */
+  if (h.said) {
+    const said = h.said;
+    const spoken = said.grammar + said.model + said.cancel + said.goodnight;
+    if (spoken) {
+      const free = Math.round((said.grammar + said.cancel + said.goodnight) * 100 / spoken);
+      row('Spoken', spoken + ' commands, <b>' + free + '%</b> free'
+        + (said.heard ? ' \u00b7 ' + said.heard + ' by voice' : ''),
+        free < 40);
+    }
+  }
   row('Watching', h.clients + (h.clients === 1 ? ' browser' : ' browsers'));
   sep();
   row('Up', forHumans.spell(h.uptime_s));
