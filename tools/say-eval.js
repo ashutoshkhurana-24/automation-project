@@ -141,6 +141,15 @@ const speechWords = new Function('slug', 'roomTargets', 'circuitsOf', body)(
   (key) => CIRCUITS.get(key) || [],
 );
 
+/* Which state a yes/no question asked about. Pure, so it lifts on its own —
+   and it decides whether the house answers "Yes" or reads out a status, which
+   is worth a guard: reading `off` out of a sentence that asked `on` answers the
+   opposite of the question while sounding perfectly confident. */
+const polarBody = ['SAY_IS_ON', 'SAY_IS_OFF', 'SAY_ANY', 'polarAsked'].map(lift).join('\n\n')
+  + '\n; return { polarAsked, SAY_ANY };';
+// eslint-disable-next-line no-new-func
+const polar = new Function(polarBody)();
+
 /* `want` is the address the free path must produce, or the string 'model' for a
    sentence it must decline. A case is written for the reason beside it, so a
    future edit that breaks one can tell whether the case or the code is wrong. */
@@ -237,9 +246,44 @@ for (const [group, cases] of CASES) {
   if (lines.length) { console.log('\n  ' + group); console.log(lines.join('\n')); }
 }
 
+/* [sentence, the state it asks about or null, whether it asks "anything"] */
+const POLAR = [
+  ['is the ashu fan on', 'on', false],
+  ['ashu ka fan chal raha hai', 'on', false],
+  ['ashu ke cobs on hain', 'on', false],
+  ['is the ashu ac off', 'off', false],
+  ['ashu ka fan band hai kya', 'off', false],
+  ['ashu ka foot light chalu hai kya', 'on', false],
+  ['living ka parda khula hai', 'on', false],
+  ['is anything on in ashu room', 'on', true],
+  ['ashu mein kuch chalu hai', 'on', true],
+  // Neither word, or both: not a state question, so it reads out as before.
+  ['ashu room mein kya chalu hai', 'on', false],
+  ['what is on', 'on', false],
+  ['is the ashu fan on or off', null, false],
+  ['ashu ke cobs kitne pe hain', null, false],
+];
+
+const polarLines = [];
+for (const [text, want, wantAny] of POLAR) {
+  const got = polar.polarAsked(text);
+  const gotAny = polar.SAY_ANY.test(text);
+  const ok = got === want && gotAny === wantAny;
+  if (ok) pass++; else { fail++; bad.push([text, want + '/' + wantAny, got + '/' + gotAny]); }
+  if (verbose || !ok) {
+    polarLines.push('    ' + (ok ? ' ' : '!') + ' ' + text.padEnd(34)
+      + got + (gotAny ? ' (anything)' : '') + (ok ? '' : '   want ' + want));
+  }
+}
+if (polarLines.length) {
+  console.log('\n  Yes/no questions: which state was asked');
+  console.log(polarLines.join('\n'));
+}
+
 const total = pass + fail;
-console.log('\n  ' + pass + '/' + total + ' correct   '
-  + local + ' on the free path, ' + viaModel + ' handed to the model');
+console.log('\n  ' + pass + '/' + total + ' correct'
+  + '   \u00b7 of the ' + (local + viaModel) + ' addressed sentences, '
+  + local + ' resolve free and ' + viaModel + ' go to the model');
 if (fail) {
   console.log('\n  ' + fail + ' wrong:');
   for (const [text, want, got] of bad) console.log('    ' + text + '  want ' + want + '  got ' + got);

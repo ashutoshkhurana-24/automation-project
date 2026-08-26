@@ -73,6 +73,25 @@ const GROUPS = [
     'Fan in Ashu Room off',
     'AC in Parent Room on',
   ]],
+  /* A yes/no question answered as one. The risk here is the speech pass, not
+     the wording: these end in "on" and "off" exactly as a confirmation does, and
+     SPEAK_WHOLE reads that shape as a circuit being *set* and inserts a verb —
+     which is how "Ashu TV is back at volume 12" once became "is back is at". */
+  ['A yes or no answer', [
+    'Yes. Fan in Ashu Room is on',
+    'No. Fan in Ashu Room is off',
+    'Yes. Bed spot in Ashu Room is on, at 40% and amber',
+    'No. the cobs in Master Room are off',
+    'Yes. the cobs in Ashu Room are on, at 48% and candle',
+    'Partly. 3 of the 11 cobs in Living are on, and 8 are off',
+    'Partly. 1 of the 2 cobs in Living is on, and 1 is off',
+    'Yes. 3 things are on in Ashu Room',
+    'Yes. 1 thing is on in Ashu Room',
+    'No. Nothing is on in Ashu Room',
+    'No. Nothing is on in Ashu Room. The hub also last sent AC on, and cannot check',
+    'Yes. In Ashu Room, TV is on, showing YouTube',
+    'No. In Living, AVR is off',
+  ]],
   ['Direct and indirect lights', [
     'the direct lights in Ashu Room on',
     'the indirect lights in Master Room off',

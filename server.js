@@ -5568,7 +5568,11 @@ or off by accident:</p>
   <span class="say">Kya chalu hai?</span>
   <span class="say">Living mein kya chal raha hai?</span>
   <span class="say">Ashu ka pankha on hai?</span>
+  <span class="say">Ashu mein kuch chalu hai?</span>
 </div>
+<p>Ask about <b>one thing</b> and you get a yes or a no \u2014 <i>"Yes. Fan in Ashu
+Room is on."</i> Ask what is on and you get the list. Where only some of a set is
+lit it says so: <i>"Partly. 3 of the 11 cobs in Living are on."</i></p>
 <div class="note">
 <span class="k">Two things it cannot check</span>
 <p>The air conditioners and the projector work over infrared, like an ordinary
@@ -6170,8 +6174,89 @@ function readingOf(label, records) {
     + (tune != null ? ', ' + warmthName(tune) : '');
 }
 
+/* Was that a yes/no question, and about which state?
+ *
+ * "Is the fan on" wants "Yes"; "what is on in Ashu" wants the list. Answering
+ * the first with the second is the house repeating the question back, and
+ * spoken aloud that is the difference between an answer and a recital.
+ *
+ * The two cannot be told apart by word order, which is what makes this less
+ * obvious than it looks: in Hinglish `kya chalu hai` is open and `kya fan chalu
+ * hai` is polar, and `chal raha hai kya` is polar with the same word at the end.
+ * What does separate them is **whether a particular thing was named** — which
+ * the model has already decided, and which arrives here as the circuit. So this
+ * only reads the state word out of the sentence; naming is somebody else's job.
+ *
+ * Both words present ("is it on or off") means neither is being asked about,
+ * and it falls through to the plain reading rather than guessing which half to
+ * answer. */
+const SAY_IS_ON = /\b(?:on|chalu|chaalu|running|lit|jal\s*rah[aeiy]|chal\s*rah[aeiy]|khul[aiey]|open)\b/i;
+const SAY_IS_OFF = /\b(?:off|band|bandh|bujh[aeiy]|closed|shut)\b/i;
+/* "is anything on", "kuch chalu hai" — a polar question about a whole room,
+   which is a count rather than a state. Kept narrow: without one of these words
+   a room-wide question is the ordinary "what is on" and gets the list. */
+const SAY_ANY = /\b(?:anything|something|kuch|koi|any)\b/i;
+
+function polarAsked(text) {
+  const t = String(text || '');
+  const on = SAY_IS_ON.test(t);
+  const off = SAY_IS_OFF.test(t);
+  if (on === off) return null;
+  return on ? 'on' : 'off';
+}
+
+/* A yes or a no, and then the thing worth adding.
+ *
+ * Returns null wherever a straight answer would be a stronger claim than the
+ * house can support, and that is the whole care in this function:
+ *
+ *  - a **curtain** reports no position at all, so "is it open" has no answer;
+ *  - an **infrared** air conditioner or projector is the hub's note of what it
+ *    last sent, never a reading. This file records a fan running while the hub
+ *    said off. A recital that hedges is honest; a bare "Yes" is not.
+ *
+ * Everything else — relays, dimmers, and the screens, which answer for
+ * themselves — reports back, so yes and no are things we actually know. */
+function polarReading(label, records, asked, roomName) {
+  if (records.some(isCurtainRecord)) return null;
+  if (records.some((r) => isAcRecord(r) || isPrjRecord(r))) return null;
+
+  const lit = records.filter((r) => decodeLevel(r.device_status) > 0).length;
+  const all = records.length;
+  const on = lit > 0;
+  const yes = (asked === 'on') === on;
+
+  /* The answer leads and the room goes inside the clause. Built here rather
+     than prefixed by the caller's "In Ashu Room, " because that put the place
+     in front of the verdict — "In Ashu Room, Yes. Fan is on" — which buries the
+     one word the question was asking for. */
+  const group = /^the\s/.test(label);
+  const name = group ? label : label.charAt(0).toUpperCase() + label.slice(1);
+  const place = roomName ? ' in ' + title_(roomName) : '';
+  const be = all > 1 ? ' are' : ' is';
+
+  /* A group answered by halves, because "Yes" about five lamps of which two are
+     lit is the wrong word — and the count is the answer somebody wanted. */
+  if (all > 1 && lit > 0 && lit < all) {
+    const plain = group ? label.replace(/^the\s/, '') : label;
+    // Both halves agree with their own count: "1 of the 2 is on, and 1 is off".
+    return 'Partly. ' + lit + ' of the ' + all + ' ' + plain + place
+      + (lit === 1 ? ' is' : ' are') + ' on, and '
+      + (all - lit) + (all - lit === 1 ? ' is' : ' are') + ' off';
+  }
+
+  const lvl = levelOf(records);
+  const dimmable = records.some((r) => r.is_dimmable === 'true' || r.is_tunable === 'true');
+  const tune = records.some((r) => r.is_tunable === 'true') ? tuneOf(records) : null;
+  const detail = !on ? ''
+    : (dimmable && lvl < 100 ? ', at ' + lvl + '%' : '')
+      + (tune != null ? (dimmable && lvl < 100 ? ' and ' : ', ') + warmthName(tune) : '');
+
+  return (yes ? 'Yes. ' : 'No. ') + name + place + be + (on ? ' on' : ' off') + detail;
+}
+
 /** The spoken answer to "what is on". */
-function houseReading(roomWord, circuitWord) {
+function houseReading(roomWord, circuitWord, polar, polarAny) {
   const index = roomsIndex();
   const want = slug(roomWord || 'house');
 
@@ -6220,6 +6305,8 @@ function houseReading(roomWord, circuitWord) {
         return 'In ' + title_(roomName) + ' that could be '
           + hindi.map((c) => c.label).join(' or ') + ' \u2014 which one?';
       }
+      const yn = polar && polarReading(hindi[0].label, hindi[0].records, polar, roomName);
+      if (yn) return yn;
       return where + readingOf(hindi[0].label, hindi[0].records);
     }
     const one = pick(asked, [...circuits, ...direct]);
@@ -6231,6 +6318,18 @@ function houseReading(roomWord, circuitWord) {
         + one.ambiguous.join(' or ') + ' \u2014 which one?';
     }
     if (!one.hit) return 'I cannot find that one in ' + title_(roomName);
+    if (polar) {
+      /* A television and the receiver report their own power, so a yes about
+         one is a reading rather than a belief — but they have no records to
+         count, so they are answered from the snapshot rather than through
+         polarReading. */
+      if (one.hit.read) {
+        const yes = (polar === 'on') === !!one.hit.on;
+        return (yes ? 'Yes. ' : 'No. ') + where + one.hit.read();
+      }
+      const said = polarReading(one.hit.label, one.hit.records, polar, roomName);
+      if (said) return said;
+    }
     return where + (one.hit.read ? one.hit.read() : readingOf(one.hit.label, one.hit.records));
   }
 
@@ -6241,6 +6340,27 @@ function houseReading(roomWord, circuitWord) {
   const on = singles.filter((c) => !isCurtainRecord(c.records[0]) && !isIr(c)
     && decodeLevel(c.records[0].device_status) > 0);
   const irOn = singles.filter((c) => isIr(c) && decodeLevel(c.records[0].device_status) > 0);
+
+  /* "Is anything on in Ashu" is a yes/no about a whole room, and the answer is
+     a count rather than a state — so it is answered here rather than through
+     polarReading, which is about one circuit. Only when the sentence actually
+     asked "anything": without that word a room-wide question is the ordinary
+     "what is on" and still gets the list.
+     The screens are counted too, and the infrared circuits are named separately
+     rather than folded in, because "yes, two things" must not quietly include a
+     unit whose state nobody can check. */
+  if (polar === 'on' && polarAny) {
+    const live = on.length + direct.filter((d) => d.on).length;
+    const hedge = irOn.length
+      ? '. The hub also last sent ' + irOn.map((c) => c.label).join(' and ')
+        + ' on, and cannot check'
+      : '';
+    if (!live) {
+      return 'No. Nothing is on in ' + title_(roomName) + (hedge ? hedge : '');
+    }
+    return 'Yes. ' + live + (live === 1 ? ' thing is' : ' things are')
+      + ' on in ' + title_(roomName) + hedge;
+  }
 
   /* Where a whole group is on at one level, the group's name says it.
    *
@@ -6460,8 +6580,19 @@ const SPEAK_PLURAL = /^the\s+.*s\b/i;
     "muted" exactly as a confirmation does, and "Reading Light is is now at 40%"
     is what happens when one of them gets at it. The ambiguity refusal also
     opens with "In", hence the exclusion rather than a bare prefix test. */
+/* A reading, which must be kept away from the whole-sentence rules below.
+ *
+ * Those rules give a *confirmation* its verb, and a reading ends in the same
+ * shapes a confirmation does — "at 40%", "muted", "on". Without this guard
+ * "Reading Light is at 40%" became "is is now at 40%".
+ *
+ * `Yes.` / `No.` / `Partly.` are here for exactly that reason and were added the
+ * same way, by the review tool refusing them: a yes/no answer ends in "Fan in
+ * Ashu Room is on", which SPEAK_WHOLE reads as a circuit having been *set* and
+ * answers "is is now on". Third transform to need this gate, so it is a property
+ * of the shape rather than a quirk of one table. */
 const SPEAK_READING =
-  /^(?:In (?!.+ that could be )|Nothing is on\b|On now:|Also on:)/;
+  /^(?:In (?!.+ that could be )|Nothing is on\b|On now:|Also on:|Yes\.|No\.|Partly\.)/;
 
 /** Whole-sentence rules, first match wins. These give a confirmation its verb;
     everything they capture as $1 is the subject, so the agreement is decided
@@ -7741,7 +7872,12 @@ const SAY_KIND_NAMED = new RegExp('\\b(a\\.?c\\.?s?|acs|ac'
     const look = asked ? asked[1].toLowerCase() : a.circuit;
     return say({ ok: true, via: 'model', heard: text, asked: 'look',
       room: a.room, circuit: look || 'all',
-      spoken: houseReading(a.room, look) });
+      /* A yes/no question gets a yes or a no. The state comes out of the
+         sentence, which only this side has; whether one thing was named is the
+         model's decision and arrives as the circuit. houseReading falls back to
+         the plain reading wherever a straight answer would claim more than the
+         house knows — a curtain, or anything infrared. */
+      spoken: houseReading(a.room, look, polarAsked(text), SAY_ANY.test(text)) });
   }
 
   if (answer.call === 'cue') {

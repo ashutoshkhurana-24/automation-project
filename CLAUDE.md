@@ -1796,6 +1796,25 @@ It earned itself immediately: it caught that the new `SAY_DO`/`hinglishVerb` had
 
 **What was deliberately not changed.** The model timeout went 6s to 5s and no lower: a text call measured 2.6–3.3s at worst here, so the 3.5s that would suit the audio path would time out on the road that is still doing most of the work. And multi-target still runs sequentially — this file's own measurement about concurrent sockets holds whatever the model costs.
 
+### A question gets an answer, not a recital (2026-08-27)
+
+*"In voice command when a question is asked, the answer is not yes or no. Its the status."* It was: `ashu ka fan chal raha hai` came back as **"In Ashu Room, Fan is on"** — the house repeating the question, which spoken aloud is the difference between an answer and a recital.
+
+**No extra model call, and the model is not asked to phrase it.** The prompt already forbids that (*"Do not answer the question yourself — call `look`"*), for the good reason that a reading must come from the house rather than the model's imagination. So the model still only says *what to look at*; `polarAsked()` reads the state word out of the sentence here, and `polarReading()` computes the verdict from the same records `readingOf()` uses.
+
+**Open and polar cannot be told apart by word order, which is what makes this less obvious than it looks.** In Hinglish `kya chalu hai` is open and `kya fan chalu hai` is polar, and `chal raha hai kya` is polar with the same word at the end. What separates them is **whether a particular thing was named** — which the model has already decided and which arrives as the circuit. So the sentence is read only for the state; naming is somebody else's job. Both state words present ("on or off") means neither is being asked and it falls through to the plain reading.
+
+**It refuses to answer yes wherever that would claim more than the house knows**, which is the whole care in it:
+- a **curtain** reports no position at all, so "is it open" has no answer and keeps the prose;
+- an **infrared** air conditioner or projector is the hub's note of what it last sent. This file records a fan running while the hub said off. A recital that hedges is honest; a bare "Yes" is not. Verified live: `is the ashu ac on` still answers *"the hub last sent Ac on, but can't check it"*.
+- a **television or the receiver** does get a plain yes, because those answer for themselves.
+
+A partly-lit group is neither: *"Partly. 3 of the 11 cobs in Living are on, and 8 are off"*, because "Yes" about five lamps of which two are lit is the wrong word and the count is what was wanted. `is anything on in <room>` is answered as a count, with the infrared circuits named separately rather than folded in — so "6 things" never quietly includes a unit nobody can check.
+
+**Two wording bugs, both caught by `say-speech-review.js` rather than by the house.** The first draft put the room in front of the verdict — *"In Ashu Room, Yes. Fan is on"* — which buries the one word the question asked for; the room went inside the clause instead. And the answers end in "…is on", exactly the shape `SPEAK_WHOLE` reads as a circuit having been *set*, so it inserted a verb and produced **"is is now on"**. `SPEAK_READING` is the existing guard and now covers `Yes.` / `No.` / `Partly.`. **That is the third transform to need that gate, so it is a property of the shape rather than a quirk of one table.**
+
+`say-eval.js` gained a section for `polarAsked` — 13 sentences, pure and offline. It is worth a guard because reading `off` out of a sentence that asked `on` answers the opposite of the question while sounding perfectly confident.
+
 ### direct lights and indirect lights (2026-08-25)
 
 *"A lot of times the word cobs gets misheard."* It is not a word any transcriber
