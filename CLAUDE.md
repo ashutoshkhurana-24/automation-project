@@ -1796,6 +1796,33 @@ It earned itself immediately: it caught that the new `SAY_DO`/`hinglishVerb` had
 
 **What was deliberately not changed.** The model timeout went 6s to 5s and no lower: a text call measured 2.6–3.3s at worst here, so the 3.5s that would suit the audio path would time out on the road that is still doing most of the work. And multi-target still runs sequentially — this file's own measurement about concurrent sockets holds whatever the model costs.
 
+### Which models, and why the answer is "the ones already set" (2026-08-27)
+
+Benchmarked rather than reasoned about, with `tools/model-bench.py` and `tools/transcribe-bench.py` — 17 sentences of this house's own Hinglish scored against the address each should resolve to, four runs per finalist, on the hub.
+
+**Cost turned out not to be the axis.** Prompt caching engages: measured 1207 of 1218 input tokens cached from the second call onward, because `sayPrompt()` is memoised and therefore byte-stable — a change made for a different reason that earns itself here. At cached rates a spoken command costs roughly **half a paisa**. Two hundred a day is about a rupee. So the question reduces to accuracy and speed.
+
+| model | 4 runs | median | in / out per M |
+|---|---|---|---|
+| **gpt-5.6-luna** (current) | 16, 16, 15, 16 | 1.45–2.04s | $0.20 / $1.20 |
+| gpt-4o-mini | 16, 16, 16, 16 | 1.40–1.75s | $0.15 / $0.60 |
+| gpt-4.1-mini | 15 | 1.69s | $0.40 / $1.60 |
+| gpt-5.4-nano | 12 | 1.23s | $0.20 / $1.25 |
+| gpt-4.1-nano | 12 | 1.44s | $0.10 / $0.40 |
+| gpt-5-nano | 15 | **8.13s, max 27s** | $0.05 / $0.40 |
+
+**gpt-5-nano is disqualified on latency alone** — it reasons regardless, 18,000 output tokens for seventeen sentences. The two nanos are also wrong in the dangerous direction: `poore kar do` became `open` and `aadhe` became `up`.
+
+**gpt-4o-mini is the only real rival, and it loses on Hinglish numerals.** It read `dining ke cobs aadhe kar do` as `down` in all four runs where luna got 50 every time; `poore` likewise. That is the competence this house actually needs, and it is worth more than the 27% price difference on something already costing half a paisa. Its consistency is better — the same single benign miss every run against luna's varying one — so revisit if the numerals ever get fixed.
+
+**`gpt-transcribe` looks like a strict upgrade and is unusable here.** Newer than `gpt-4o-transcribe` and cheaper ($0.0045 against $0.006 a minute), and it **ignores the romanisation instruction completely**: six clips, six Devanagari transcripts, 9% word recall against the house's names. `gpt-4o-mini-transcribe` is half the price and twice as fast but drops to Devanagari on one clip in six and 82% recall. `gpt-4o-transcribe` stays: **98% recall, five of six exact, no Devanagari.** The lesson is the one this file keeps recording — a newer model is not a better one for the job, and the job here is romanised Latin rather than a good transcript.
+
+**The benchmark's own trap, which nearly changed a model.** Its prompt is a reconstruction of `sayPrompt()` rather than the real thing, and it is slightly weaker — it lacks the line "Do not answer the question yourself". Under it, luna answered `ashu ka ac chal raha hai` with `control ac on` twice in four runs, which reads as a question becoming a command. Against the real endpoint the same sentence answered correctly **eight times out of eight**. So the file ranks models against each other and does not measure production: confirm anything that would change a model against `/api/say` itself, on a case that cannot disturb the house.
+
+It also cost a wrong turn worth recording: **gpt-5.6-luna cannot use tools on `/v1/chat/completions`** — "Function tools with reasoning_effort are not supported" — so a benchmark on that endpoint measures nothing. `server.js` speaks `/v1/responses` and so must the bench.
+
+**One structural gap this exposed and did not close.** `SAY_ASKS` keeps a question away from the *grammar*, but nothing stops the *model* returning `control` for one; the prompt line is the only guard, and it is load-bearing. A structural guard is tempting and is not obviously safe: `SAY_ASKS` is deliberately generous and matches an opening `do`, so converting every `control` under it into a `look` would break "do the movie night cue". If it is ever built, gate it on the unambiguous signals only — a question mark, `kya`/`kaun`/`kitna`, `chal raha`, `chalu hai` — never on the auxiliaries.
+
 ### A question gets an answer, not a recital (2026-08-27)
 
 *"In voice command when a question is asked, the answer is not yes or no. Its the status."* It was: `ashu ka fan chal raha hai` came back as **"In Ashu Room, Fan is on"** — the house repeating the question, which spoken aloud is the difference between an answer and a recital.
