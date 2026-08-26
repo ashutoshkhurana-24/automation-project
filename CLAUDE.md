@@ -1796,6 +1796,16 @@ It earned itself immediately: it caught that the new `SAY_DO`/`hinglishVerb` had
 
 **What was deliberately not changed.** The model timeout went 6s to 5s and no lower: a text call measured 2.6–3.3s at worst here, so the 3.5s that would suit the audio path would time out on the road that is still doing most of the work. And multi-target still runs sequentially — this file's own measurement about concurrent sockets holds whatever the model costs.
 
+### The pipeline written up as a page (2026-08-27)
+
+`docs/how-the-house-listens.html` explains the whole voice path end to end — the phone, the transcription, the three gates, the free grammar, the model, the guards, the executor, the reply — with the measured latencies and two diagrams: where the house boundary falls, and how one resolved address is split four ways by what each circuit physically is.
+
+**Hand-written, and the only page here that is.** `data/speaking-to-the-house.html` is generated from the running server by `tools/make-guide.js`, and `/do` and `/guide` are built per request — all so they cannot go stale. Nothing rebuilds this one, so its figures are a snapshot rather than a reading. It says so in its own footer.
+
+It lives in `docs/` rather than `data/` deliberately: **`build-bundle.sh` packs `data/`**, and there is no reason to ship an explainer to the hub.
+
+Also published as an Artifact. That copy is body-only, because the publisher supplies its own doctype and head, while the copy in the repo carries a document shell so it opens on a double-click. If it is ever republished, send the body-only form.
+
 ### Which models, and why the answer is "the ones already set" (2026-08-27)
 
 Benchmarked rather than reasoned about, with `tools/model-bench.py` and `tools/transcribe-bench.py` — 17 sentences of this house's own Hinglish scored against the address each should resolve to, four runs per finalist, on the hub.

@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  How the House Listens - the voice-to-action pipeline, end to end.
+
+  Hand-written, not generated: unlike data/speaking-to-the-house.html (which is
+  built from the running server by tools/make-guide.js) nothing rebuilds this,
+  so the figures in it are a snapshot. Every number was measured against the
+  live house on 2026-08-27; re-measure before trusting them a year from now.
+
+  It is also published as an Artifact. That copy is body-only, because the
+  publisher supplies its own doctype and head - so if this page is ever
+  republished, send it without the shell above and below.
+
+  Google Fonts is the one external dependency. Offline it falls back to the
+  stacks declared beside each face, which is why they are real stacks.
+-->
+<title>How the House Listens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap">
+
+<style>
+  :root {
+    --ground:   #f2efe9;
+    --pane:     #fbf8f3;
+    --pane-2:   #ece7de;
+    --ink:      #14181d;
+    --soft:     #565e68;
+    --faint:    #8a8378;
+    --rule:     #ddd6ca;
+    --accent:   #d4483a;
+    --accent-q: #ff6f61;
+    --local:    #b8791c;
+    --local-bg: #f7e9cf;
+    --remote:   #3d7ba8;
+    --remote-bg:#dfebf4;
+    --shadow:   0 1px 2px rgba(20,24,29,.06), 0 8px 24px rgba(20,24,29,.05);
+
+    --display: "Instrument Serif", Georgia, "Times New Roman", serif;
+    --sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #14181d;
+      --pane:     #1b2027;
+      --pane-2:   #232932;
+      --ink:      #e9e5dd;
+      --soft:     #a3a9b2;
+      --faint:    #7c8189;
+      --rule:     #2e353e;
+      --accent:   #ff6f61;
+      --accent-q: #ff6f61;
+      --local:    #f2a233;
+      --local-bg: #33291a;
+      --remote:   #7fb2e0;
+      --remote-bg:#1b2733;
+      --shadow:   0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:   #14181d;
+    --pane:     #1b2027;
+    --pane-2:   #232932;
+    --ink:      #e9e5dd;
+    --soft:     #a3a9b2;
+    --faint:    #7c8189;
+    --rule:     #2e353e;
+    --accent:   #ff6f61;
+    --accent-q: #ff6f61;
+    --local:    #f2a233;
+    --local-bg: #33291a;
+    --remote:   #7fb2e0;
+    --remote-bg:#1b2733;
+    --shadow:   0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 24px 120px;
+  }
+  .col { max-width: 66ch; }
+
+  /* -- masthead --------------------------------------------- */
+  header.top {
+    padding: 76px 0 44px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 52px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 22px;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: clamp(44px, 7vw, 76px);
+    line-height: 1.02;
+    letter-spacing: -.015em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+  h1 i { color: var(--accent); font-style: italic; }
+  .standfirst {
+    font-size: 20px;
+    line-height: 1.55;
+    color: var(--soft);
+    max-width: 60ch;
+    margin: 0;
+  }
+  .standfirst b { color: var(--ink); font-weight: 600; }
+
+  /* -- the opening ledger ----------------------------------- */
+  /* The dividers ride on the cells rather than showing through a 1px gap, so a
+     row that does not fill (five figures in a two-column layout on a phone)
+     leaves pane rather than a stray block of rule colour. */
+  .ledger {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+    background: var(--pane);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 40px 0 0;
+  }
+  .ledger div {
+    padding: 18px 18px 16px;
+    box-shadow: inset -1px 0 0 var(--rule), inset 0 -1px 0 var(--rule);
+  }
+  .ledger dt {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 8px;
+  }
+  .ledger dd {
+    margin: 0;
+    font-family: var(--display);
+    font-size: 31px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .ledger dd span { font-size: 15px; color: var(--soft); font-family: var(--sans); }
+
+  /* -- sections --------------------------------------------- */
+  section { margin-top: 68px; }
+  h2 {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: 34px;
+    line-height: 1.14;
+    letter-spacing: -.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 34px 0 6px;
+    letter-spacing: -.005em;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  p { margin: 0 0 17px; }
+  .col p:last-child { margin-bottom: 0; }
+  .lede { font-size: 19px; color: var(--soft); margin-bottom: 26px; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .855em;
+    background: var(--pane-2);
+    border-radius: 4px;
+    padding: 1.5px 5px;
+    word-break: break-word;
+  }
+  a { color: var(--accent); }
+
+  /* -- the stage list --------------------------------------- */
+  .stages { margin: 0; padding: 0; list-style: none; counter-reset: stage; }
+  .stage {
+    counter-increment: stage;
+    display: grid;
+    grid-template-columns: 46px 1fr;
+    gap: 0 20px;
+    padding: 26px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .stage:first-child { border-top: none; padding-top: 8px; }
+  .stage::before {
+    content: counter(stage, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--faint);
+    padding-top: 5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage-body { min-width: 0; }
+  .stage h3 { margin-top: 0; }
+  .stage h3 .where {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 2.5px 8px;
+    border-radius: 20px;
+    margin-left: 10px;
+    vertical-align: 2px;
+    white-space: nowrap;
+  }
+  .in-house { background: var(--local-bg); color: var(--local); }
+  .out-house { background: var(--remote-bg); color: var(--remote); }
+
+  /* -- figures ---------------------------------------------- */
+  figure {
+    margin: 40px 0;
+    padding: 26px 22px 20px;
+    background: var(--pane);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+  figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+  /* The two hues that carry meaning in the diagrams: warm is resolved inside
+     the house, cool has left it. Driven from the tokens so they move with the
+     theme instead of staying at their light-mode values on a dark ground. */
+  figure .s-warm { stroke: var(--local); }
+  figure .s-cool { stroke: var(--remote); }
+  figure .t-warm { fill: var(--local); }
+  figure .t-cool { fill: var(--remote); }
+  figcaption {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 14.5px;
+    line-height: 1.5;
+    color: var(--soft);
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* -- the sentence walk-through ---------------------------- */
+  .walk {
+    background: var(--pane);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 24px 26px;
+    margin: 34px 0;
+  }
+  .walk .said {
+    font-family: var(--display);
+    font-size: 27px;
+    font-style: italic;
+    line-height: 1.25;
+    margin: 0 0 4px;
+  }
+  .walk .gloss { font-size: 14.5px; color: var(--faint); margin: 0 0 20px; }
+  .walk ol { margin: 0; padding-left: 0; list-style: none; counter-reset: w; }
+  .walk li {
+    counter-increment: w;
+    display: grid;
+    grid-template-columns: 68px 1fr;
+    gap: 14px;
+    padding: 7px 0;
+    border-top: 1px dotted var(--rule);
+    font-size: 15px;
+  }
+  .walk li:first-child { border-top: none; }
+  .walk .t {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+    padding-top: 2px;
+  }
+  .walk li b { font-weight: 600; }
+
+  /* -- tables ----------------------------------------------- */
+  .tbl { overflow-x: auto; margin: 26px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 0 16px 9px 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td {
+    padding: 11px 16px 11px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    line-height: 1.45;
+  }
+  td:last-child, th:last-child { padding-right: 0; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; font-family: var(--mono); font-size: 13.5px; }
+  .win { color: var(--local); font-weight: 600; }
+
+  /* -- refusal cards ---------------------------------------- */
+  .guards { display: grid; gap: 14px; margin: 28px 0; }
+  @media (min-width: 760px) { .guards { grid-template-columns: 1fr 1fr; } }
+  .guard {
+    background: var(--pane);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .guard h4 {
+    margin: 0 0 7px;
+    font-size: 15.5px;
+    font-weight: 600;
+  }
+  .guard p { margin: 0; font-size: 14.5px; line-height: 1.5; color: var(--soft); }
+  .guard .said {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--faint);
+    margin-top: 10px;
+  }
+
+  /* -- payload block ---------------------------------------- */
+  pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    background: var(--pane-2);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 22px 0;
+  }
+  pre b { color: var(--accent); font-weight: 500; }
+
+  .note {
+    background: var(--pane-2);
+    border-radius: 8px;
+    padding: 16px 18px;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--soft);
+    margin: 26px 0;
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    margin-top: 78px;
+    padding-top: 26px;
+    border-top: 1px solid var(--rule);
+    font-size: 14px;
+    color: var(--faint);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: opacity .16s ease; }
+  }
+  a:hover { opacity: .72; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">Pravita's Apartment &#183; voice pipeline</p>
+    <h1>How the house <i>listens</i></h1>
+    <p class="standfirst">Six seconds of Hinglish from a phone, and a relay closes on the other
+      side of the flat. Between those two things sit a transcriber, a grammar that runs for
+      nothing, a language model that is not trusted with the answer, and a hub that speaks a
+      1990s lighting bus. <b>This is every step, and why each one is shaped the way it is.</b></p>
+
+    <dl class="ledger">
+      <div><dt>Free path</dt><dd>0.9<span>s</span></dd></div>
+      <div><dt>Model path</dt><dd>1.6<span>s</span></dd></div>
+      <div><dt>Said again</dt><dd>0.9<span>s</span></dd></div>
+      <div><dt>A question</dt><dd>2.6<span>s</span></dd></div>
+      <div><dt>Resolved free</dt><dd>32<span>/42</span></dd></div>
+    </dl>
+  </header>
+
+  <section class="col" style="margin-top:0">
+    <p class="kicker">The shape of it</p>
+    <h2>Two roads, and the whole design is about staying on the cheap one</h2>
+    <p class="lede">A spoken sentence can be understood in one of two places: on the hub, for
+      nothing, in a tenth of a second &#8212; or by a model in another country, for a fraction of a
+      paisa and roughly a second and a half.</p>
+    <p>Everything below is arranged around that gap. The grammar tries first and is allowed to
+      fail freely, because falling through to the model only costs time, while a wrong local
+      guess switches something in a room somebody is sitting in. Warm marks the parts that never
+      leave the building; cool marks the two calls that do.</p>
+  </section>
+
+  <figure>
+    <svg viewBox="0 0 900 336" role="img" aria-label="Everything above a dashed line leaves the house: the transcriber and the language model. Everything below stays on the hub: the phone, the endpoint, the gates, the grammar, the executor and the circuits. The grammar resolves three quarters of sentences without crossing the line.">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="ahw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="t-warm" fill="#b8791c"/>
+        </marker>
+        <marker id="ahc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="t-cool" fill="#3d7ba8"/>
+        </marker>
+      </defs>
+
+      <!-- what leaves the building, above the line -->
+      <rect x="150" y="26" width="150" height="52" rx="7" fill="none" class="s-cool" stroke="#3d7ba8" stroke-opacity=".85"/>
+      <text x="225" y="47" text-anchor="middle" font-size="12" font-weight="600" class="t-cool" fill="#3d7ba8">transcribe</text>
+      <text x="225" y="63" text-anchor="middle" font-size="10" class="t-cool" fill="#3d7ba8" fill-opacity=".85">0.79s</text>
+
+      <rect x="410" y="26" width="150" height="52" rx="7" fill="none" class="s-cool" stroke="#3d7ba8" stroke-opacity=".85"/>
+      <text x="485" y="47" text-anchor="middle" font-size="12" font-weight="600" class="t-cool" fill="#3d7ba8">the model</text>
+      <text x="485" y="63" text-anchor="middle" font-size="10" class="t-cool" fill="#3d7ba8" fill-opacity=".85">1.5s</text>
+
+      <line x1="0" y1="104" x2="900" y2="104" stroke="currentColor" stroke-opacity=".3" stroke-dasharray="3 5"/>
+      <text x="898" y="98" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" fill-opacity=".5" letter-spacing="1">ABOVE THIS LINE, IT LEAVES THE HOUSE</text>
+
+      <!-- the pipeline, all of it inside -->
+      <rect x="8" y="150" width="92" height="66" rx="8" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="54" y="177" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">Shortcut</text>
+      <text x="54" y="193" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">6s m4a</text>
+
+      <rect x="128" y="150" width="104" height="66" rx="8" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="180" y="177" text-anchor="middle" font-size="11.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="currentColor">/api/hear</text>
+      <text x="180" y="193" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">raw body</text>
+
+      <rect x="260" y="150" width="96" height="66" rx="8" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="308" y="174" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">gates</text>
+      <text x="308" y="189" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">cancel</text>
+      <text x="308" y="201" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">good night</text>
+
+      <rect x="384" y="150" width="112" height="66" rx="8" fill="none" class="s-warm" stroke="#b8791c" stroke-width="1.6"/>
+      <text x="440" y="174" text-anchor="middle" font-size="12" font-weight="600" class="t-warm" fill="#b8791c">grammar</text>
+      <text x="440" y="189" text-anchor="middle" font-size="9.5" class="t-warm" fill="#b8791c" fill-opacity=".9">on the hub</text>
+      <text x="440" y="201" text-anchor="middle" font-size="9.5" class="t-warm" fill="#b8791c" fill-opacity=".9">0.1s, free</text>
+
+      <rect x="560" y="150" width="120" height="66" rx="8" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <text x="620" y="174" text-anchor="middle" font-size="11.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="currentColor">runAddress</text>
+      <text x="620" y="190" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">one executor</text>
+      <text x="620" y="202" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">for both roads</text>
+
+      <rect x="708" y="150" width="126" height="66" rx="8" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="771" y="174" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">the circuits</text>
+      <text x="771" y="190" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">hub, then</text>
+      <text x="771" y="202" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">UDP on the bus</text>
+
+      <!-- the spine -->
+      <line x1="102" y1="183" x2="124" y2="183" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+      <line x1="234" y1="183" x2="256" y2="183" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+      <line x1="358" y1="183" x2="380" y2="183" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+      <path d="M498,183 L556,183" fill="none" class="s-warm" stroke="#b8791c" stroke-width="1.7" marker-end="url(#ahw)"/>
+      <text x="527" y="175" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" class="t-warm" fill="#b8791c">32/42</text>
+      <line x1="682" y1="183" x2="704" y2="183" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+
+      <!-- out to the transcriber and back into the gates -->
+      <path d="M180,148 L180,82" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.4" marker-end="url(#ahc)"/>
+      <path d="M294,82 L294,146" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.4" marker-end="url(#ahc)"/>
+      <text x="174" y="140" font-size="9.5" font-family="IBM Plex Mono, monospace" class="t-cool" fill="#3d7ba8" fill-opacity=".9">the words come back</text>
+
+      <!-- grammar declines, so the model is asked, and its answer is guarded -->
+      <path d="M440,148 L440,82" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.4" marker-end="url(#ahc)"/>
+      <text x="352" y="128" font-size="9.5" font-family="IBM Plex Mono, monospace" class="t-cool" fill="#3d7ba8" fill-opacity=".9">declines</text>
+      <path d="M528,82 L528,183" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.4"/>
+      <text x="538" y="128" font-size="9.5" font-family="IBM Plex Mono, monospace" class="t-cool" fill="#3d7ba8" fill-opacity=".9">guarded</text>
+
+      <!-- one sentence back to the phone -->
+      <path d="M771,220 L771,296 L54,296 L54,220" fill="none" stroke="currentColor" stroke-width="1.2" stroke-opacity=".45" marker-end="url(#ah)"/>
+      <text x="412" y="289" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="currentColor" fill-opacity=".55">one spoken sentence back, always HTTP 200</text>
+    </svg>
+    <figcaption><b>The fork is the whole design.</b> Three quarters of what gets said resolves on
+      the hub without a network call at all. Only what the grammar declines leaves the building &#8212;
+      and what comes back from the model is treated as a suggestion, not an instruction, which is
+      what the guards do before it reaches the executor.</figcaption>
+  </figure>
+
+  <section class="col">
+    <p class="kicker">One sentence, end to end</p>
+    <h2>What actually happens in nine tenths of a second</h2>
+  </section>
+
+  <div class="col walk">
+    <p class="said">"Ashu ka fan chalu karo"</p>
+    <p class="gloss">Turn on the fan in Ashu's room &#183; spoken into a Shortcut on the phone</p>
+    <ol>
+      <li><span class="t">0.00s</span><span>Shortcut records 6 seconds of m4a and <b>POSTs the raw bytes</b> to <code>/api/hear?who=ashu</code>. No multipart, no form &#8212; which is why the hub needs no parser.</span></li>
+      <li><span class="t">0.00s</span><span>The hub fires the transcriber and the audio model <b>at the same moment</b>. Neither waits for the other.</span></li>
+      <li><span class="t">0.79s</span><span>The transcript lands: <code>ashu ka fan chalu karo</code>. Romanised Latin, because the prompt insists on it.</span></li>
+      <li><span class="t">0.79s</span><span>Not a cancel. Not a good night. Both are matched first because they cost nothing and are not addresses.</span></li>
+      <li><span class="t">0.80s</span><span><b>The grammar takes it.</b> <code>chalu karo</code> &#8594; <code>on</code>; <code>ka</code> dropped; <code>ashu</code> matches a room by unique prefix. The audio call is abandoned unread.</span></li>
+      <li><span class="t">0.81s</span><span><code>/do/ashu/fan/on</code> &#8212; the same address a browser or a cron line would use.</span></li>
+      <li><span class="t">0.85s</span><span>One WebSocket to the hub, which broadcasts on the lighting bus. The relay closes.</span></li>
+      <li><span class="t">0.93s</span><span>Reply: <b>"Fan in Ashu Room is now on."</b> Reworded for a phone that has to read it aloud.</span></li>
+    </ol>
+  </div>
+
+  <section>
+    <div class="col">
+      <p class="kicker">Stage by stage</p>
+      <h2>The eight things between a voice and a relay</h2>
+      <p class="lede">Each stage exists because of something that went wrong once. The notes
+        below say which.</p>
+    </div>
+
+    <ol class="stages col">
+
+      <li class="stage"><div class="stage-body">
+        <h3>The phone <span class="where in-house">local</span></h3>
+        <p>A Shortcut records six seconds and posts the bytes as the request body. It also sends
+          <code>who</code> &#8212; which is not decoration: cancel and good night are <em>per speaker</em>,
+          so "cancel" reverses what <em>you</em> said, not what someone else did.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>The ear <span class="where out-house">leaves</span></h3>
+        <p>The recording goes to <code>gpt-4o-transcribe</code> with a prompt built from the live
+          house &#8212; every room, every circuit, and a demand for <b>romanised Latin and digits</b>.
+          That prompt is load-bearing. Asked without it, the same clip comes back in Devanagari,
+          which matches no room slug and would send every sentence to the model.</p>
+        <p>A second call runs beside it, handing the raw audio to a model that answers with a tool
+          call directly. It exists to have already finished when the grammar declines.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>Three gates, before anything else <span class="where in-house">local</span></h3>
+        <p><b>Cancel</b> and <b>good night</b> are matched on the raw words, ahead of the grammar
+          and long before the model. Both cost nothing, neither is an address, and nothing in this
+          house is named any of those words &#8212; so matching them first shadows nothing.</p>
+        <p><code>nahi</code> has to be <em>doubled</em> to count as a cancel. "Nahi, fan band karo"
+          is a command with a correction in front of it, and swallowing it would be the worst kind
+          of bug: one that eats a sentence and answers as though it acted.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>The free grammar <span class="where in-house">local</span></h3>
+        <p>A dozen Hinglish verbs collapse to the action words the address grammar already has &#8212;
+          <code>band kar do</code> &#8594; <code>off</code>, <code>tez karo</code> &#8594; <code>up</code>.
+          Possessives, fillers and the bare tails of "kar do" are dropped. Numbers spoken as words
+          become digits. What is left is a room, a circuit and an action.</p>
+        <p>This is a table of <b>verbs</b>, never nouns. A Hindi noun mapped by name is the
+          dangerous half: <code>parda</code> aliased to "curtain" matches <span style="white-space:nowrap">CURTAIN ROPE</span>
+          in Living &#8212; which is a light sitting between two motors. Nouns are resolved by
+          <em>kind</em> instead, on every road.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>Questions are kept out of it <span class="where in-house">local</span></h3>
+        <p>"Is the ashu fan on" strips to <code>[ashu, fan, on]</code> &#8212; an impeccable command. It
+          switched the fan on. The grammar matches three words against an address, and an address
+          has no mood, so it cannot be taught the difference; questions are detected and handed
+          straight to the model instead.</p>
+        <p>The test is deliberately generous, because the two mistakes are not equal. A command
+          mistaken for a question still works &#8212; it costs a second. A question mistaken for a
+          command switches something on in an occupied room.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>The model, only when asked <span class="where out-house">leaves</span></h3>
+        <p>It is given the house &#8212; every room and what is wired in it &#8212; and three tools:
+          <code>control</code>, <code>look</code>, <code>cue</code>. Rooms are a closed list;
+          circuits are not, because which exist depends on the room. It is explicitly told
+          <em>not</em> to answer a question itself: it says what to look at, and the reading is
+          filled in from the hub.</p>
+        <p>Repeated sentences never reach it twice &#8212; the resolution is remembered, keyed on the
+          words and the shape of the house, so a renamed room can't be answered from a memory of
+          the old one.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>The guards <span class="where in-house">local</span></h3>
+        <p>What comes back is a suggestion. If the sentence carried <code>parda</code> or
+          <code>pankha</code>, the model's choice of circuit is <b>discarded</b> and the word is
+          resolved locally by kind. If it answered "the whole house" for a sentence that named one
+          kind, the target is <b>narrowed</b> to that kind &#8212; never widened. Word actions like
+          <code>full</code> are translated to numbers the address accepts.</p>
+      </div></li>
+
+      <li class="stage"><div class="stage-body">
+        <h3>One executor, one hub <span class="where in-house">local</span></h3>
+        <p>Both roads end at <code>runAddress</code> &#8212; the same code a typed URL reaches. Rooms
+          and circuits match on a <b>unique prefix</b>; two candidates is a refusal, never a guess.
+          From there the circuits are sorted by what they physically are, because the hub does not
+          treat them alike.</p>
+      </div></li>
+
+    </ol>
+  </section>
+
+  <figure>
+    <svg viewBox="0 0 880 300" role="img" aria-label="One resolved address is split four ways by device type: ordinary circuits go in one batched socket, curtains carry a verb, infrared units are sent one at a time with a command string, and screens bypass the hub entirely.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <rect x="12" y="118" width="132" height="62" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="78" y="143" text-anchor="middle" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="currentColor">runAddress</text>
+      <text x="78" y="160" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">one resolved address</text>
+
+      <path d="M146,132 L196,132 L196,42 L246,42" fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+      <path d="M146,144 L206,144 L206,114 L246,114" fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+      <path d="M146,156 L206,156 L206,186 L246,186" fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+      <path d="M146,168 L196,168 L196,258 L246,258" fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+
+      <rect x="248" y="20" width="196" height="44" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/>
+      <text x="262" y="39" font-size="12" font-weight="600" fill="currentColor">lamps, fans, switches</text>
+      <text x="262" y="54" font-size="10.5" fill="currentColor" fill-opacity=".62">one shared socket, 60ms apart</text>
+
+      <rect x="248" y="92" width="196" height="44" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/>
+      <text x="262" y="111" font-size="12" font-weight="600" fill="currentColor">curtains</text>
+      <text x="262" y="126" font-size="10.5" fill="currentColor" fill-opacity=".62">verb in opr_param, one at a time</text>
+
+      <rect x="248" y="164" width="196" height="44" rx="7" fill="none" class="s-warm" stroke="#b8791c" stroke-width="1.4"/>
+      <text x="262" y="183" font-size="12" font-weight="600" class="t-warm" fill="#b8791c">air conditioners, projector</text>
+      <text x="262" y="198" font-size="10.5" class="t-warm" fill="#b8791c" fill-opacity=".9">infrared &#8212; needs a command string</text>
+
+      <rect x="248" y="236" width="196" height="44" rx="7" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.4"/>
+      <text x="262" y="255" font-size="12" font-weight="600" class="t-cool" fill="#3d7ba8">televisions, receiver</text>
+      <text x="262" y="270" font-size="10.5" class="t-cool" fill="#3d7ba8" fill-opacity=".9">never touch the hub at all</text>
+
+      <path d="M446,42 L520,42 L520,132 L566,132" fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+      <path d="M446,114 L520,114 L520,132" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M446,186 L520,186 L520,132" fill="none" class="s-warm" stroke="#b8791c" stroke-width="1.3"/>
+
+      <rect x="568" y="106" width="132" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="634" y="129" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">the hub</text>
+      <text x="634" y="146" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">WebSocket, no Origin</text>
+
+      <line x1="702" y1="132" x2="746" y2="132" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+      <rect x="748" y="106" width="124" height="52" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5"/>
+      <text x="810" y="129" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">the bus</text>
+      <text x="810" y="146" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">UDP 255.255.255.255</text>
+
+      <path d="M446,258 L744,258" fill="none" class="s-cool" stroke="#3d7ba8" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#a2)"/>
+      <text x="595" y="251" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" class="t-cool" fill="#3d7ba8">straight over the LAN</text>
+      <rect x="748" y="236" width="124" height="44" rx="7" fill="none" class="s-cool" stroke="#3d7ba8" stroke-opacity=".8"/>
+      <text x="810" y="255" text-anchor="middle" font-size="12" font-weight="600" class="t-cool" fill="#3d7ba8">the sets</text>
+      <text x="810" y="270" text-anchor="middle" font-size="10" class="t-cool" fill="#3d7ba8" fill-opacity=".9">they answer back</text>
+    </svg>
+    <figcaption><b>The hub does not treat its circuits alike.</b> A batch carries a bare record,
+      which is fine for a lamp and silently dropped for anything infrared &#8212; the hub reads the
+      device and channel out of a command string a batch never carries. It files the status
+      anyway, so the board showed an air conditioner off while it ran on. Curtains ignore level
+      entirely and read a verb from a different field. The screens answer for themselves and never
+      involve the hub at all.</figcaption>
+  </figure>
+
+  <section>
+    <div class="col">
+      <p class="kicker">What it refuses</p>
+      <h2>The interesting part is what it declines to say</h2>
+      <p class="lede">Most of the care in this pipeline is spent making sure it never sounds more
+        certain than it is.</p>
+    </div>
+
+    <div class="guards col">
+      <div class="guard">
+        <h4>It won't say yes about an air conditioner</h4>
+        <p>Infrared is one-way. The hub blasts a code and hears nothing back, so the record is
+          what it last <em>sent</em>, not what the unit is doing. Somebody using the remote is
+          invisible to it.</p>
+        <span class="said">"the hub last sent AC on, but can't check it"</span>
+      </div>
+      <div class="guard">
+        <h4>It won't guess between two curtains</h4>
+        <p>Living has a main and a sheer. A prefix that matches both is a refusal that names them,
+          never a coin toss &#8212; the same rule that makes a mistyped address safe.</p>
+        <span class="said">"that could be main curtain or sheer curtain &#8212; which one?"</span>
+      </div>
+      <div class="guard">
+        <h4>It won't tell you where a curtain is</h4>
+        <p>The motors report no position at all. Cancel reverses the verb and says plainly that
+          this is not exactly where it started, rather than claiming a restore it can't support.</p>
+        <span class="said">"it has no position to report"</span>
+      </div>
+      <div class="guard">
+        <h4>It won't answer a kind with the whole house</h4>
+        <p>"Saare AC band kar do" once switched off every light in the flat, and answered
+          "Everything is now off." The address honours the kind now, and refuses a word it can't.</p>
+        <span class="said">"I can do the lights, the fans, the curtains or the air conditioners"</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <p class="kicker">The reply</p>
+      <h2>Written to be read aloud by a phone</h2>
+      <p>Everything answers <b>HTTP 200</b>, whatever happened. Shortcuts reads no body from a
+        non-2xx, so a refusal sent as a 400 arrives on the phone as silence &#8212; the house sounding
+        broken when it merely misheard. The verdict rides in the body instead.</p>
+      <p>Then the sentence is reworded for the voice: a verb added, contractions in, em dashes out
+        (they read as a pause of unguessable length), and acronyms meant as words lowered so
+        <code>COBs</code> isn't spelled out letter by letter &#8212; while <code>AC</code> and
+        <code>TV</code> are lifted so they <em>are</em>.</p>
+    </div>
+
+    <div class="col">
+<pre><b>POST</b> /api/hear?who=ashu        <span style="opacity:.6">(6s of m4a, raw body)</span>
+
+{
+  "ok":     true,
+  "via":    "grammar",          <span style="opacity:.6">&#8592; which road it took</span>
+  "input":  "voice",
+  "heard":  "ashu ka fan chalu karo",
+  "said":   "Fan in Ashu Room on",
+  "spoken": "Fan in Ashu Room is now on."
+}</pre>
+      <p><code>heard</code> is there for one reason: when the house does the wrong thing, the only
+        useful question is what it thought you said.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <p class="kicker">Measured, not estimated</p>
+      <h2>Where the time goes</h2>
+      <p>All taken on the hub itself, so the numbers carry no tunnel latency. The floor for
+        anything that leaves the building is 0.89s &#8212; a bare round trip from this flat to the
+        model's nearest door.</p>
+    </div>
+    <div class="tbl col">
+      <table>
+        <thead><tr><th>What</th><th>Before</th><th>Now</th><th>Road</th></tr></thead>
+        <tbody>
+          <tr><td>Spoken, grammar takes it</td><td class="num">0.93s</td><td class="num win">0.93s</td><td>stays in</td></tr>
+          <tr><td>Spoken, model needed</td><td class="num">4.31s</td><td class="num win">1.59s</td><td>leaves</td></tr>
+          <tr><td>Spoken, said again</td><td class="num">4.31s</td><td class="num win">0.91s</td><td>remembered</td></tr>
+          <tr><td>A question, whole house</td><td class="num">4.31s</td><td class="num win">2.62s</td><td>leaves</td></tr>
+          <tr><td>Typed into the dashboard</td><td class="num">0.10s</td><td class="num win">0.10s</td><td>stays in</td></tr>
+          <tr><td>Transcription alone</td><td class="num">&#8212;</td><td class="num">0.79s</td><td>leaves</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col note">
+      <b>One piece is built and currently idle.</b> The audio model that answers straight from the
+      recording takes wav or mp3 only, and a Shortcut records m4a. With no transcoder on the hub
+      the race quietly does nothing and the older serial path runs exactly as before &#8212; which is
+      why the model road still shows 1.59s rather than the 1.4s the audio call measures on its own.
+    </div>
+  </section>
+
+  <section>
+    <div class="col">
+      <p class="kicker">Deliberately absent</p>
+      <h2>Four things it does not do</h2>
+      <p><b>It keeps no recording and no transcript.</b> The audio is a buffer that is never
+        written to disk, and the log records the road, whether it came from a microphone, and
+        whether it worked &#8212; never the words. What leaves the house is the recording itself, going
+        to the transcriber; a short English command typed into the dashboard never leaves at all.</p>
+      <p><b>It never re-reads the house to answer faster.</b> A command trusts the background
+        reader; only a question pays for a fresh look, and even then the poll now runs beside the
+        model call rather than after it.</p>
+      <p><b>It only goes one step back.</b> A second "cancel" says there is nothing to cancel,
+        which is understandable &#8212; where a cancel that toggles back and forth is something nobody
+        can keep track of by ear.</p>
+      <p><b>It does not switch a television off at bedtime.</b> Good night is a sleep, and sleep
+        leaves the fan and the air conditioner running on purpose &#8212; the point is to fall asleep,
+        not to be woken at two by a room gone still and warm. The screens are simply not in that
+        list, which is worth revisiting.</p>
+    </div>
+  </section>
+
+  <footer class="col">
+    <p>Every figure here is measured against the live house on 27 August 2026. The pipeline is
+      about 900 lines inside <code>server.js</code>; the grammar is checked offline by
+      <code>tools/say-eval.js</code> &#8212; 42 sentences, of which 10 must <em>fail</em> to resolve
+      locally, because a wrong local answer switches the wrong thing in silence.</p>
+  </footer>
+
+</div>
+</body>
+</html>
