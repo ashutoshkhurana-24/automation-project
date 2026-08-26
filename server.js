@@ -8195,6 +8195,33 @@ app.post('/api/hear', express.raw({ type: '*/*', limit: '20mb' }), async (req, r
 const whoSaid = (body) =>
   String((body && body.who) || '').trim().slice(0, 40).toLowerCase();
 
+/* Exactly what is sent to the models, read-only.
+ *
+ * All three prompts are built from the live house, so any copy written down
+ * elsewhere is a second derivation — and this file already records what that
+ * costs. `tools/model-bench.py` reconstructed sayPrompt() from /do, the
+ * reconstruction was one sentence short, and it produced a false negative loud
+ * enough to have changed which model reads the house. So the documentation
+ * reads the real thing from here rather than paraphrasing it.
+ *
+ * It exposes nothing `/do` does not already — the rooms, the circuits and what
+ * each one is — and sits behind the same key as the rest of /api/say. */
+app.get('/api/say/prompt', (req, res) => {
+  if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
+  res.json({
+    models: {
+      understanding: OPENAI_MODEL,
+      transcription: TRANSCRIBE_MODEL,
+      audio: AUDIO_MODEL || '(off)',
+    },
+    // The key both prompt caches hang on, so a stale copy is detectable.
+    house_shape: houseShape(),
+    prompt: sayPrompt(),
+    tools: sayTools(),
+    transcript_prompt: transcriptPrompt(),
+  });
+});
+
 app.post('/api/say', async (req, res) => {
   if (!keyOk(req)) return res.status(403).json({ ok: false, error: 'Wrong key' });
   const text = String((req.body && req.body.text) || '').trim();

@@ -1796,6 +1796,16 @@ It earned itself immediately: it caught that the new `SAY_DO`/`hinglishVerb` had
 
 **What was deliberately not changed.** The model timeout went 6s to 5s and no lower: a text call measured 2.6–3.3s at worst here, so the 3.5s that would suit the audio path would time out on the road that is still doing most of the work. And multi-target still runs sequentially — this file's own measurement about concurrent sockets holds whatever the model costs.
 
+### The prompts are read, never transcribed (2026-08-27)
+
+`GET /api/say/prompt` returns exactly what is sent to the models &#8212; the system prompt, the tools, and the transcription hint &#8212; and `tools/dump-prompts.js` writes it into `docs/prompts.md`. The page above embeds the same text.
+
+**Why an endpoint rather than a copy.** All three are built from the live house, so anything written down by hand is a second derivation, and this file already records what one costs: `tools/model-bench.py` reconstructed `sayPrompt()` from `/do`, the reconstruction was one sentence short, and under it the model turned a question into a command in two runs of four &#8212; a false negative loud enough to have changed which model reads the house. It exposes nothing `/do` does not already, and sits behind the same key as the rest of `/api/say`.
+
+**Regenerate from the hub, not from a local instance.** The first dump was taken locally and came out 31 characters longer, because the Mac's `scenes.json` is stale testing state while the hub carries what the household actually made &#8212; `guest-mode` and `normal-mode` exist there, and the three per-person good-night cues are gone. `node tools/dump-prompts.js http://<hub>:3000`.
+
+Two small traps in the tool, both fixed: `toISOString()` dates a 3am dump to the previous day because the house is IST, which is the same trap the history log sets; and `houseShape()` carries two entries that are not rooms, so counting its separators overstates the house by two.
+
 ### The pipeline written up as a page (2026-08-27)
 
 `docs/how-the-house-listens.html` explains the whole voice path end to end — the phone, the transcription, the three gates, the free grammar, the model, the guards, the executor, the reply — with the measured latencies and two diagrams: where the house boundary falls, and how one resolved address is split four ways by what each circuit physically is.
