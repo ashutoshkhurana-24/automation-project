@@ -7052,14 +7052,18 @@ async function askModel(text) {
   /* The memory is read by the one caller, before the audio road, so it is not
      re-read here — this only writes to it. */
 
-  /* A spoken command that has not answered in a few seconds has already failed
-     as a spoken command — somebody is standing there having said something to a
-     phone. Measured against this house, a text call is 2.6-3.3s at worst, so
-     this is that plus headroom rather than the six seconds it was: six is long
-     enough that the reply arrives after the person has given up and said it
-     again, which is worse than being told to. */
+  /* Six seconds, and it was briefly five — which was wrong and is worth keeping
+     as a note, because the reasoning sounded right. The argument was that a
+     spoken command answering in six seconds has already failed as one, so
+     failing faster is kinder. The measurement it rested on was a small sample
+     that put a text call at 2.6-3.3s. The real distribution has a long tail: a
+     later run of five questions timed out three times at five seconds, and a
+     run of eight reached 4.26s without failing.
+     A false timeout is much worse than a wait. The person is told the house did
+     not answer when it was about to, and says the whole sentence again — so the
+     "kinder" failure costs a repeat, while the extra second costs a second. */
   const stop = new AbortController();
-  const timer = setTimeout(() => stop.abort(), 5000);
+  const timer = setTimeout(() => stop.abort(), 6000);
   try {
     const r = await fetch(OPENAI_BASE + '/v1/responses', {
       method: 'POST',
