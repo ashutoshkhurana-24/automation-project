@@ -1448,16 +1448,26 @@ somebody the house does not know. It rides both exits, including the
 nothing-was-on one.
 
 **A pool, not a line, and banded by the hour.** One canned sentence is wallpaper
-by the fourth night. `GOODNIGHT_LINES` holds three pools and
+by the fourth night. `GOODNIGHT_LINES` holds **thirty** lines in three pools and
 `goodnightSignoff(who, hour)` draws one, **excluding the line that person heard
 last** — per person, because two people going to bed should not hear the same
 thing, and `who` is already the identity on this road.
 
-| | |
-|---|---|
-| 05:00&ndash;21:59 | *"An early night. Rest well."* |
-| 22:00&ndash;00:59 | *"Take a slow breath. Rest well."* |
-| 01:00&ndash;04:59 | *"A late one. Sleep in if you can."* |
+| | | |
+|---|---|---|
+| 05:00&ndash;21:59 | 8 | *"Nice and early. Rest well."* |
+| 22:00&ndash;00:59 | 14 | *"You did enough today. Rest well."* |
+| 01:00&ndash;04:59 | 8 | *"Late one. Sleep in if you can."* |
+
+**The night band is the biggest because it is where most good nights land, and
+its first two lines are deliberately flat** — a bare *"Rest well."* and
+*"Sleep well."*. A pool of nothing but affirmations reads as the house trying,
+and the plain ones are what let the others land.
+
+**The register was the user's, chosen from a menu of 55 candidates** (2026-08-28):
+calm, plain, permission-giving, two clauses at most. What was *rejected* defines
+it as sharply as what was kept — "Unclench your jaw", "Soft landing" and every
+other clever line went. Write new ones to match, not to be interesting.
 
 The bands are the hub's hour, for the reason the theme already reads it there: a
 phone in another timezone must not decide whether somebody had an early night.
@@ -1499,13 +1509,23 @@ the model buys variety on top of work already done. The good use of a model here
 is as an **author**: have it write thirty candidates, read them, ship the ones
 that survive as constants.
 
-**Tested at 02:00 IST against a sleeping house, so every run was a no-op.** Master
-Room had only its fan and air conditioner on, both of which `sleepKeeps` spares,
-so `sleepSteps` returned nothing and no command was sent &mdash; confirmed by the
-room reading identically afterwards. That proved the name, the late band and the
-per-person rotation live on the hub. **The `off > 0` shape was not fired**, since
-the only way to test it is to darken an occupied room; it is covered by the review
-tool, which passes 0 to fix over 20 lines.
+**Tested at 02:00 IST against a sleeping house, chosen so every run would be a
+no-op.** Master Room had only its fan and air conditioner on, both of which
+`sleepKeeps` spares, so `sleepSteps` returned nothing and no command was sent.
+That proved the name, the late band and the per-person rotation live on the hub.
+
+**And the second run switched off a light, which is the lesson.** Somebody turned
+a foot light on in Master Room between the pre-deploy check and the test, so the
+"no-op" was no longer one. The read that would have caught it **was in the same
+shell command as the six calls it was supposed to gate**, so its answer arrived
+only alongside the damage. Restored inside the minute with `cancel` &mdash;
+legitimate, and the first use of it in anger for its actual purpose, because the
+snapshot was taken immediately before the write and nothing intervened.
+
+The rule this file already carries is that a baseline two minutes old is a fact
+about the past. The narrower one it did not yet carry: **a pre-check batched into
+the same command as the action is not a check at all.** Read, look at the answer,
+then decide.
 
 ### What the voice path keeps, and where it is said (2026-08-25)
 

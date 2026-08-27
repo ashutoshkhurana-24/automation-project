@@ -173,11 +173,11 @@ const GROUPS = [
   ['Good night', [
     'Good night, Bhai. I have switched off 8 lights in Master Room. the fan is still running. Rest well.',
     'Good night, Ashu. I have switched off one light in Ashu Room. Sleep well.',
-    'Good night, Mum. I have switched off 5 lights in Harshit Room. the fan and the air conditioner are still running. Let the day go. Sleep well.',
+    'Good night, Mum. I have switched off 5 lights in Harshit Room. the fan and the air conditioner are still running. Let the day go. Rest well.',
     'Nothing was on in Ashu Room. Good night, Ashu. The room is yours now. Rest well.',
     // A closing line has to follow bad news without sounding pleased about it.
     'Good night, Bhai. I have switched off 9 lights in Master Room. 2 lights are still burning. Take a slow breath. Rest well.',
-    'Good night, Bhai. I have switched off 8 lights in Master Room. One light is still burning. A late one. Sleep in if you can.',
+    'Good night, Bhai. I have switched off 8 lights in Master Room. One light is still burning. Late one. Sleep in if you can.',
     'I could not switch anything off in Master Room',
     'I do not know whose good night that is. I know mum, dad, ashu and bhai',
     'the lights in Master Room are back as they were',

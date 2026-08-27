@@ -8175,29 +8175,48 @@ const SAY_GOODNIGHT = new RegExp(
  * Written to follow any of the fact clauses above, including "2 lights are still
  * burning" — hence no line that celebrates. */
 const GOODNIGHT_LINES = {
-  // Before ten. Affirming, never congratulatory: it is a bedtime, not a score.
+  /* Before ten. Plain about the hour rather than congratulatory: it is a
+     bedtime, not a score. */
   early: [
+    'Nice and early. Rest well.',
+    'Early one tonight. Sleep well.',
     'An early night. Rest well.',
-    'Good hour for it. Sleep well.',
-    'Early one tonight. Rest well.',
-    'Nice and early. Sleep well.',
+    'The whole night is yours. Sleep well.',
+    'You are done early. Rest well.',
+    'Plenty of night ahead. Sleep well.',
+    'Stopping early tonight. Rest well.',
+    'Good hour to stop. Sleep well.',
   ],
+  /* The ordinary night, and the biggest pool because it is where most good
+     nights land. Two flat lines are kept deliberately at the top: a pool of
+     nothing but affirmations reads as the house trying, and the plain ones are
+     what let the others land. */
   night: [
     'Rest well.',
     'Sleep well.',
     'The room is yours now. Rest well.',
-    'All quiet here. Sleep well.',
     'Take a slow breath. Rest well.',
-    'The house has it from here. Sleep well.',
-    'Nothing left to think about. Rest well.',
-    'Let the day go. Sleep well.',
+    'You did enough today. Rest well.',
+    'Nothing needs you until morning. Sleep well.',
+    'Nothing left to do tonight. Rest well.',
+    'Put the day down. Sleep well.',
+    'Let the day go. Rest well.',
+    'It can all wait until morning. Sleep well.',
+    'You can stop now. Rest well.',
+    'Breathe out. Sleep well.',
+    'That was enough for one day. Rest well.',
+    'The house is quiet now. Sleep well.',
   ],
-  /* Past one. Warm about it rather than pointed — the house noticing the hour is
-     pleasant, the house having an opinion about it is not. */
+  /* Past one. Warm about the hour rather than pointed — the house noticing it is
+     late is pleasant, the house having an opinion about it is not. */
   late: [
-    'A late one. Sleep in if you can.',
-    'Late one tonight. Rest well.',
-    'Long day. Sleep well.',
+    'A late one. Rest well.',
+    'Late one tonight. Sleep well.',
+    'Long day. Rest well.',
+    'You are done now. Sleep well.',
+    'Late one. Sleep in if you can.',
+    'The day is over. Rest well.',
+    'Everything can wait now. Sleep well.',
     'Late hour. Rest well.',
   ],
 };
