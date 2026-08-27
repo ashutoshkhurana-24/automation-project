@@ -1436,6 +1436,77 @@ per-person spec did not cover. The other three are gone from the hub and from
 `data/seed-scenes.json`, with all four backed up to
 `data/removed/good-night-cues.json` first.
 
+### A good night says your name, and never the same line twice (2026-08-28)
+
+*"i wanna add some fun things to the voice feature ... something mindful that
+helps them winddown."* Three changes to `runGoodnight`, and the whole of the
+personality is one closing sentence.
+
+**The name was free and is the largest part of the effect.** `who` is already
+resolved to a room before the reply is built, so *"Good night, Bhai"* cannot name
+somebody the house does not know. It rides both exits, including the
+nothing-was-on one.
+
+**A pool, not a line, and banded by the hour.** One canned sentence is wallpaper
+by the fourth night. `GOODNIGHT_LINES` holds three pools and
+`goodnightSignoff(who, hour)` draws one, **excluding the line that person heard
+last** — per person, because two people going to bed should not hear the same
+thing, and `who` is already the identity on this road.
+
+| | |
+|---|---|
+| 05:00&ndash;21:59 | *"An early night. Rest well."* |
+| 22:00&ndash;00:59 | *"Take a slow breath. Rest well."* |
+| 01:00&ndash;04:59 | *"A late one. Sleep in if you can."* |
+
+The bands are the hub's hour, for the reason the theme already reads it there: a
+phone in another timezone must not decide whether somebody had an early night.
+
+**Four rules the lines obey, each of them a thing that went wrong somewhere else
+in this file.**
+- **Never celebrate.** A closing line follows whatever the facts turned out to be,
+  including *"2 lights are still burning"* &mdash; so every line is a rest-wish and
+  none is a congratulation.
+- **Never on the failure path.** `off === 0` gets no sign-off: a room still lit
+  and the house saying "sleep well" is it being cheerful about not having done
+  what it was asked.
+- **Warm about the hour, never pointed.** The house noticing it is two in the
+  morning is pleasant; the house having an opinion about it is not.
+- **The facts stay exactly as blunt as they were.** The fan is still named, the
+  stragglers are still counted. Personality goes in the sign-off and nowhere near
+  a claim.
+
+**In memory, not `state.json`.** A good night happens once a day, so a restart
+costs at most one repeat &mdash; and this house persists *a person's choice*, which
+a line the code picked is not.
+
+**`say-speech-review.js` lifts `GOODNIGHT_LINES` rather than restating it**, so a
+line added to `server.js` is checked without anybody remembering to add it, and
+each is shown **inside a real reply**: read bare, *"Rest well."* has no verb the
+checker knows, and it would fail a rule it does not actually break. That
+checkability is the whole argument for a written pool over a generated one &mdash;
+see below.
+
+**Why not let the model write it.** Latency is the weakest of the reasons and the
+one to drop: the sign-off depends on nothing the house computes, so it could be
+raced against the sleep and cost nothing. The two that hold are that **it cannot
+be reviewed** &mdash; the failure modes here are mechanical and specific (an em dash
+is a pause of unguessable length, a capitalised acronym is spelled out, a sentence
+ending in "off" gets a verb inserted by `SPEAK_WHOLE`) and a generated line can
+only be run through `speakable()` and hoped over &mdash; and that **a fallback pool
+is needed anyway**, for a missing key, a timeout, or a hub with no internet, so
+the model buys variety on top of work already done. The good use of a model here
+is as an **author**: have it write thirty candidates, read them, ship the ones
+that survive as constants.
+
+**Tested at 02:00 IST against a sleeping house, so every run was a no-op.** Master
+Room had only its fan and air conditioner on, both of which `sleepKeeps` spares,
+so `sleepSteps` returned nothing and no command was sent &mdash; confirmed by the
+room reading identically afterwards. That proved the name, the late band and the
+per-person rotation live on the hub. **The `off > 0` shape was not fired**, since
+the only way to test it is to darken an occupied room; it is covered by the review
+tool, which passes 0 to fix over 20 lines.
+
 ### What the voice path keeps, and where it is said (2026-08-25)
 
 Asked whether recordings are stored on the hub. **They are not, and this was

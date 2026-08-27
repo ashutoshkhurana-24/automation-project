@@ -8160,6 +8160,66 @@ const SAY_GOODNIGHT = new RegExp(
   + '|sona\\s*hai'
   + ')[\\s.!,]*$', 'i');
 
+/* The closing line, which is the whole of the personality here.
+ *
+ * A pool rather than one sentence, because a single canned line is wallpaper by
+ * the fourth night; banded by the hour, because the hub's clock is already the
+ * authority on what time it is in this house and a phone in another timezone
+ * must not decide whether somebody had an early night.
+ *
+ * Every line is checked by tools/say-speech-review.js, which lifts this table —
+ * so a line that ends in "on" or "off", carries an em dash, or spells an acronym
+ * out cannot be added without the tool refusing it. That checkability is the
+ * argument for a written pool over a generated one.
+ *
+ * Written to follow any of the fact clauses above, including "2 lights are still
+ * burning" — hence no line that celebrates. */
+const GOODNIGHT_LINES = {
+  // Before ten. Affirming, never congratulatory: it is a bedtime, not a score.
+  early: [
+    'An early night. Rest well.',
+    'Good hour for it. Sleep well.',
+    'Early one tonight. Rest well.',
+    'Nice and early. Sleep well.',
+  ],
+  night: [
+    'Rest well.',
+    'Sleep well.',
+    'The room is yours now. Rest well.',
+    'All quiet here. Sleep well.',
+    'Take a slow breath. Rest well.',
+    'The house has it from here. Sleep well.',
+    'Nothing left to think about. Rest well.',
+    'Let the day go. Sleep well.',
+  ],
+  /* Past one. Warm about it rather than pointed — the house noticing the hour is
+     pleasant, the house having an opinion about it is not. */
+  late: [
+    'A late one. Sleep in if you can.',
+    'Late one tonight. Rest well.',
+    'Long day. Sleep well.',
+    'Late hour. Rest well.',
+  ],
+};
+
+/* Per person, because two people going to bed should not hear the same line, and
+   `who` is already the identity on this road. In memory rather than state.json:
+   a good night happens once a day, so a restart costs at most one repeat, and
+   this house persists a person's choice rather than a thing it worked out. */
+const goodnightLast = new Map();
+
+/** One closing line for this speaker, never the one they heard last. */
+function goodnightSignoff(who, hour) {
+  const pool = (hour >= 22 || hour < 1) ? GOODNIGHT_LINES.night
+    : hour < 5 ? GOODNIGHT_LINES.late
+    : GOODNIGHT_LINES.early;
+  const last = goodnightLast.get(who);
+  const fresh = pool.filter((line) => line !== last);
+  const line = fresh[Math.floor(Math.random() * fresh.length)];
+  goodnightLast.set(who, line);
+  return line;
+}
+
 /**
  * Puts this speaker's own room to bed, and says what it left running.
  */
@@ -8204,6 +8264,10 @@ async function runGoodnight(who, remember) {
 
   const scope = 'room:' + room;
   const where = title_(room);
+  /* Addressed to the person who said it. `who` has been resolved to a room
+     already, so this cannot name somebody the house does not know. */
+  const you = ', ' + title_(key);
+  const sign = goodnightSignoff(key, new Date().getHours());
   const steps = sleepSteps(scope);
 
   /* Said rather than silently doing nothing. A good night that answers "already
@@ -8211,7 +8275,7 @@ async function runGoodnight(who, remember) {
      not, which is the only thing the speaker cannot check for themselves. */
   if (!steps.length) {
     return { ok: true, room, off: 0,
-      spoken: 'Nothing was on in ' + where + '. Good night' };
+      spoken: 'Nothing was on in ' + where + '. Good night' + you + '. ' + sign };
   }
 
   /* Cancellable, because this is the largest thing anybody says to the house in
@@ -8253,7 +8317,7 @@ async function runGoodnight(who, remember) {
   if (off === 0) {
     spoken = 'I could not switch anything off in ' + where;
   } else {
-    spoken = 'Good night. I have switched off '
+    spoken = 'Good night' + you + '. I have switched off '
       + (off === 1 ? 'one light' : off + ' lights') + ' in ' + where;
   }
   if (kinds.length) {
@@ -8264,6 +8328,10 @@ async function runGoodnight(who, remember) {
     spoken += '. ' + (missed === 1 ? 'One light is' : missed + ' lights are')
       + ' still burning';
   }
+  /* Last, so the reply ends warm whatever the facts were — but never on the
+     failure path, where a room is still lit and "sleep well" would be the house
+     being cheerful about not having done what it was asked. */
+  if (off > 0) spoken += '. ' + sign;
 
   logEvent({ e: 'goodnight', who: key, room, total: steps.length, off, missed });
   return { ok: missed === 0, room, total: steps.length, off, missed, spoken };

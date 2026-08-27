@@ -55,6 +55,12 @@ const body = ['SPEAK_PLURAL', 'SPEAK_READING', 'SPEAK_WHOLE', 'SPEAK_CLAUSE',
 // eslint-disable-next-line no-new-func
 const speakable = new Function(body)();
 
+/* Lifted rather than copied, so a closing line added to server.js is checked
+   here without anybody remembering to add it. */
+// eslint-disable-next-line no-new-func
+const GOODNIGHT_LINES = new Function(
+  lift('GOODNIGHT_LINES') + '\n; return GOODNIGHT_LINES;')();
+
 /* Grouped the way the code groups them, so a reviewer can tell a command
    confirmation from a reading from a refusal without reading server.js. */
 const GROUPS = [
@@ -165,12 +171,13 @@ const GROUPS = [
     'That was too long ago to put back safely',
   ]],
   ['Good night', [
-    'Good night. I have switched off 8 lights in Master Room. the fan is still running',
-    'Good night. I have switched off one light in Ashu Room',
-    'Good night. I have switched off 5 lights in Harshit Room. the fan and the air conditioner are still running',
-    'Nothing was on in Ashu Room. Good night',
-    'Good night. I have switched off 9 lights in Master Room. 2 lights are still burning',
-    'Good night. I have switched off 8 lights in Master Room. One light is still burning',
+    'Good night, Bhai. I have switched off 8 lights in Master Room. the fan is still running. Rest well.',
+    'Good night, Ashu. I have switched off one light in Ashu Room. Sleep well.',
+    'Good night, Mum. I have switched off 5 lights in Harshit Room. the fan and the air conditioner are still running. Let the day go. Sleep well.',
+    'Nothing was on in Ashu Room. Good night, Ashu. The room is yours now. Rest well.',
+    // A closing line has to follow bad news without sounding pleased about it.
+    'Good night, Bhai. I have switched off 9 lights in Master Room. 2 lights are still burning. Take a slow breath. Rest well.',
+    'Good night, Bhai. I have switched off 8 lights in Master Room. One light is still burning. A late one. Sleep in if you can.',
     'I could not switch anything off in Master Room',
     'I do not know whose good night that is. I know mum, dad, ashu and bhai',
     'the lights in Master Room are back as they were',
@@ -231,6 +238,15 @@ const GROUPS = [
     'No model key is set on the hub',
   ]],
 ];
+
+/* Every closing line the house can draw, in the shortest reply that carries one.
+   Read bare they are fragments — "Rest well." has no verb the checker knows — so
+   they are shown as they will actually be said. */
+for (const band of ['early', 'night', 'late']) {
+  GROUPS.push(['Good night, closing lines: ' + band,
+    GOODNIGHT_LINES[band].map(
+      (line) => 'Nothing was on in Ashu Room. Good night, Bhai. ' + line)]);
+}
 
 /* iOS says these letter by letter, which is what anybody wants for them. Any
    other run of capitals is a word it will spell out by mistake. */
