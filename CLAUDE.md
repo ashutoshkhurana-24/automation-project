@@ -1920,3 +1920,274 @@ reason they exist. `cobs` stays in the hint.
 **Tested as no-ops throughout**, ASHU being lit at the time: the cobs were already
 on at 100% and every indirect light already off, so both commands were verified to
 resolve and change nothing, confirmed by reading the room back.
+
+## The media player, and the cinema rebuilt around it (2026-08-27)
+
+A **Sercomm XstreamIPTV2-SM** (model ASD6101SR) in HOME THEATRE, on **Ethernet**
+at `192.168.1.128`, MAC `98:2c:c6:d7:72:cf`. An Airtel Xstream IPTV box and a
+certified Android TV device. It feeds the receiver's **MPLAY** input, which is
+where `SIMPLAY` in the AVR's reading has always come from.
+
+**ADB is not the road, and that was measured rather than assumed.** The box has
+developer options but both USB and wireless debugging are disabled and cannot be
+enabled on it. Before giving up: port 5555 refuses, mDNS advertises no
+`_adb-tls-connect`, `_adb-tls-pairing` or `_adb`, and **a sweep of all 65535
+ports found only 53, 6466, 6467, 8008, 8009 and 9000**. The hub's own
+`/usr/bin/adb` is platform-tools ~28 and predates `adb pair` anyway. Do not
+re-try this route.
+
+**What works is Android TV Remote v2**, ports 6466/6467, advertised as
+`_androidtvremote2._tcp` — the protocol Google's own remote app speaks, needing
+no developer options at all. `tools/atvremote.js` is a hand-rolled client: TLS
+plus about forty lines of protobuf, no new dependency, the same precedent as the
+PNG encoder in `make-icon.js` and the Denon parser in `server.js`. **It is not
+copied by `deploy/push.sh`**, which ships `server.js` alone — like
+`tools/webos.js` it has to be placed on the box once, and `server.js` requires
+it at startup, so it must land *before* any push that expects it.
+
+**This box answers**, which puts it with the televisions and the receiver rather
+than with the projector and the air conditioners: it pushes its power state, its
+volume, its mute and **the package name of the foreground app**, whoever caused
+the change. Do not poll it.
+
+### The field numbers were measured, and every first guess was wrong
+
+None of this is documented; the box was asked, and a listening session told us:
+
+| field | message | direction |
+|---|---|---|
+| 1 | `RemoteConfigure` | both — its reply named the box: `XstreamIPTV2-SM` / `Sercomm` / `com.google.android.tv.remote.service` 6.9 |
+| 2 | `RemoteSetActive` | we send; the box acks with an empty field 2 |
+| **8** | `RemotePingRequest` `{counter, uptime_ms}` | **inbound, every 6.507s** |
+| **9** | `RemotePingResponse` | **we must send it** |
+| 10 | `RemoteKeyInject` `{key_code, direction}` | outbound; direction 3 is a tap |
+| 20 | `RemoteImeKeyInject` | inbound — nested `{1:{12:"com.airtel.tv"}}` is the foreground app |
+| 40 | `RemoteStart` `{started}` | inbound — the power state |
+| 50 | `RemoteSetVolumeLevel` | inbound — device name, max at 6, level at 7, mute at 5 |
+| 90 | `RemoteAppLinkLaunchRequest` | outbound |
+
+**Answering the ping is the session, not politeness.** The first listening run
+ignored those field-8 messages, took three of them 6.5s apart and was hung up on.
+That failure looks exactly like a rejected certificate or a wrong key code — a
+connection that opens, does nothing and dies — so check the pong before anything
+else. Field 2 is the box's own uptime in milliseconds, a free check that you are
+talking to the machine you think.
+
+**Pairing is a person**, as it is for the LG sets: six hex characters on screen,
+read back. The secret is `sha256(client_n, client_e, server_n, server_e,
+code[1:])` over **minimal big-endian** parts — a JWK export gives exactly those —
+and `code[0]` is a check byte that must equal `digest[0]`, which catches a
+mistyped code locally rather than as a flat refusal. Two protocol quirks cost an
+hour between them: **`protocol_version` is required on every pairing message**,
+not only the first (without it the option is refused with status 400), and **the
+box acknowledges the option by echoing field 20** rather than sending the field
+21 the shape suggests — waiting for 21 presents as a timeout. The certificate
+lives in `data/atv-keys.json`, filed by MAC, git-ignored. **That file IS the
+pairing**; losing it costs another walk to the screen.
+
+**The code is per session.** The first working handshake printed the prompt and
+exited, so the code on screen was already dead when it was read out. `/api/media/:id/pair`
+is therefore two calls with the socket held open between them.
+
+### What it can and cannot be told to do
+
+Measured 2026-08-27, each probe reversible and verified through the box's own
+reporting rather than by assuming:
+
+- **Keys work.** Pad, back, home, menu, search, and the transport five. `home`
+  moved it Netflix → `com.airtel.tv`; `search` opened `com.google.android.katniss`
+  and `back` came home again.
+- **App launch needs a real app link.** `netflix://` works; `vnd.youtube://`
+  works; `https://www.netflix.com/title/80057281` opens **that title**.
+  **`market://launch?id=<package>` is silently inert** — accepted, no error,
+  nothing happens — and it is the form most guides recommend. It was briefly
+  written into `/api/media` and is now refused with a message instead of
+  pretended.
+- **Volume and mute keys do nothing.** The box reports 10/25 and never moves:
+  audio leaves over HDMI and the receiver governs loudness. The AVR is the volume
+  control, and the panel reflects that.
+- **There is no app list, and four channels were exhausted proving it.** Not
+  DIAL (three legacy registrations: Netflix, ChromeCast, PlayMovies). Not Cast's
+  `GET_APP_AVAILABILITY`, which is **actively misleading** — it calls Netflix
+  unavailable while Netflix is installed and launches, so it describes Cast
+  receiver apps rather than installs. Not mDNS TXT (`ca=266757` capability bits
+  and a friendly name). Not the remote protocol, which reports only the current
+  app. Port 8443 is Widevine; port 9000 accepts a connection and says nothing.
+  **So app tiles are declared in `config.media_players[].apps`** — a name and a
+  link somebody watched open, never a guess.
+- **An https app link needs the right HOST and at least one PATH segment.**
+  This is the whole trick and it cost two wrong conclusions before it was found:
+
+  | link | result |
+  |---|---|
+  | `https://www.hotstar.com/` | nothing |
+  | `https://www.hotstar.com/in/` | **opens Hotstar** |
+  | `https://www.primevideo.com/detail/<id>` | nothing |
+  | `https://app.primevideo.com/` | **opens Prime Video** |
+
+  These apps register intent filters on a host *and* a path pattern, so a bare
+  domain matches nothing — and Prime's app-link host is `app.` rather than
+  `www.`, which no amount of guessing at paths would have found.
+
+  **This invalidated a published conclusion twice.** A sweep using bare domains
+  reported JioHotstar and Prime Video as "not installed", and both are installed:
+  `in.startv.hotstar` and `com.amazon.amazonvideo.livingroom`, read straight off
+  the box's own foreground report. The lesson is narrow and worth keeping: **a
+  launch that does nothing means the link is wrong, not that the app is
+  absent** — this method can only ever prove presence. Confirmed installed and
+  tiled: YouTube, Netflix, Prime Video, Hotstar. Still nothing found for
+  JioCinema, SonyLIV, ZEE5 or Spotify, and that is *not* evidence they are
+  missing; each would need its real app-link host, which is most cheaply got by
+  pasting one real link from the service.
+- **The Play box is the general answer and the tiles are the shortcut.** Any
+  real content link opens its app and lands on that title, which is better than
+  a tile — so the field takes what the tiles cannot cover.
+- **A deep-link sweep proves presence, never absence.** Only apps registering a
+  *scheme* can be tiled with a bare launch: `netflix://` and `vnd.youtube://`
+  work, and nothing opens Hotstar without a path — not `hotstar://`, not
+  `jiohotstar://`, not `intent://#Intent;package=in.startv.hotstar;end`.
+  **Airtel Xstream is a false negative by construction**: it is the launcher,
+  the sweep returns there between probes, so launching it from itself shows no
+  change. The Home key already goes there.
+- **Cast cannot launch a native app**, checked because its availability list
+  suggested otherwise. `LAUNCH` on 8009 starts a *web receiver* in
+  `com.google.android.apps.mediashell` — the three tried all reported
+  "launched" while the screen showed the shell, and `5C3F0A3C` turned out to be
+  "Dashcast" rather than Hotstar. It also leaves a session running, which has
+  to be stopped with `STOP` and its `sessionId`.
+
+**Two false negatives worth knowing, because both nearly became findings.** The
+box's **screensaver swallows keys and masks the foreground report**, so a whole
+capability sweep run against `com.glance.tv.screensaver` read "no" to everything
+— including things that had demonstrably worked minutes earlier. And **it can
+take six seconds to report a foreground change**; four- and five-second settle
+windows read successes as failures, which is how `market://` was briefly
+believed to work. Wake it, then measure, and allow twelve.
+
+**Cast is a second, smaller reading.** Port 8009 answers `isActiveInput`,
+`isStandBy` and a volume that agrees exactly with the remote channel (0.4 =
+10/25). It carries no `applications` block here, the Airtel app being native
+rather than a Cast session, so it cannot say what is playing. Unused; worth
+knowing it is there.
+
+### Sound mode on the receiver, which cannot be discovered
+
+Sources are discovered — `SSFUN`/`SSSOD` name every input and say which are in
+use, which is how GAME comes back called PS5. **Sound modes have no such query.**
+`MS?` reports the one in force and nothing enumerates the rest, so `AVR_MODES` is
+the one place in this file where a vocabulary is written down instead of asked
+for. `OPINFASP` answers with a bare 32-digit mask and no names, and across three
+sweeps its digits moved between 1 and 2 with no pattern that survived a re-run —
+a dead end, not a shortcut.
+
+**What you send is not what comes back, and that is the load-bearing part.**
+Each command anchored from a known different mode and read by waiting for the
+value to change rather than for a fixed interval:
+
+```
+MOVIE  MUSIC  GAME  AUTO  DOLBY DIGITAL  STANDARD  ->  all report DOLBY AUDIO-DSUR
+DIRECT -> DIRECT      STEREO -> STEREO      MCH STEREO -> MCH STEREO
+```
+
+So six keys answer with one word. A chip lit on `reported === sent` would light
+six at once, and one lit on "the last thing we asked for" would be a belief of
+exactly the kind this file spends its length warning about. Hence the `settles`
+flag: only modes whose reported name is their own command word are ever marked,
+and the unit's own reading is printed on the summary beside them.
+
+**Availability depends on the incoming signal**, so it cannot be listed either.
+With nothing playing, PURE DIRECT, DTS SURROUND, VIRTUAL, MATRIX, ROCK ARENA,
+JAZZ CLUB, MONO MOVIE and VIDEO GAME were all refused — and the unit says
+*nothing at all* rather than answering with an error. A refusal is normal, not a
+fault, which is why the reply is phrased as a reading ("is in Multi-ch stereo")
+and never as a confirmation. **And `MS` is ignored outright in standby** —
+measured, `MSMOVIE` at `PWSTANDBY` left it on MCH STEREO — so the endpoint
+refuses rather than sending into the dark.
+
+**Two conflicting sweeps, and the honest lesson.** A first sequential sweep said
+VIRTUAL/MATRIX/ROCK ARENA/VIDEO GAME worked; a second said they were refused.
+Both were wrong in the same way: a fixed wait reports the *previous* mode, so
+"refused" and "resolved to what the previous step set" are indistinguishable.
+Only the third run — anchored from a fixed mode AND settling until the value
+moved — was reproducible. This is the same rule `avrSettle` already exists for
+on the input, re-earned.
+
+### The cinema panel, rebuilt
+
+The user's brief: the desktop was not using its width, the projector's controls
+are hardly ever touched, the AVR volume and the media player are what get used,
+there should be app tiles and a paste-a-link Play, and the phone scrolled too far.
+
+| | before | after |
+|---|---|---|
+| desktop panel width | 540px | **1000px** |
+| desktop scroll | 3.32 screens | **1.66** |
+| phone scroll | 3.32 screens | **2.13** |
+| phone head before the first control | 234px | **161px** |
+
+- **Wide on a desktop, a column on a phone.** `.cinesheet` turns the body into a
+  grid: WATCH spans the top, PLAYER and SOUND sit side by side, the screen and
+  the folded projector setup take the foot. Applied only when two of the three
+  machines are present — a lone projector in a 1000px dialog is a column of keys
+  in an empty room.
+- **The projector's own remote is behind one disclosure.** Focus, picture size,
+  signal source and its speaker are set once at installation; open, they were the
+  tallest thing on a panel about watching a film.
+- **On a phone the sound comes second, above the pad**, because the volume is
+  what anybody reaches for in that room and it used to sit below 307px of
+  buttons. Sound mode folds away there too (151px of chips set about once), and
+  is open on a desktop where there is a column to spare. Set in `resetPanelFolds()`
+  when the panel opens rather than in `drawCinema()`, which runs on every push
+  from the receiver and would slam the disclosure open under a finger.
+- **`POST /api/cinema/play {link}`** is one intention that used to be three
+  chores: projector on, receiver awake and moved to the player's input, link
+  opened. The legs run **concurrently** — the projector answers nothing, the
+  receiver takes about a second, the box is immediate — and **the report is per
+  machine and never merged**, because two of the three answer for themselves and
+  one never can. Proven end to end at 1.6s: `screen: hub sent on`,
+  `sound: on, MPLAY at 54`, `player: opened YouTube`, with the hub's own journal
+  showing `IR PARAMETER ISSS IR_OPR 195 168` — the projector's real `on` code.
+- **The receiver's input is declared**, `cinemas[].media_input`, not inferred
+  from where the player happens to be plugged in today. Setting it is **sent,
+  confirmed, and sent again if it did not take**: a unit fresh out of standby
+  drops the first command, the same deafness this file records for sound mode,
+  and 1200ms after PWON was not enough — which presented as "the source does not
+  shift to the media player". It waits 2600ms for the unit to wake, then settles
+  on the unit's own report rather than assuming.
+- **The projector takes five to six seconds to show a picture**, measured in the
+  room. Nothing reports it — a projector cannot be asked anything — so
+  `PRJ_WARMUP_MS` is a constant, and the link is held back that long **only when
+  we were the ones who switched it on**. Without it the app opens on a dark
+  screen and the opening has played by the time there is a picture. Six rather
+  than five: being early costs the start of the film, being late costs a second
+  of empty screen. A projector the hub already believes is on is not waited for,
+  which is a belief rather than a reading and is the right way to be wrong —
+  the alternative is six dead seconds on every press.
+- **The app tiles wear real brand art, served from the box.** `data/app-icons/`
+  holds a 128px PNG per app, fetched once from the Play Store listing, served by
+  `GET /app-icon/:file` and held for a year. **Not hot-linked** — the page makes
+  no external requests, the same rule that moved the three typefaces onto the
+  box, because on a house network an outside host can simply be absent and a
+  wall panel should not wait on one to draw a button. The route matches a
+  pattern rather than joining a request path, so a name cannot climb out of the
+  directory. `appTile()` attaches the URL **only when the file is really there**,
+  because a page guessing at one would draw a broken image on every install that
+  has not fetched the art; where there is none, `appMark()` falls back to a
+  hand-drawn glyph in the same hand as the rest, and `onerror` swaps that in if
+  a file vanishes between the snapshot and the request.
+- **A media player is a member of the cinema for reading and not for switching.**
+  It is excluded from the card's quorum: the box reports itself awake essentially
+  always, so leaving it in would have made `every` false with the film running
+  and turned the cinema key into "switch everything ON" — the All COBs bug
+  arriving through a different door. Its own power key is a *toggle*, so it is
+  offered as one and never as an on/off.
+
+**Four traps, all mine, none of which `node --check` can see.** A backtick inside
+a comment in the page's template literal (this file already warned about it, and
+it still happened). `const many` declared twice in `drawCinema` — caught only by
+`push.sh`'s page-script parse, which is exactly what that check is for. An
+`esc()` helper used four times **that does not exist in the page**, now built
+from DOM nodes so there is nothing to escape. And `openAvr` lost its tail to an
+edit that split it to create `openMedia`, so a lone receiver would have opened an
+empty panel — unreachable in this house, wrong everywhere else. Also `const run`
+declared inside a `try` and read from the reply outside it.

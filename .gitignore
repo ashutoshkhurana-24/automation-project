@@ -42,8 +42,18 @@ the-house.apk
 # Pairing keys for the televisions: per-install, and a credential.
 data/tv-keys.json
 
+# The media player's client certificate. This file IS the pairing — the box
+# recognises its fingerprint and nothing else — so losing it costs somebody
+# another walk to the screen to read a code. Per-install, and a credential.
+data/atv-keys.json
+
 # The televisions app lists: a cache, rebuilt from the sets themselves.
 data/tv-apps.json
+
+# The media player's app icons: third-party brand art, per-install, and
+# refetchable with tools/fetch-app-icons.js. Generated rather than committed,
+# the same choice make-icon.js makes for the home-screen icon.
+data/app-icons/
 
 # per-install settings: this house's name, hub address, televisions, groups.
 # config.example.json is the committed shape; setup writes this one.

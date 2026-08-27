@@ -246,7 +246,7 @@ function decodeLevel(v) {
  * Up here rather than beside the receivers because deviceList() below reads it,
  * and a const declared after its reader throws on the first early call. */
 const CINEMAS = (config.cinemas || [])
-  .filter((c) => c && c.id && c.room && (c.projector != null || c.avr));
+  .filter((c) => c && c.id && c.room && (c.projector != null || c.avr || c.media));
 
 const CINEMA_OF = new Map();
 for (const c of CINEMAS) {
@@ -256,6 +256,11 @@ for (const c of CINEMAS) {
   };
   seat(c.projector, 'screen');
   seat(c.avr, 'sound');
+  /* The third seat: the box the picture actually comes from. Declared like the
+     other two rather than inferred from the receiver's input — MPLAY happens to
+     be where this one is plugged in, and reading the wiring off an input name
+     would be wrong the first time somebody moves a cable. */
+  seat(c.media, 'player');
 }
 /* Undefined for everything else, so a house with no cinema declared draws
    exactly the tiles it always did. */
@@ -275,7 +280,7 @@ const isPrjRecord = (rec) => (rec.app_type || '') === 'PRJ' && rec.device_type =
 const prjKeysOf = (rec) => PRJ_KEYS.filter((k) => rec[k] != null && rec[k] !== '');
 
 function deviceList() {
-  return tvDeviceList().concat(avrDeviceList()).concat([...devices.values()]
+  return tvDeviceList().concat(avrDeviceList()).concat(mediaDeviceList()).concat([...devices.values()]
     .filter(({ room, record }) => !shadowedByTv(record, room))
     .map(({ room, record }) => ({
     record_id: record.record_id,
@@ -319,6 +324,7 @@ function deviceList() {
    with nothing, which is what a dashboard with no televisions should show. */
 function tvDeviceList() { return TV_READY ? tvList() : []; }
 function avrDeviceList() { return AVR_READY ? avrList() : []; }
+function mediaDeviceList() { return MEDIA_READY ? mediaList() : []; }
 
 /* The hub has its own television record — 517 "T.V", device_type LIP, app_type
  * TV, in ASHU ROOM — and it is the same set we now drive properly over SSAP.
@@ -345,6 +351,10 @@ var TV_READY = false;
    receivers are wired up, and a const read too early throws rather than
    answering falsy. */
 var AVR_READY = false;
+/* var, not let: applyConfig() and deviceList() both run before this point in
+   the file is evaluated, and a let reached early is a startup ReferenceError
+   that node --check cannot see. Third time this file has recorded that. */
+var MEDIA_READY = false;
 
 // -------------------------------------------------------------------------- scenes
 
@@ -1347,6 +1357,7 @@ function stateSignature() {
      so its state has to count as house movement or a volume turned down in the
      room never reaches the board. */
   parts.push('avr:' + (AVR_READY ? avrSignature() : ''));
+  parts.push('media:' + (MEDIA_READY ? mediaSignature() : ''));
   parts.push('sch:' + schedules.map(s =>
     `${s.id}${s.name || ''}${s.at}${s.enabled ? 1 : 0}${(s.days || []).join('')}${s.action}` +
     `${s.off_after || 0}${s.target?.id ?? targetIds(s.target).join('.')}`).join(','));
@@ -1395,6 +1406,19 @@ function pushSoon() {
    so a set is found by MAC — last known address first, then SSDP. */
 const { WebosTV, wake: wakeMac, discover: discoverTvs, youtubeId, ipForMac,
         readKeys: readTvKeys } = require('./tools/webos');
+
+/* The media player's client, hand-rolled the same way the webOS one is — the
+   Android TV Remote v2 protocol, measured against the box rather than taken
+   from a document. ADB was the first choice and is not available on this unit;
+   tools/atvremote.js records what was checked before giving up on it. */
+const { Pairing: AtvPairing, RemoteSession: AtvSession, KEYS: ATV_KEYS,
+        newIdentity: newAtvIdentity, readIdentities: readAtvKeys,
+        writeIdentity: writeAtvKey } = require('./tools/atvremote');
+
+/* The pairing certificates, filed by MAC. Named here rather than inside the
+   client so the path follows this file's own convention for everything in
+   data/, and so a test instance can be pointed elsewhere. */
+const ATV_KEY_FILE = path.join(__dirname, 'data', 'atv-keys.json');
 
 /* Has somebody already accepted the prompt on this set? A key is the whole
    difference between a screen that works and one that needs a walk to the
@@ -1464,6 +1488,14 @@ const TVS = (config.televisions || []).filter((t) => t && t.id && t.mac);
  * room" is knowledge about the room, and inferring it from two devices happening
  * to share a room would be wrong the first time a house has a television and a
  * soundbar in the same place. */
+/* The media players. Per-install like the televisions and for the same reason:
+   which box is in which room is knowledge about the house. `mac` is the
+   identity — the pairing certificate is filed under it, because the address is
+   a DHCP lease and this one is on Ethernet with no reservation. */
+const MEDIAS = (config.media_players || [])
+  .filter((m) => m && m.id && m.room && m.host)
+  .map((m) => ({ port: 6466, name: 'Media player', ...m }));
+
 const AVRS = (config.receivers || config.avrs || [])
   .filter((a) => a && a.id && a.host)
   .map((a) => ({ ...a, port: Number(a.port) || 23, volumeMax: Math.min(98, Number(a.volume_max) || 70) }));
@@ -2088,6 +2120,70 @@ class TvLink {
  * (A full-LAN sweep found nothing at this address earlier the same afternoon.
  * That was not a scanning artefact: the unit was put on the Wi-Fi afterwards.)
  */
+/* ── the sound modes, and why they are a list here rather than a discovery ──
+ *
+ * Sources are discovered — SSFUN and SSSOD name every input and say which are
+ * in use, which is how GAME comes back called "PS5". **Sound modes have no such
+ * query.** `MS?` reports the one in force and nothing enumerates the rest, so
+ * this is the one place in this file where a vocabulary is written down instead
+ * of asked for. `OPINFASP` answers with a bare 32-digit mask and no names, and
+ * across three sweeps on 2026-08-27 its digits moved between 1 and 2 with no
+ * pattern that survived a re-run — it names nothing and it is not stable, so it
+ * is a dead end rather than a shortcut. Do not build on it.
+ *
+ * **What you send is not what comes back, and that is the important part.**
+ * Measured against the AVR-X1700H, each command anchored from a known different
+ * mode and read by waiting for the value to change rather than for a fixed
+ * interval (a fixed wait reports the *previous* mode — the same trap avrSettle
+ * already exists for on the input):
+ *
+ *   MOVIE  MUSIC  GAME  AUTO  DOLBY DIGITAL  STANDARD  ->  all report DOLBY AUDIO-DSUR
+ *   DIRECT -> DIRECT      STEREO -> STEREO      MCH STEREO -> MCH STEREO
+ *
+ * So six different keys answer with one word. A chip that lit on
+ * `reported === sent` would light six at once, and a chip that lit on "the last
+ * thing we asked for" would be a belief of exactly the kind this file spends
+ * its length warning about. Hence `settles()`: only the modes whose reported
+ * name is their own command word can ever be marked, and the rest are actions
+ * that leave the unit's own reading to speak for them.
+ *
+ * **Availability depends on the incoming signal, so it cannot be listed here
+ * either.** With nothing playing, PURE DIRECT, DTS SURROUND, VIRTUAL, MATRIX,
+ * ROCK ARENA, JAZZ CLUB, MONO MOVIE and VIDEO GAME were all refused — the unit
+ * says nothing at all rather than answering with an error. With a real Atmos or
+ * DTS stream a different set is offered. A refusal is therefore normal, not a
+ * fault, and the honest reply is the unit's own reading rather than a claim
+ * that anything was set.
+ *
+ * **And MS is ignored outright in standby** — measured, MSMOVIE at PWSTANDBY
+ * left it on MCH STEREO — which is why the endpoint refuses rather than sending
+ * into the dark. */
+const AVR_MODES = [
+  { cmd: 'AUTO',       label: 'Auto',    settles: false },
+  { cmd: 'MOVIE',      label: 'Movie',   settles: false },
+  { cmd: 'MUSIC',      label: 'Music',   settles: false },
+  { cmd: 'GAME',       label: 'Game',    settles: false },
+  { cmd: 'STEREO',     label: 'Stereo',  settles: true  },
+  { cmd: 'MCH STEREO', label: 'All speakers', settles: true },
+  { cmd: 'DIRECT',     label: 'Direct',  settles: true  },
+  { cmd: 'PURE DIRECT', label: 'Pure direct', settles: true },
+];
+
+/* The unit's own word for the mode it is in, tidied for reading. `SYSMI` also
+   carries a display name ("Dolby Audio - Dolby Surround") and is deliberately
+   not used: it lagged the MS value by a whole step in every sweep, so it would
+   report the previous mode beside the current one. */
+function avrModeLabel(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const known = AVR_MODES.find((m) => m.cmd === s.toUpperCase());
+  if (known) return known.label;
+  /* A decoder name, which is the usual case: DOLBY AUDIO-DSUR. Kept close to
+     what the unit said rather than prettified into something that is no longer
+     searchable against the receiver's own display. */
+  return s.replace(/\s+/g, ' ');
+}
+
 class AvrLink {
   constructor(spec) {
     Object.assign(this, spec);
@@ -2270,6 +2366,12 @@ class AvrLink {
       avr_muted: this.muted,
       avr_input: this.input,
       avr_mode: this.mode,
+      /* The unit's own reading, and the vocabulary it can be asked for — two
+         different things, kept apart. avr_mode is what the receiver says it is
+         doing; avr_modes is what the buttons may ask for, and six of those ask
+         for something that comes back under one shared name. */
+      avr_mode_label: avrModeLabel(this.mode),
+      avr_modes: AVR_MODES,
       avr_sources: this.sources(),
       cinema: cinemaOf(this.id),
       /* A receiver we cannot reach reads as off, like a television — but for a
@@ -2294,6 +2396,213 @@ setInterval(() => {
 }, 15000);
 AVR_READY = true;
 for (const a of avrs.values()) a.open();
+
+/* ── the media player ─────────────────────────────────────────────────────
+ *
+ * An Android TV box, driven over the protocol Google's own remote app speaks —
+ * see tools/atvremote.js for the measured wire format and for why ADB is not
+ * the road here (it is disabled on the box and cannot be enabled).
+ *
+ * **It answers, and that puts it with the televisions and the receiver rather
+ * than with the projector and the air conditioners.** The box pushes its own
+ * power state, volume, mute and the package name of whatever app is in the
+ * foreground, whoever caused the change — its own remote included. So this is a
+ * reading. Do not poll it, and do not write an optimistic value over it.
+ *
+ * **Pairing is a person.** The first connection puts a six-character code on
+ * the screen and somebody reads it back. The certificate that comes out of that
+ * lives in data/atv-keys.json, filed by MAC for the reason tv-keys.json is: the
+ * address is a DHCP lease and identity is not.
+ *
+ * One thing it deliberately does NOT do is join the cinema's on/off key. A
+ * set-top box has no honest off — its only power control is KEYCODE_POWER,
+ * which is a toggle, and this file's oldest lesson about toggles is that one
+ * computed from a stale reading does the opposite of what was asked. It reports
+ * what it is playing and takes keys; the screen and the sound are what come on.
+ */
+class MediaLink {
+  constructor(spec) {
+    Object.assign(this, spec);
+    this.mac = String(spec.mac || '').toLowerCase();
+    this.session = null;
+    this.online = false;
+    this.fails = 0;
+    this.nextTry = 0;
+    this.commandedAt = 0;
+    this.pairing = null;         // an in-flight pairing, waiting for a code
+  }
+
+  said() { return (this.room.replace(/ ROOM$/i, '') + ' ' + this.name).toLowerCase(); }
+
+  identity() {
+    try { return readAtvKeys(ATV_KEY_FILE)[this.mac] || null; } catch (_) { return null; }
+  }
+  get paired() { return !!this.identity(); }
+
+  open() {
+    if (this.session || !this.paired) return;
+    const id = this.identity();
+    const sess = new AtvSession({
+      host: this.host, identity: id,
+      onChange: () => { if (this.session === sess) pushSoon(); },
+    });
+    this.session = sess;
+    sess.connect().then(() => {
+      this.online = true;
+      this.fails = 0;
+      pushSoon();
+    }).catch(() => {
+      if (this.session !== sess) return;
+      this.session = null;
+      this.online = false;
+      this.fails++;
+      /* A box that is unplugged is off, not broken — the same reading a
+         television gets. Backed off so an absent unit is not a busy loop. */
+      this.nextTry = Date.now() + Math.min(60000, 5000 * this.fails);
+      pushSoon();
+    });
+    /* A session that dies later has to be forgotten too, or the reconnect
+       timer sees a session object and leaves it alone for ever. */
+    const watch = setInterval(() => {
+      if (this.session !== sess) return clearInterval(watch);
+      if (sess.ready) return;
+      if (!sess.sock || sess.sock.destroyed) {
+        clearInterval(watch);
+        this.session = null;
+        this.online = false;
+        this.nextTry = Date.now() + 5000;
+        pushSoon();
+      }
+    }, 4000);
+  }
+
+  live() {
+    if (!this.session || !this.session.ready) throw new Error('the media player is not connected');
+    return this.session;
+  }
+
+  key(name) {
+    this.commandedAt = Date.now();
+    this.live().key(name);
+  }
+  launch(link) {
+    this.commandedAt = Date.now();
+    this.live().launch(link);
+  }
+
+  snapshot() {
+    const s = this.session;
+    const app = (s && s.app) || '';
+    return {
+      record_id: this.id, name: this.name, room: roomKey(this.room),
+      app_type: 'MP', device_type: 'ATV', device_id: this.host, channel_id: '',
+      is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
+      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_tv: false, is_projector: false, is_avr: false,
+      is_media: true,
+      media_online: this.online,
+      media_paired: this.paired,
+      media_app: app,
+      media_app_name: mediaAppName(app),
+      media_app_icon: appIconFor(mediaAppName(app)),
+      media_volume: s ? s.volume : null,
+      media_volume_max: s ? s.volumeMax : null,
+      media_muted: !!(s && s.muted),
+      media_keys: Object.keys(ATV_KEYS),
+      /* Per-install, and declared rather than discovered — this box cannot be
+         asked what it has installed (ADB is off, DIAL knows three legacy names,
+         and Cast's availability list calls Netflix unavailable while Netflix
+         launches perfectly). So a tile is a name and a link somebody checked. */
+      media_apps: (this.apps || []).filter((a) => a && a.name && a.link).map(appTile),
+      cinema: cinemaOf(this.id),
+      /* Awake, as the box itself reports it. An unreachable box reads as off,
+         like a television — silence here means unplugged or off at the wall. */
+      status: this.online && !!(s && s.started),
+      level: this.online && s && s.started ? 100 : 0,
+      tune: 0,
+    };
+  }
+}
+
+/* A tile as the page needs it: its name, its link, and the brand icon **only if
+   the file is actually on the box**. Resolved here rather than in the browser
+   because the server is the one that can look — a page guessing at a URL would
+   draw a broken image for every install that has not fetched the art. The name
+   is slugged for the filename, and config may name a different one. */
+function appTile(a) {
+  const out = { name: a.name, link: a.link };
+  const icon = appIconFor(a.icon || a.name);
+  if (icon) out.icon = icon;
+  return out;
+}
+
+/* One resolution from a name to a file, used by the tiles and by the stage, so
+   the two cannot disagree about which picture is Netflix. Null when the art is
+   not on the box — the caller then draws something else rather than a broken
+   image. */
+function appIconFor(name) {
+  const slug = String(name || '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) return null;
+  return fs.existsSync(path.join(__dirname, 'data', 'app-icons', slug + '.png'))
+    ? '/app-icon/' + slug + '.png' : null;
+}
+
+/* What an app is called, from the package the box reports. A short map for the
+   names that would otherwise read badly, and a fallback that takes the most
+   distinctive segment of the package — so an app nobody listed still gets a
+   readable name instead of a reverse-domain string. The box's own launcher
+   here is com.airtel.tv, which is what "home" lands on. */
+const MEDIA_APP_NAMES = {
+  'com.airtel.tv': 'Airtel Xstream',
+  'com.android.tv.settings': 'Settings',
+  'com.google.android.tvlauncher': 'Home',
+  'com.google.android.apps.tv.launcherx': 'Home',
+  'com.google.android.youtube.tv': 'YouTube',
+  'com.google.android.youtube.tvunplugged': 'YouTube TV',
+  'com.netflix.ninja': 'Netflix',
+  'com.amazon.amazonvideo.livingroom': 'Prime Video',
+  'in.startv.hotstar': 'Hotstar',
+  'com.disney.disneyplus': 'Disney+',
+  'com.spotify.tv.android': 'Spotify',
+  'com.google.android.videos': 'Google TV',
+  'com.android.vending': 'Play Store',
+  'com.google.android.katniss': 'Search',
+  'com.apple.atve.androidtv.appletv': 'Apple TV',
+  'com.glance.tv.screensaver': 'Screensaver',
+  'com.amazon.amazonvideo.livingroom': 'Prime Video',
+};
+function mediaAppName(pkg) {
+  const p = String(pkg || '').trim();
+  if (!p) return '';
+  if (MEDIA_APP_NAMES[p]) return MEDIA_APP_NAMES[p];
+  /* com.example.coolplayer -> "Coolplayer". The last segment is the app in a
+     reverse-domain name, except where it is a bare "tv" or "android", which
+     says nothing — then the one before it is the real name. */
+  const parts = p.split('.').filter(Boolean);
+  let word = parts[parts.length - 1] || p;
+  if (/^(tv|android|app|mobile|leanback|ninja)$/i.test(word) && parts.length > 1) {
+    word = parts[parts.length - 2];
+  }
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+const medias = new Map(MEDIAS.map((m) => [m.id, new MediaLink(m)]));
+const mediaList = () => [...medias.values()].map((m) => m.snapshot());
+const mediaSignature = () => [...medias.values()]
+  .map((m) => {
+    const s = m.session;
+    return `${m.id}:${m.online ? 1 : 0}${s && s.started ? 1 : 0}:${s ? s.app : ''}:${s ? s.volume : ''}:${s && s.muted ? 1 : 0}`;
+  })
+  .join('|');
+
+setInterval(() => {
+  const now = Date.now();
+  for (const m of medias.values()) if (!m.session && now >= m.nextTry) m.open();
+}, 15000);
+MEDIA_READY = true;
+for (const m of medias.values()) m.open();
+
 
 const tvs = new Map(TVS.map((t) => [t.id, new TvLink(t)]));
 const tvList = () => [...tvs.values()].map((t) => t.snapshot());
@@ -2627,6 +2936,28 @@ app.get('/fonts/:file', (req, res) => {
   const file = path.join(__dirname, 'data', 'fonts', req.params.file);
   if (!fs.existsSync(file)) return res.status(404).end();
   res.type('font/woff2')
+     .set('Cache-Control', 'public, max-age=31536000, immutable')
+     .sendFile(file);
+});
+
+/* ── the app icons ────────────────────────────────────────────────────────
+ * Real brand art for the media player's tiles, in `data/app-icons/`. The
+ * televisions serve their own icons and the dashboard proxies them; this box
+ * serves none, so these were fetched once and are kept here rather than hot-
+ * linked. **The page makes no external requests** — that is the same rule that
+ * moved the three typefaces onto the box, and for the same reason: on a house
+ * network an outside host can simply be absent, and a wall panel should not
+ * wait on one to draw a button.
+ *
+ * Matched against a pattern rather than joined onto a request path, the way the
+ * fonts route is, so a name cannot climb out of the directory. Held for a year:
+ * a brand mark that changes gets a new file rather than a new body. */
+const APP_ICON_NAME = /^[a-z0-9][a-z0-9-]{0,40}\.png$/;
+app.get('/app-icon/:file', (req, res) => {
+  if (!APP_ICON_NAME.test(req.params.file)) return res.status(404).end();
+  const file = path.join(__dirname, 'data', 'app-icons', req.params.file);
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.type('png')
      .set('Cache-Control', 'public, max-age=31536000, immutable')
      .sendFile(file);
 });
@@ -3608,6 +3939,22 @@ app.post('/api/avr', async (req, res) => {
   if (!a) return res.status(404).json({ ok: false, error: 'no receiver with that id' });
   const { on, volume, step, mute, input, mode } = req.body || {};
 
+  /* A sound mode cannot be set on a sleeping receiver — measured, MSMOVIE at
+     PWSTANDBY leaves it where it was and the unit says nothing back. Refusing
+     is better than sending into the dark and then reporting the old mode as
+     though it were the new one. Only when the request is not itself turning the
+     unit on, since then it will be awake by the time the mode is sent. */
+  if (mode != null && on !== true && !a.power) {
+    return res.status(409).json({
+      ok: false,
+      error: 'the receiver is in standby — sound mode can only be set while it is on',
+    });
+  }
+  /* The mode it was in before any of this, so the reply can say whether the
+     unit actually moved. It answers nothing at all to a mode it cannot use, so
+     "unchanged" is the only signal there is. */
+  const modeWas = a.mode;
+
   try {
     /* Power first and last: coming on, everything else has to follow the unit
        being awake; going off, there is no point setting a volume on something
@@ -3635,6 +3982,14 @@ app.post('/api/avr', async (req, res) => {
     if (on === true && !a.power) return false;
     if (on === false && a.power) return false;
     if (input != null && a.input !== String(input).toUpperCase()) return false;
+    /* Not an equality test, because the reported mode is very often not the one
+       that was asked for: MOVIE, MUSIC, GAME and AUTO all come back as
+       DOLBY AUDIO-DSUR. All that can be waited for is movement — and a mode the
+       unit will not take produces no movement at all, so this one runs out its
+       clock. That is the cost of an honest reading here, and it is the reason
+       the reply reports the unit's state rather than claiming a change. */
+    if (mode != null && a.mode === modeWas
+        && String(mode).toUpperCase() !== String(modeWas).toUpperCase()) return false;
     if (mute != null && a.muted !== !!mute) return false;
     if (volume != null && Math.round(a.volume) !== Math.max(0, Math.min(a.ceiling(), Math.round(Number(volume))))) return false;
     return true;
@@ -3643,7 +3998,13 @@ app.post('/api/avr', async (req, res) => {
   res.json({
     ok: true, id: a.id, on: a.power, volume: a.volume, volume_max: a.ceiling(),
     muted: a.muted, input: a.input, mode: a.mode, online: a.online,
-    spoken: avrSpoken(a, { on, volume, step, mute, input }),
+    mode_label: avrModeLabel(a.mode),
+    /* Whether the unit moved, not whether it obeyed — those are different, and
+       only the first is knowable. Asking for a mode it is already in also
+       produces no movement, which is why this is reported as a fact about the
+       reading rather than dressed up as success or failure. */
+    mode_moved: mode == null ? null : a.mode !== modeWas,
+    spoken: avrSpoken(a, { on, volume, step, mute, input, mode }),
   });
 });
 
@@ -3669,6 +4030,11 @@ function avrSpoken(a, asked) {
   const where = src ? src.name : a.input;
   if (asked.on === true) return who + ' on, ' + where + ' at ' + a.volume;
   if (asked.mute != null) return who + (a.muted ? ' muted' : ' unmuted');
+  /* Phrased as a reading, never as a confirmation. The unit answers nothing to
+     a mode it cannot use with the signal it has, so "set to Pure direct" would
+     be a claim we are in no position to make — while "is in Stereo" is true
+     either way and shows plainly that nothing moved. */
+  if (asked.mode != null) return who + ' is in ' + avrModeLabel(a.mode);
   if (asked.input != null) return who + ' on ' + where;
   if (asked.volume != null || asked.step != null) return who + ' at ' + a.volume;
   return who + ' unchanged';
@@ -3730,6 +4096,354 @@ app.post('/api/cinema', async (req, res) => {
       + (out.screen && out.screen.startsWith('failed') ? ' — the projector did not go' : '')
       + (out.sound && out.sound.startsWith('failed') ? ' — the receiver did not go' : ''),
   });
+});
+
+/* ── one link, one key, three machines ────────────────────────────────────
+ *
+ * "Watch this" is a single intention and it was three chores: switch the
+ * projector on, wake the receiver and move it to the player's input, then open
+ * the link on the box — in that order, or the picture arrives with no sound, or
+ * the sound arrives on whatever input was last used.
+ *
+ * The steps run **concurrently where they can**, the same reasoning applyScene
+ * uses for screens and lamps: the projector is infrared and answers nothing, the
+ * receiver takes about a second, and the media player is immediate. Making the
+ * quick ones queue behind the slow one would add a minute to a key that should
+ * feel instant.
+ *
+ * **The report is per machine and never merged.** Two of the three answer for
+ * themselves and one cannot, so a single "playing" would quietly promote the
+ * projector's guess to a fact — the same rule the cinema card's two halves
+ * already follow.
+ *
+ * The receiver's input is DECLARED, in config, not inferred from where the
+ * player happens to be plugged in today. MPLAY is this house's wiring, not a
+ * property of the protocol, and reading it off the receiver's current source
+ * would be wrong the first time somebody watches something else first. */
+app.post('/api/cinema/play', async (req, res) => {
+  const id = String(req.body?.id || '');
+  const c = CINEMAS.find((x) => x.id === id) || (id ? null : CINEMAS[0]);
+  if (!c) return res.status(404).json({ ok: false, error: 'no cinema with that id' });
+
+  const link = String(req.body?.link || '').trim();
+  if (!link) return res.status(400).json({ ok: false, error: 'give it a link to play' });
+  /* The same rule /api/media enforces, and for the same measured reason: a bare
+     package is accepted by the box and does nothing at all. Checked here too,
+     so the orchestration cannot switch a projector on for a link that was never
+     going to open. */
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(link)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'that has to be a link — https://… , or an app scheme like netflix://',
+    });
+  }
+
+  const m = c.media ? medias.get(c.media) : null;
+  if (!m) return res.status(409).json({ ok: false, error: 'this cinema has no media player' });
+  if (!m.paired) return res.status(409).json({ ok: false, error: 'the media player is not paired yet' });
+
+  const out = { screen: null, sound: null, player: null };
+  const jobs = [];
+  /* How long the projector takes to actually show a picture, measured in the
+     room: five to six seconds from the infrared blast. Nothing reports this —
+     the projector cannot be asked anything — so it is a constant, and it is
+     only ever waited out when we were the ones who switched it on.
+
+     It matters because the three machines are started together: without it the
+     app opens on a screen that is still dark, and by the time there is a
+     picture the opening has already played. Six, not five, because the cost of
+     being early is missing the start and the cost of being late is a second of
+     an empty screen. */
+  const PRJ_WARMUP_MS = 6000;
+  let warmup = 0;
+
+  /* The screen. Skipped when the hub already believes it is on — which is a
+     belief rather than a reading, so this is the one step that can be wrong;
+     sending `on` to a projector that is already on is harmless either way. */
+  if (c.projector != null) {
+    const entry = devices.get(Number(c.projector));
+    if (entry && isPrjRecord(entry.record)) {
+      if (decodeLevel(entry.record.device_status) > 0) {
+        /* Already lit, so there is nothing to wait for. A belief rather than a
+           reading, which is the honest risk here: if the hub is wrong and the
+           projector is actually cold, the link opens early. That is the
+           direction to err in — the alternative is six dead seconds every time
+           somebody presses Play on a cinema that is already running. */
+        out.screen = 'already on (hub believes)';
+      } else {
+        warmup = PRJ_WARMUP_MS;
+        jobs.push(prjPower(entry, true)
+          .then(() => { out.screen = 'hub sent on, waited ' + (PRJ_WARMUP_MS / 1000) + 's for it'; })
+          /* No point clearing the wait here: every job below is created
+             synchronously and has already read it by the time this can run. A
+             failed infrared blast therefore still costs the six seconds, which
+             is the harmless direction — the alternative is racing a value the
+             player has already taken a copy of. */
+          .catch((e) => { out.screen = 'failed: ' + e.message; }));
+      }
+    } else out.screen = 'no projector';
+  }
+
+  /* The sound, and the input, which is the step that makes the difference
+     between a film and a silent picture. */
+  if (c.avr) {
+    const a = avrs.get(c.avr);
+    if (!a) out.sound = 'no receiver';
+    else {
+      jobs.push((async () => {
+        try {
+          /* A unit coming out of standby is not ready the instant PWON lands.
+             This was 1200ms and the input often did not take — the same
+             deafness this file already records for sound mode, which is
+             ignored outright in standby. Waited out properly, and then
+             confirmed rather than assumed. */
+          if (!a.power) {
+            await a.setPower(true);
+            await sleep(2600);
+            await avrSettle(a, () => a.power, 3000);
+          }
+          const want = String(c.media_input || '').toUpperCase();
+          if (want && a.input !== want) {
+            /* Sent, waited for the unit's own report, and sent once more if it
+               did not move. One retry, because the command that gets dropped is
+               the first one after waking — a second attempt on a unit that is
+               now awake is the whole fix, and re-sending an input it is already
+               on is harmless. */
+            await a.setInput(want);
+            let landed = await avrSettle(a, () => a.input === want, 3000);
+            if (!landed) {
+              await a.setInput(want);
+              landed = await avrSettle(a, () => a.input === want, 3000);
+            }
+            if (!landed) out.soundNote = 'the receiver stayed on ' + (a.input || '?');
+          }
+          out.sound = a.power
+            ? 'on, ' + (a.input || '?') + ' at ' + a.volume
+            : 'did not come on';
+        } catch (e) { out.sound = 'failed: ' + e.message; }
+      })());
+    }
+  }
+
+  /* The link itself. Waits for the box to report a new foreground app, which is
+     a real reading — so unlike the projector this half can say whether it
+     worked. Six seconds, because that is what this box has been measured
+     taking to report a change; four was too short and read a success as a
+     failure. */
+  jobs.push((async () => {
+    try {
+      const was = (m.session && m.session.app) || '';
+      /* Hold the link back until there is something to show it on. The receiver
+         is being woken and switched over during this same wait, so the pause
+         costs nothing but the projector's own warm-up. */
+      if (warmup) await sleep(warmup);
+      m.launch(link);
+      const until = Date.now() + 9000;
+      while (Date.now() < until) {
+        if (m.session && m.session.app !== was) break;
+        await sleep(200);
+      }
+      const now = (m.session && m.session.app) || '';
+      out.player = now && now !== was
+        ? 'opened ' + mediaAppName(now)
+        : 'sent, but nothing opened — the app may not be installed';
+    } catch (e) { out.player = 'failed: ' + e.message; }
+  })());
+
+  await Promise.all(jobs);
+  pushSoon();
+
+  const worked = /^opened /.test(out.player || '');
+  res.json({
+    ok: true, id: c.id, link, ...out,
+    /* Says what happened rather than what was asked for, and keeps the
+       projector's hedge: the box can confirm, the receiver can confirm, the
+       projector never can. */
+    spoken: worked
+      ? out.player.replace(/^opened /, 'playing on ') + ' — the hub sent the projector on'
+      : 'the link did not open',
+  });
+});
+
+/* ── the media player ─────────────────────────────────────────────────────
+ *
+ * Keys and app launches. Nothing here is optimistic and nothing here confirms
+ * on a timer: the box pushes its own state, so the reply carries what it has
+ * actually reported and the next push corrects anything that moved after.
+ *
+ * There is no `on`. KEYCODE_POWER is the box's only power control and it is a
+ * *toggle* — computed against a stale reading it does the exact opposite of
+ * what was asked, which is the oldest trap in this file. It is offered as the
+ * plain key it is, named as a toggle, and never as an on/off. */
+app.post('/api/media/:id', async (req, res) => {
+  const m = medias.get(String(req.params.id));
+  if (!m) return res.status(404).json({ ok: false, error: 'no media player with that id' });
+  if (!m.paired) {
+    return res.status(409).json({
+      ok: false, error: 'the media player is not paired yet — pair it first',
+      paired: false,
+    });
+  }
+  const { key, app: appLink, keys } = req.body || {};
+  /* A run of keys in one request, because navigating a grid is several presses
+     and one round trip per press would make the pad feel like a form. Spaced
+     on the wire below, since the box drops a burst sent flat out.
+
+     Declared out here rather than inside the try, because the reply reads it:
+     a const inside a block is not visible after it, and that is a runtime
+     ReferenceError node --check cannot see — the trap this project has now hit
+     with an early let three times. */
+  const run = Array.isArray(keys) ? keys : (key != null ? [key] : []);
+  try {
+    for (const k of run) {
+      if (!(k in ATV_KEYS)) {
+        return res.status(400).json({ ok: false, error: 'no such key: ' + k,
+          keys: Object.keys(ATV_KEYS) });
+      }
+    }
+    for (let i = 0; i < run.length; i++) {
+      if (i) await sleep(120);
+      m.key(run[i]);
+    }
+    if (appLink != null) {
+      /* **It must be a real app link, not a package name.** The obvious form,
+         market://launch?id=<package>, is what half the internet suggests and it
+         is silently inert on this box — measured three times from a known
+         starting app: accepted, no error, nothing happens. What works is the
+         app's own scheme or an https deep link:
+
+           netflix://                                  -> opens Netflix
+           https://www.netflix.com/title/80057281      -> opens that title
+           market://launch?id=com.netflix.ninja        -> nothing at all
+
+         So a caller passing a bare package is refused rather than quietly
+         doing nothing, which is the failure shape this project spends its
+         length trying to avoid. */
+      const link = String(appLink);
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(link)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'that has to be an app link, not a package name — '
+            + 'try netflix:// or an https deep link. A bare package is accepted '
+            + 'by the box and does nothing.',
+        });
+      }
+      m.launch(link);
+    }
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: err.message });
+  }
+
+  /* A pad key answers at once and a context key waits.
+   *
+   * The difference matters both ways. A flat 700ms wait was tried first and it
+   * is wrong at both ends: pressing `home` reported the OLD app, because this
+   * box takes about four seconds to settle and report a foreground change —
+   * the same "wait for the value, not for a fixed interval" trap the receiver's
+   * input already records — while making `down` wait at all turns a directional
+   * pad into a form.
+   *
+   * So only a launch waits, because a launch is the one call whose reply NAMES
+   * a destination and therefore has something to be wrong about. A key press
+   * returns at once and says what it sent rather than what is now on screen —
+   * the box's own push carries that a moment later, whoever pressed the key.
+   * Settling on every context key was tried in between and rejected: it made
+   * Home cost four and a half seconds of dead time to confirm something the
+   * panel was about to be told anyway. */
+  const settles = appLink != null;
+  if (settles) {
+    const was = (m.session && m.session.app) || '';
+    const until = Date.now() + 4500;
+    while (Date.now() < until) {
+      if (m.session && m.session.app !== was) break;
+      await sleep(150);
+    }
+  }
+  const snap = m.snapshot();
+  res.json({
+    ok: true, id: m.id, online: snap.media_online, on: snap.status,
+    app: snap.media_app, app_name: snap.media_app_name,
+    volume: snap.media_volume, muted: snap.media_muted,
+    sent: run,
+    spoken: mediaSpoken(m, snap, settles ? null : run),
+  });
+});
+
+/* Two different sentences, because two different things are known. After a
+   launch the box has been waited for, so the reply may say what is on screen.
+   After a key press nothing has been waited for, so it says what was sent —
+   which is true, and does not dress a stale reading up as a confirmation. */
+function mediaSpoken(m, snap, sentKeys) {
+  const who = sentence(m.room.replace(/ ROOM$/i, '')) + ' ' + m.name.toLowerCase();
+  if (!snap.media_online) return who + ' is not answering';
+  if (!snap.status) return who + ' is asleep';
+  if (sentKeys && sentKeys.length) {
+    return 'sent ' + sentKeys.join(', ') + ' to the ' + m.name.toLowerCase();
+  }
+  return snap.media_app_name ? who + ' is on ' + snap.media_app_name : who + ' is on';
+}
+
+/* ── pairing, which is a person ───────────────────────────────────────────
+ *
+ * Two calls, because a code has to be read off a screen in between and the
+ * socket must stay open across it — the code is per-session and closing the
+ * connection invalidates it. That was learned the hard way: the first working
+ * handshake printed the prompt and then exited, so the code on the screen was
+ * already dead by the time anybody read it out.
+ *
+ * POST with no body starts it and puts the code on screen; POST {code} finishes.
+ */
+app.post('/api/media/:id/pair', async (req, res) => {
+  const m = medias.get(String(req.params.id));
+  if (!m) return res.status(404).json({ ok: false, error: 'no media player with that id' });
+  const code = req.body && req.body.code;
+
+  if (code == null) {
+    try { if (m.pairing) m.pairing.close(); } catch (_) {}
+    m.pairing = null;
+    const identity = newAtvIdentity('the-house');
+    const p = new AtvPairing({ host: m.host, identity, clientName: HOUSE_NAME || 'The House' });
+    try {
+      await p.begin();
+    } catch (err) {
+      return res.status(502).json({ ok: false, error: err.message });
+    }
+    m.pairing = p;
+    m.pairingIdentity = identity;
+    /* The code dies with the socket, so it cannot be left open for ever
+       either — a stale pairing session holding a port is worse than asking
+       somebody to press the button again. */
+    clearTimeout(m.pairingTimer);
+    m.pairingTimer = setTimeout(() => {
+      try { p.close(); } catch (_) {}
+      if (m.pairing === p) m.pairing = null;
+    }, 180000);
+    return res.json({
+      ok: true, stage: 'code',
+      spoken: 'A six-character code is on the media player screen',
+    });
+  }
+
+  if (!m.pairing) {
+    return res.status(409).json({ ok: false, error: 'no pairing is in progress — start one first' });
+  }
+  try {
+    await m.pairing.finish(code);
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
+  }
+  clearTimeout(m.pairingTimer);
+  try { m.pairing.close(); } catch (_) {}
+  m.pairing = null;
+  /* Merged into the file, never written over it: a key lost is a walk to the
+     screen, and another box's pairing must not be the casualty of this one. */
+  writeAtvKey(ATV_KEY_FILE, m.mac, m.pairingIdentity);
+  m.pairingIdentity = null;
+  m.fails = 0;
+  m.nextTry = 0;
+  m.open();
+  pushSoon();
+  res.json({ ok: true, stage: 'paired', spoken: 'The media player is paired' });
 });
 
 /* What a key is called out loud. The record's own spelling is a wiring name;
@@ -4848,8 +5562,10 @@ const DO_OTHER_APIS = [
   ]],
   ['Home theatre', [
     ['POST', '/api/projector', '{key} — one infrared key press. Its key names are the hub’s spelling, and a name is a slot rather than a meaning.'],
-    ['POST', '/api/avr', '{on, volume, step, mute, source} — the receiver states its volume and source as fact.'],
+    ['POST', '/api/avr', '{on, volume, step, mute, input, mode} — the receiver states its volume, source and sound mode as fact. A mode can only be set while it is on, and the reply says which mode it is in rather than claiming the one asked for.'],
     ['POST', '/api/cinema', '{on} — projector and receiver together. Anything short of both-on turns both on.'],
+    ['POST', '/api/media/:id', '{key} or {keys:[...]} or {app} — the media player. `app` must be a real app link (netflix://, or an https deep link) and not a package name; a bare package is silently inert on the box, and an https link needs a PATH — https://www.hotstar.com/ does nothing while a full content URL opens the app. It reports its own foreground app, so a launch reply is a reading, while a key press answers at once and says what it sent.'],
+    ['POST', '/api/media/:id/pair', 'no body puts a six-character code on the player screen; {code} finishes. Pairing is a person, once per box.'],
   ]],
   ['Timers, and the house itself', [
     ['POST', '/api/timers', '{minutes, scope} — scope is house, room:NAME or device:ID. minutes 0 means now.'],
@@ -12848,12 +13564,21 @@ const HTML = /* html */ `<!doctype html>
      left the last one — NET — stretched alone across the full width, reading as
      the most important source in the house. The same stranding the projector's
      word rows hit. auto-fill so it stays right at any sheet width. */
-  #avrsources {
+  #avrsources, #avrmodes {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px;
   }
-  #avrsources .tvkey { min-width: 0; }
-  #avrsources .tvkey.on {
+  #avrsources .tvkey, #avrmodes .tvkey { min-width: 0; }
+  #avrsources .tvkey.on, #avrmodes .tvkey.on {
     background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500;
+  }
+  /* The reading rides on the legend line rather than under it: it is the answer
+     to the heading's own implied question, and a line of its own between the
+     heading and the keys read as a caption nobody attached to anything. */
+  .tvlegend.avrmodehead, .cinemore > summary { display: flex; align-items: baseline; gap: 8px; }
+  .tvlegend.avrmodehead em, .cinemore > summary em {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-style: normal; letter-spacing: .04em; color: var(--soft);
+    font: 500 11.5px/1.25 var(--sans); text-transform: none;
   }
   .pick {
     width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 2px; cursor: pointer;
@@ -13284,15 +14009,333 @@ const HTML = /* html */ `<!doctype html>
   .tvsay small { display: block; margin-top: 9px; font: 400 12.5px/1.45 var(--sans);
                  color: var(--faint); letter-spacing: 0; }
   .tvsheet .sheet-body { display: flex; flex-direction: column; gap: 18px; }
+
+  /* ── the stage ──────────────────────────────────────────────────────────
+     Both panels open with the same object, because a projector screen and a
+     television ARE the same object: a lit rectangle in a dark room. One
+     component, two uses — the projector panel already borrows the television's
+     key classes for exactly this reason, and two sets of rules for one shape is
+     how they drift.
+
+     Three things make it read as a cinema rather than as a header:
+
+       - **Letterbox.** Two black bars, top and bottom. Nothing else in this
+         interface is framed that way, and it is the one proportion everybody
+         reads as "film" without being told.
+       - **Scale.** The title is the display serif at 38px against 10px mono
+         labels, with nothing in between. The panels felt flat because every
+         word in them was 11 to 13px; grandeur is contrast, not decoration.
+       - **The beam.** When something is actually playing, a cone of light falls
+         out of the screen and down across the controls — wide at the bottom,
+         the way a projector throws. It is the one bold thing here and
+         everything else stays quiet around it.
+
+     The light is --cool because that is what a screen is in this house: lamps
+     take amber, screens take cool, and a cinema glowing amber would be claiming
+     to be a lamp. */
+  .stage {
+    position: relative; overflow: hidden; border-radius: 14px;
+    background: linear-gradient(180deg, #0b0d11 0%, #06070a 100%);
+    border: 1px solid var(--rim);
+    display: flex; align-items: center; gap: 18px;
+    padding: 26px 22px; min-height: 132px;
+    isolation: isolate;
+  }
+  /* The frame. Thin, hard-edged, and always there — a dark cinema is still a
+     cinema, so this does not depend on anything being on. */
+  .stage::before, .stage::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 9px;
+    background: #000; opacity: .55; pointer-events: none; z-index: 3;
+  }
+  .stage::before { top: 0; }
+  .stage::after { bottom: 0; }
+  /* The screen's own light, behind everything in the frame. */
+  .stage-glow {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background: radial-gradient(78% 120% at 18% 50%,
+      color-mix(in oklab, var(--cool) 34%, transparent) 0%,
+      color-mix(in oklab, var(--cool) 10%, transparent) 42%,
+      transparent 76%);
+    opacity: 0; transition: opacity .6s ease;
+  }
+  .live .stage-glow { opacity: 1; }
+  .stage-art { position: relative; z-index: 2; flex: 0 0 auto; display: block; }
+  .stage-art:empty { display: none; }
+  .stage-art img {
+    width: 62px; height: 62px; display: block; border-radius: 14px; object-fit: cover;
+    background: #14171d; box-shadow: 0 4px 16px rgba(0,0,0,.55);
+  }
+  .live .stage-art img {
+    box-shadow: 0 4px 16px rgba(0,0,0,.55),
+                0 0 0 1px color-mix(in oklab, var(--cool) 46%, transparent),
+                0 12px 44px -8px color-mix(in oklab, var(--cool) 55%, transparent);
+  }
+  .stage-lines { position: relative; z-index: 2; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .stage-lines .sheet-eyebrow {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  /* The one big thing. Nothing else on the panel comes near it. */
+  .stage-title {
+    font-family: var(--display); font-weight: 400; font-size: 38px; line-height: 1.02;
+    letter-spacing: -.015em; color: #f4f1ea;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stage-state {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .live .stage-state { color: color-mix(in oklab, var(--cool) 78%, #ffffff); }
+
+  /* The beam. A cone, not a wash: wide at the bottom, falling out of the
+     screen into the room. Clipped rather than blurred, because a blur this
+     large is the most expensive thing a page can ask for and the doorbell
+     tablet has to draw it too. */
+  .stage-beam {
+    display: block; position: relative; height: 0; margin: 0 -24px;
+    overflow: visible; pointer-events: none;
+  }
+  .stage-beam::before {
+    content: ''; position: absolute; left: 0; right: 0; top: -6px; height: 190px;
+    background: linear-gradient(to bottom,
+      color-mix(in oklab, var(--cool) 20%, transparent) 0%,
+      color-mix(in oklab, var(--cool) 7%, transparent) 46%,
+      transparent 100%);
+    clip-path: polygon(34% 0%, 66% 0%, 100% 100%, 0% 100%);
+    opacity: 0; transition: opacity .7s ease;
+  }
+  .live .stage-beam::before { opacity: 1; }
+  .sheet-head { position: relative; }
+  @media (prefers-reduced-motion: reduce) {
+    .stage-glow, .stage-beam::before, .stage-art img { transition: none; }
+  }
+  @media (max-width: 860px) {
+    /* The stage earns its height by carrying the reading, but it is height the
+       head did not use to spend — so the caveat gives some back. It is a thing
+       read once, not scanned, and on a phone it was three lines of body copy
+       between the stage and the first control. */
+    .cinesheet .tvsay { margin-top: 10px; }
+    .cinesheet .tvsay small { font-size: 11px; line-height: 1.4; }
+    .cinesheet .sheet-head { padding-bottom: 12px; }
+    .stage { min-height: 108px; padding: 20px 16px; gap: 14px; }
+    .stage-art img { width: 50px; height: 50px; border-radius: 12px; }
+    .stage-title { font-size: 27px; }
+    .stage-beam::before { height: 140px; }
+  }
+
+  /* ── the television panel is wide too ───────────────────────────────────
+     Same complaint as the cinema had: a 540px column in a 1440px window, with
+     the app row — the thing anybody actually opens this for — scrolling
+     sideways at the very bottom. Given the width it stops scrolling and simply
+     shows what is installed.
+
+     The order says what it is for: the apps lead, the sound and the pad sit
+     side by side under them, and the two typing controls take the foot. */
+  @media (min-width: 861px) {
+    #tvscrim .sheet { width: min(900px, 94vw); max-height: min(780px, 90vh); }
+    #tvscrim .sheet-body {
+      display: grid; gap: 18px 22px; align-content: start;
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        'apps apps'
+        'sound pad'
+        'say   yt';
+    }
+    #tvapps-block   { grid-area: apps; }
+    #tvsound        { grid-area: sound; }
+    #tvpaddle       { grid-area: pad; }
+    #tvsay-block    { grid-area: say; }
+    #tvyt-block     { grid-area: yt; }
+    /* With room to lay them out, the row becomes a grid and stops being a
+       sideways scroller — 25 apps behind a scrollbar is a filing cabinet. */
+    #tvscrim .tvapps {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+      gap: 8px; overflow: visible;
+    }
+    #tvscrim .tvapp { width: auto; }
+    #tvscrim .tvpad { align-self: start; }
+  }
+
+  /* ── the cinema panel is wide on a desktop ──────────────────────────────
+     Every other sheet here is a column because every other sheet is a list.
+     This one is a control surface for three machines, and at 540px it was a
+     single file of blocks in a 1280px window — most of the screen empty and
+     the projector's setup keys pushed below the fold while the two controls
+     anybody actually uses sat above them.
+
+     So on a wide screen it becomes a grid, and the grid says the hierarchy
+     out loud: WATCH spans the top, because a link and a Play key is the whole
+     reason the panel gets opened; the player and the sound sit side by side
+     underneath, being the two things touched every evening; the screen's
+     on/off and the folded-away projector setup take the foot.
+
+     Kept to a phone's single column below 861px, which is the same breakpoint
+     the rest of this sheet uses. */
+  @media (min-width: 861px) {
+    .scrim .sheet.cinesheet { width: min(1000px, 94vw); max-height: min(760px, 90vh); }
+    .cinesheet .sheet-body {
+      display: grid; gap: 18px 22px; align-content: start;
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        'watch  watch'
+        'player sound'
+        'screen screen'
+        'more   more';
+    }
+    .cinesheet #watchblock  { grid-area: watch; }
+    .cinesheet #mediablock  { grid-area: player; }
+    .cinesheet #avrblock    { grid-area: sound; }
+    .cinesheet #prjblock    { grid-area: screen; }
+    .cinesheet #prjmore     { grid-area: more; }
+    /* The sentence spans the whole head rather than being trapped in a column
+       of its own width — it is prose, and prose in a 480px gutter of a 1000px
+       dialog reads as a leftover. */
+    .cinesheet .tvsay { max-width: 42ch; }
+    /* The Watch band spans the top, so it has 950px to fill and was filling it
+       with one very wide text field and a second, sparse row of chips. The two
+       halves of "watch something" sit side by side instead: type a link on the
+       left, or pick an app on the right. */
+    .cinesheet #watchblock {
+      display: grid; gap: 9px 22px;
+      /* The tiles get the larger share. They are fixed-width things that want
+         to sit on one row, while the field stretches to whatever is left and a
+         URL is legible in far less than half a 1000px dialog. At 1.15fr the
+         fifth app wrapped onto a row of its own. */
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+      grid-template-areas: 'legend legend' 'row apps' 'note note';
+    }
+    .cinesheet #watchblock > .tvlegend { grid-area: legend; }
+    .cinesheet .watchrow { grid-area: row; }
+    /* One row beside the field rather than three-and-one wrapped: four tiles in
+       a ~430px column want about 96px each, and a single row sits level with
+       the field and Play beside it. */
+    .cinesheet #watchapps {
+      grid-area: apps; align-content: start;
+      grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+    }
+    .cinesheet .watchnote { grid-area: note; }
+    /* With no apps declared there is nothing to sit beside, so the field takes
+       the whole band rather than leaving a hole where the tiles would be. */
+    .cinesheet #watchblock.noapps { grid-template-columns: minmax(0, 1fr); }
+    .cinesheet #watchblock.noapps .watchrow { grid-area: auto; }
+    /* Side by side, the pad no longer has to be the width of the panel. */
+    .cinesheet #mediapad { align-self: start; }
+  }
+
+  /* ── the link box ───────────────────────────────────────────────────────
+     16px, or iOS zooms the page the moment it takes focus — this file has now
+     recorded that trap for the search field, the television's link field and
+     the sleep timer's select. */
+  /* ── the cinema panel on a phone ────────────────────────────────────────
+     The complaint was that the scroll is too long, and it was: 1235px of body
+     behind a 234px head on an 812px screen. Three things, measured:
+
+       - the head. The sentence is the panel's voice and it keeps its display
+         face, but at 24px over three lines plus a four-line caveat it was
+         costing 234px before a single control appeared. The fact stays big
+         relative to everything around it; the qualification gets the smallest
+         type on the panel, which is what this file's own rule asks for.
+       - the order. Sound came after a 307px pad, so the volume — the thing
+         most often reached for in that room — was always below the fold. It
+         goes second, straight under Watch.
+       - sound mode folds away (above), which is 151px of chips that get set
+         about once. */
+  @media (max-width: 860px) {
+    .cinesheet .tvsay { font-size: 21px; line-height: 1.12; }
+    .cinesheet .tvsay small {
+      display: block; margin-top: 7px; font-size: 11.5px; line-height: 1.4;
+      color: var(--faint);
+    }
+    .cinesheet .sheet-head { padding: 18px 20px 14px; }
+    /* Watch, then the volume, then the pad. The two blocks with no fixed order
+       of their own keep document order by taking the numbers after them. */
+    .cinesheet #watchblock { order: 1; }
+    .cinesheet #avrblock   { order: 2; }
+    .cinesheet #mediablock { order: 3; }
+    .cinesheet #prjblock   { order: 4; }
+    .cinesheet #prjmore    { order: 5; }
+    /* A pad you can still hit, in less height. 175px for five keys was more
+       than the transport row and the three word keys put together. */
+    .cinesheet #mediapad { gap: 6px; }
+  }
+
+  .watchrow { display: flex; gap: 8px; }
+  .watchfield {
+    flex: 1; min-width: 0; appearance: none; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--field); color: var(--ink);
+    padding: 0 14px; height: 44px; font: 400 16px/1 var(--sans); box-shadow: none;
+  }
+  .watchfield::placeholder { color: var(--faint); }
+  .watchfield:focus-visible { outline: 2px solid var(--edge-up); outline-offset: -2px; }
+  .tvkey.go {
+    flex: 0 0 auto; min-width: 96px;
+    background: var(--ink); border-color: var(--ink); color: var(--base); font-weight: 500;
+  }
+  .tvkey.go:disabled { opacity: .45; }
+  /* Says what the orchestration actually did, step by step. It is the one
+     control here that drives three machines at once, so a bare toast saying
+     "playing" would hide which half of it failed. */
+  .watchnote { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--soft); }
+  .watchnote b { color: var(--ink); font-weight: 500; }
+  /* Two across on a phone: at four across a 375px screen gives each tile 78px,
+     which clips "Prime Video" under its own icon. The desktop rule below packs
+     them into one row instead, where there is width for it. */
+  #watchapps {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;
+  }
+  #watchapps .tvkey { min-width: 0; }
+  /* Mark over name. A column rather than a row: side by side, "YouTube" beside
+     a 21px glyph left about 60px of text box in a 104px tile and the longer
+     names clipped — the same stranding the projector's word rows hit. */
+  .tvkey.appkey {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 10px 6px;
+  }
+  .tvkey.appkey svg { width: 21px; height: 21px; display: block; }
+  /* Real brand art. Rounded because every one of these is shipped as a square
+     tile and a hard square sits oddly among controls that are all radiused —
+     the same corner the app icons on a phone's home screen wear. */
+  .tvkey.appkey .appart {
+    width: 26px; height: 26px; display: block; border-radius: 6px; object-fit: cover;
+  }
+  .tvkey.appkey .appname {
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11.5px; letter-spacing: .02em;
+  }
+  #watchapps:empty { display: none; }
+
+  /* ── the folded-away projector keys ─────────────────────────────────────
+     A disclosure rather than a deleted block: this is a real remote and the
+     day the picture goes soft somebody needs it. It just must not be the
+     tallest thing on a panel about watching a film. */
+  .cinemore { min-width: 0; }
+  .cinemore > summary {
+    cursor: pointer; list-style: none; padding: 11px 14px; border-radius: 12px;
+    border: 1px solid var(--line); background: none;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .cinemore > summary::-webkit-details-marker { display: none; }
+  .cinemore > summary::after { content: '+'; opacity: .7; margin-left: auto; }
+  .cinemore[open] > summary::after { content: '−'; }
+  .cinemore > summary:hover { color: var(--ink); border-color: var(--edge-up); }
+  .cinemore > summary:focus-visible { outline: 2px solid var(--edge-up); outline-offset: 2px; }
+  .cinemore[open] { display: flex; flex-direction: column; gap: 14px; }
+  .cinemore[open] > summary { margin-bottom: 4px; }
   /* The sentence, not a row of fields. This is the one place the panel talks,
      so it takes the display face and the number takes the accent — the same
      idiom as the hero on a wide screen. */
+  /* Demoted. It used to be the headline; the stage is the headline now, and two
+     display-serif statements of the same fact at two different sizes is how a
+     panel comes to say everything twice. This carries the qualifications — the
+     projector's hedge, what a reading can and cannot mean — at the size a
+     footnote deserves. */
   .tvsay {
-    margin: 8px 0 0; font-family: var(--display); font-weight: 400;
-    font-size: clamp(24px, 4.4vw, 32px); line-height: 1.1; letter-spacing: -.01em;
-    color: var(--ink);
+    margin: 14px 0 0; font: 400 13px/1.5 var(--sans); color: var(--soft);
+    letter-spacing: .01em;
   }
-  .tvsay b { font-style: italic; font-weight: 400; color: var(--accent); }
+  .tvsay b { font-weight: 500; color: var(--ink); font-style: normal; }
+  .tvsay small { display: block; margin-top: 5px; font-size: 11.5px; color: var(--faint); }
   /* min-width: 0 so a scrolling row inside can actually shrink rather than
      forcing its own content width on everything above it. */
   .tvblock { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
@@ -13371,17 +14414,31 @@ const HTML = /* html */ `<!doctype html>
     background: var(--paper-2); border: 1px solid var(--line-up); border-radius: 14px;
     transition: transform .24s cubic-bezier(.22,.94,.3,1), background .18s, border-color .18s;
   }
+  /* Two comments had been run together here and the first one's closing marker
+     left the second as loose prose inside the block. CSS recovers from a
+     malformed declaration by skipping to the next semicolon — which was the one
+     ending the background declaration, so it was silently dropped and the set's
+     white-on-transparent icons rendered invisible. Verified from the live page:
+     the rule's cssText held everything except the background. */
   .tvapp img {
+    /* Edge to edge, with no padding: most of these are full-bleed squares and a
+       couple of pixels of inset drew a dark ring around an icon that already had
+       its own background. The dark chip is for the other kind — the set draws
+       several as white-on-transparent, invisible without it. */
     width: 34px; height: 34px; border-radius: 8px; object-fit: contain;
-    /* The set draws several of these as white-on-transparent, which is
-       invisible on paper — so they sit on a dark chip of their own, the way a
-       launcher shows them. */
-       Edge to edge, with no padding: most of these are full-bleed squares and a
-       couple of pixels of inset drew a dark ring around an icon that already
-       had its own background. */
     background: #201c18; box-sizing: border-box;
   }
+  /* An icon that never arrives leaves its letter behind rather than a hole. A
+     sleeping set serves no bytes at all, so this is the normal case for half
+     the row whenever the television is off — and 25 chips with a 34px gap where
+     a picture should be reads as a page that failed to load, not as a set that
+     is merely asleep. */
   .tvapp img.gone { display: none; }
+  .tvapp .fallback {
+    width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
+    background: #201c18; color: var(--soft);
+    font: 500 15px/1 var(--sans); letter-spacing: .02em;
+  }
   .tvapp span {
     font-size: 9.5px; line-height: 1.2; text-align: center; color: var(--soft);
     overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -14588,11 +15645,20 @@ const HTML = /* html */ `<!doctype html>
 <div class="scrim" id="tvscrim" hidden>
   <div class="sheet tvsheet" role="dialog" aria-modal="true" aria-labelledby="tvsay">
     <div class="sheet-head">
-      <div class="sheet-eyebrow" id="tveyebrow">Television</div>
+      <div class="stage" id="tvstage">
+        <span class="stage-glow"></span>
+        <span class="stage-art" id="tvstageart"></span>
+        <span class="stage-lines">
+          <span class="sheet-eyebrow" id="tveyebrow">Television</span>
+          <span class="stage-title" id="tvstagetitle"></span>
+          <span class="stage-state" id="tvstagestate"></span>
+        </span>
+      </div>
+      <span class="stage-beam"></span>
       <p class="tvsay" id="tvsay"></p>
     </div>
     <div class="sheet-body">
-      <div class="tvblock">
+      <div class="tvblock" id="tvsound">
         <div class="strip dimstrip tvvol" id="tvvol">
           <span class="strip-fill"></span><span class="strip-hand"></span>
           <span class="strip-label">VOLUME</span>
@@ -14605,7 +15671,7 @@ const HTML = /* html */ `<!doctype html>
         </div>
       </div>
 
-      <div class="tvblock">
+      <div class="tvblock" id="tvpaddle">
         <div class="tvpad">
           <button class="tvkey pad up ico"    type="button" data-btn="UP"    data-ico="up"    aria-label="Up"></button>
           <button class="tvkey pad left ico"  type="button" data-btn="LEFT"  data-ico="left"  aria-label="Left"></button>
@@ -14621,12 +15687,12 @@ const HTML = /* html */ `<!doctype html>
         </div>
       </div>
 
-      <div class="tvblock">
+      <div class="tvblock" id="tvapps-block">
         <div class="tvlegend">Go somewhere</div>
         <div class="tvapps" id="tvapps"></div>
       </div>
 
-      <div class="tvblock">
+      <div class="tvblock" id="tvsay-block">
         <div class="tvlegend">Say something on the screen</div>
         <div class="tvlink">
           <input type="text" id="tvsayin" maxlength="120" placeholder="A line to put on the screen" aria-label="Message">
@@ -14634,7 +15700,7 @@ const HTML = /* html */ `<!doctype html>
         </div>
       </div>
 
-      <div class="tvblock">
+      <div class="tvblock" id="tvyt-block">
         <div class="tvlegend">Play a YouTube link</div>
         <div class="tvlink">
           <input type="text" id="tvyt" placeholder="Paste a link, or a video id" aria-label="YouTube link">
@@ -14664,11 +15730,86 @@ const HTML = /* html */ `<!doctype html>
      written out here, so another install's projector shows its own remote. -->
 <div class="scrim" id="prjscrim" hidden>
   <div class="sheet tvsheet" role="dialog" aria-modal="true" aria-labelledby="prjsay">
+    <!-- The head IS the stage. A home cinema is a lit rectangle in a dark room,
+         so the panel opens with the thing that is playing and takes its light
+         from it, rather than opening with a paragraph about three machines.
+         Costs no extra height: the head was already here. -->
     <div class="sheet-head">
-      <div class="sheet-eyebrow" id="prjeyebrow">Projector</div>
+      <div class="stage" id="cinestage">
+        <span class="stage-glow"></span>
+        <span class="stage-art" id="stageart"></span>
+        <span class="stage-lines">
+          <span class="sheet-eyebrow" id="prjeyebrow">Cinema</span>
+          <span class="stage-title" id="cinestagetitle"></span>
+          <span class="stage-state" id="cinestagestate"></span>
+        </span>
+      </div>
+      <span class="stage-beam"></span>
       <p class="tvsay" id="prjsay"></p>
     </div>
     <div class="sheet-body">
+      <!-- ── watch something ────────────────────────────────────────────
+           This leads, because it is the reason anybody opens this panel. A
+           link and a Play key that does the whole errand — projector on,
+           receiver on and switched to the player's input, then the link
+           opened — rather than making somebody drive three machines in the
+           right order to watch one thing.
+
+           The app tiles are per-install and come from config, because this box
+           cannot be asked what it has installed: ADB is disabled on it, DIAL
+           registers three legacy names, and Cast's availability list is not an
+           install list (it calls Netflix unavailable while Netflix is
+           installed and launches). A tile is a name and a deep link somebody
+           verified, never a guess. -->
+      <div class="tvblock" id="watchblock">
+        <div class="tvlegend">Watch</div>
+        <div class="watchrow">
+          <input type="url" id="watchlink" class="watchfield" autocomplete="off"
+                 spellcheck="false" placeholder="Paste a link — YouTube, Netflix, Hotstar"
+                 aria-label="A link to play">
+          <button class="tvkey go" type="button" id="watchplay">Play</button>
+        </div>
+        <div class="tvrow words" id="watchapps"></div>
+        <p class="watchnote" id="watchnote" hidden></p>
+      </div>
+
+      <!-- The media player. A pad and transport keys, because this box is
+           navigated rather than switched: everything worth doing happens inside
+           an app's own grid, which is exactly what Cast could not offer and why
+           this speaks the remote protocol instead.
+
+           There is no on/off pair here on purpose. KEYCODE_POWER is the box's
+           only power control and it is a TOGGLE — one computed from a stale
+           reading does the opposite of what was asked, the oldest trap in this
+           project — so it is offered as the toggle it is and named as one. -->
+      <div class="tvblock" id="mediablock">
+        <div class="tvlegend avrmodehead" id="medialegend">Player<em id="medianow"></em></div>
+        <div class="tvpad" id="mediapad">
+          <button class="tvkey pad up ico"    type="button" data-media="up"    data-ico="up"    aria-label="Up"></button>
+          <button class="tvkey pad left ico"  type="button" data-media="left"  data-ico="left"  aria-label="Left"></button>
+          <button class="tvkey pad ok ico"    type="button" data-media="ok"    data-ico="ok"    aria-label="Select"></button>
+          <button class="tvkey pad right ico" type="button" data-media="right" data-ico="right" aria-label="Right"></button>
+          <button class="tvkey pad down ico"  type="button" data-media="down"  data-ico="down"  aria-label="Down"></button>
+        </div>
+        <div class="tvrow">
+          <button class="tvkey wide" type="button" data-media="back">Back</button>
+          <button class="tvkey wide" type="button" data-media="home">Home</button>
+          <button class="tvkey wide" type="button" data-media="menu">Menu</button>
+        </div>
+        <div class="tvrow">
+          <button class="tvkey ico" type="button" data-media="previous" data-ico="prev"    aria-label="Previous"></button>
+          <button class="tvkey ico" type="button" data-media="rewind"   data-ico="rewind"  aria-label="Rewind"></button>
+          <button class="tvkey ico" type="button" data-media="play"     data-ico="play"    aria-label="Play or pause"></button>
+          <button class="tvkey ico" type="button" data-media="forward"  data-ico="forward" aria-label="Fast forward"></button>
+          <button class="tvkey ico" type="button" data-media="next"     data-ico="next"    aria-label="Next"></button>
+        </div>
+        <!-- Shown only while the box has never been paired. Pairing is a person:
+             a code goes on the screen and somebody reads it back. -->
+        <div class="tvrow words" id="mediapair" hidden>
+          <button class="tvkey wide" type="button" id="mediapairstart">Pair this player</button>
+        </div>
+      </div>
+
       <!-- The receiver's half. Present only when this card is a cinema; a lone
            projector opens the same panel with this block hidden.
            It gets a real volume STRIP, unlike the projector's bare pair of
@@ -14696,6 +15837,17 @@ const HTML = /* html */ `<!doctype html>
         </div>
         <div class="tvlegend">Source</div>
         <div class="tvrow words" id="avrsources"></div>
+        <!-- Sound mode. The summary carries the unit's own reading, because six
+             of these eight keys report back under one shared decoder name and
+             so cannot mark themselves — what the receiver says it is doing is
+             the only honest answer to "which one am I in", and it belongs where
+             the question is asked. Which is also why it is on the SUMMARY and
+             not inside: folded shut, that reading is the only thing left, and
+             it is the part worth seeing at a glance. -->
+        <details class="cinemore" id="avrmodemore">
+          <summary>Sound mode<em id="avrmodenow"></em></summary>
+          <div class="tvrow words" id="avrmodes"></div>
+        </details>
       </div>
 
       <div class="tvblock" id="prjblock">
@@ -14704,53 +15856,64 @@ const HTML = /* html */ `<!doctype html>
           <button class="tvkey wide" type="button" data-prj="on">Screen on</button>
           <button class="tvkey wide" type="button" data-prj="off">Screen off</button>
         </div>
-        <div class="tvpad">
-          <button class="tvkey pad up ico"    type="button" data-prj="up"      data-ico="up"    aria-label="Up"></button>
-          <button class="tvkey pad left ico"  type="button" data-prj="left"    data-ico="left"  aria-label="Left"></button>
-          <button class="tvkey pad ok ico"    type="button" data-prj="confirm" data-ico="ok"    aria-label="Select"></button>
-          <button class="tvkey pad right ico" type="button" data-prj="right"   data-ico="right" aria-label="Right"></button>
-          <button class="tvkey pad down ico"  type="button" data-prj="down"    data-ico="down"  aria-label="Down"></button>
-        </div>
-        <div class="tvrow words">
-          <button class="tvkey wide" type="button" data-prj="menu">Menu</button>
-          <button class="tvkey wide ico" type="button" data-prj="quit" data-ico="back" aria-label="Back"></button>
-          <button class="tvkey wide ico" type="button" data-prj="pause" data-ico="pause" aria-label="Pause"></button>
-          <button class="tvkey wide" type="button" data-prj="mcd">Freeze</button>
-        </div>
       </div>
 
-      <!-- The projector's own speaker. Hidden whenever a receiver is on this
-           panel: the sound in that room comes from the amplifier, and two
-           blocks both headed Sound is worse than not offering the one nobody
-           would use. -->
-      <div class="tvblock" id="prjsound">
-        <div class="tvlegend">Projector speaker</div>
-        <div class="tvrow">
-          <button class="tvkey ico" type="button" data-prj="volRed" data-ico="minus" aria-label="Quieter"></button>
-          <button class="tvkey ico" type="button" data-prj="volAdd" data-ico="plus" aria-label="Louder"></button>
-          <button class="tvkey wide ico" type="button" data-prj="mute" data-ico="loud" aria-label="Mute"></button>
+      <!-- Everything below is the projector's own remote: focus, picture size,
+           where it takes its signal from. It is folded away because it is set
+           once when the thing is installed and essentially never touched
+           after — and left open it was the tallest thing on the panel, pushing
+           the two controls people actually use off the bottom of a phone. -->
+      <details class="cinemore" id="prjmore">
+        <summary>Projector setup — focus, picture, signal</summary>
+        <div class="tvblock">
+          <div class="tvpad">
+            <button class="tvkey pad up ico"    type="button" data-prj="up"      data-ico="up"    aria-label="Up"></button>
+            <button class="tvkey pad left ico"  type="button" data-prj="left"    data-ico="left"  aria-label="Left"></button>
+            <button class="tvkey pad ok ico"    type="button" data-prj="confirm" data-ico="ok"    aria-label="Select"></button>
+            <button class="tvkey pad right ico" type="button" data-prj="right"   data-ico="right" aria-label="Right"></button>
+            <button class="tvkey pad down ico"  type="button" data-prj="down"    data-ico="down"  aria-label="Down"></button>
+          </div>
+          <div class="tvrow words">
+            <button class="tvkey wide" type="button" data-prj="menu">Menu</button>
+            <button class="tvkey wide ico" type="button" data-prj="quit" data-ico="back" aria-label="Back"></button>
+            <button class="tvkey wide ico" type="button" data-prj="pause" data-ico="pause" aria-label="Pause"></button>
+            <button class="tvkey wide" type="button" data-prj="mcd">Freeze</button>
+          </div>
         </div>
-      </div>
 
-      <div class="tvblock">
-        <div class="tvlegend">Where the picture comes from</div>
-        <div class="tvrow words">
-          <button class="tvkey wide" type="button" data-prj="sigSource">Source</button>
-          <button class="tvkey wide" type="button" data-prj="computer">Computer</button>
-          <button class="tvkey wide" type="button" data-prj="video">Video</button>
-          <button class="tvkey wide" type="button" data-prj="auto">Auto</button>
+        <!-- The projector's own speaker. Hidden whenever a receiver is on this
+             panel: the sound in that room comes from the amplifier, and two
+             blocks both headed Sound is worse than not offering the one nobody
+             would use. -->
+        <div class="tvblock" id="prjsound">
+          <div class="tvlegend">Projector speaker</div>
+          <div class="tvrow">
+            <button class="tvkey ico" type="button" data-prj="volRed" data-ico="minus" aria-label="Quieter"></button>
+            <button class="tvkey ico" type="button" data-prj="volAdd" data-ico="plus" aria-label="Louder"></button>
+            <button class="tvkey wide ico" type="button" data-prj="mute" data-ico="loud" aria-label="Mute"></button>
+          </div>
         </div>
-      </div>
 
-      <div class="tvblock">
-        <div class="tvlegend">Focus and size</div>
-        <div class="tvrow words">
-          <button class="tvkey wide" type="button" data-prj="focusRed">Focus −</button>
-          <button class="tvkey wide" type="button" data-prj="focusAdd">Focus +</button>
-          <button class="tvkey wide" type="button" data-prj="picRed">Smaller</button>
-          <button class="tvkey wide" type="button" data-prj="picAdd">Bigger</button>
+        <div class="tvblock">
+          <div class="tvlegend">Where the picture comes from</div>
+          <div class="tvrow words">
+            <button class="tvkey wide" type="button" data-prj="sigSource">Source</button>
+            <button class="tvkey wide" type="button" data-prj="computer">Computer</button>
+            <button class="tvkey wide" type="button" data-prj="video">Video</button>
+            <button class="tvkey wide" type="button" data-prj="auto">Auto</button>
+          </div>
         </div>
-      </div>
+
+        <div class="tvblock">
+          <div class="tvlegend">Focus and size</div>
+          <div class="tvrow words">
+            <button class="tvkey wide" type="button" data-prj="focusRed">Focus −</button>
+            <button class="tvkey wide" type="button" data-prj="focusAdd">Focus +</button>
+            <button class="tvkey wide" type="button" data-prj="picRed">Smaller</button>
+            <button class="tvkey wide" type="button" data-prj="picAdd">Bigger</button>
+          </div>
+        </div>
+      </details>
     </div>
     <div class="sheet-foot">
       <!-- Both, then each. The pair is what anyone reaches for, so it leads;
@@ -14941,6 +16104,8 @@ const kindOf = (d) =>
   (d.app_type === 'TV' || d.app_type === 'PRJ') ? 'screen' :
   // Before the fan test, or an AVR falls all the way through to 'light'.
   d.is_avr ? 'sound' :
+  // Before the fan test too, or a media player falls through to 'light'.
+  d.is_media ? 'screen' :
   d.is_fan ? 'fan' : 'light';
 
 const state = { devices: [], view: 'house', room: null, q: '', sync: null, schedules: [] };
@@ -15148,6 +16313,41 @@ function applySnapshot(snap) {
        skips the settle-time guard below, because that guard exists for a hub
        read describing the house seconds ago, whereas this unit pushes its own
        changes as they happen. */
+    if (d.is_media) {
+      /* Merged explicitly and on its own fields, exactly as the receiver and
+         the televisions are. applySnapshot compares status/level/tune and skips
+         the record when those match — so a box that had only changed app would
+         be dropped and the panel would keep whatever it loaded with. It also
+         skips the settle-time guard deliberately: that guard exists because a
+         hub read describes the house seconds ago, whereas this box pushes its
+         own changes as they happen. */
+      const same = now.status === d.status
+        && now.media_online === d.media_online
+        && now.media_paired === d.media_paired
+        && now.media_app === d.media_app
+        && now.media_app_icon === d.media_app_icon
+        && now.media_volume === d.media_volume
+        && now.media_muted === d.media_muted
+        && (now.media_apps || []).length === (d.media_apps || []).length;
+      if (same) continue;
+      d.status = now.status;
+      d.level = now.level;
+      d.media_online = now.media_online;
+      d.media_paired = now.media_paired;
+      d.media_app = now.media_app;
+      d.media_app_name = now.media_app_name;
+      d.media_app_icon = now.media_app_icon;
+      d.media_volume = now.media_volume;
+      d.media_volume_max = now.media_volume_max;
+      d.media_muted = now.media_muted;
+      d.media_keys = now.media_keys;
+      d.media_apps = now.media_apps;
+      paint(d);
+      if (mediaOpen === d.record_id && !el('#prjscrim').hidden) drawCinema();
+      if (d.cinema) paintCinema(d.cinema.id);
+      moved = true;
+      continue;
+    }
     if (d.is_avr) {
       const same = now.status === d.status && now.avr_volume === d.avr_volume
         && now.avr_muted === d.avr_muted && now.avr_input === d.avr_input
@@ -15161,6 +16361,13 @@ function applySnapshot(snap) {
       d.avr_muted = now.avr_muted;
       d.avr_input = now.avr_input;
       d.avr_mode = now.avr_mode;
+      /* Merged explicitly, like everything else here. The label is derived from
+         avr_mode and the list is fixed, so neither can change without avr_mode
+         changing too — but leaving them out is how this branch has silently
+         dropped a field before, and a derived value nobody assigns is just as
+         stale as one nobody sends. */
+      d.avr_mode_label = now.avr_mode_label;
+      d.avr_modes = now.avr_modes;
       d.avr_online = now.avr_online;
       d.avr_sources = now.avr_sources;
       paint(d);
@@ -16061,6 +17268,7 @@ function circuitTile(d, compact) {
       // A receiver on its own — not paired into a cinema — opens the same
       // panel showing only its half.
       : d.is_avr ? () => openAvr(d)
+      : d.is_media ? () => openMedia(d)
       : () => setDevice(d, !d.status);
   }
   body.className = 'tile-body';
@@ -16190,23 +17398,34 @@ function slider(d, key) {
 function cinemaTile(c) {
   const screen = c.members.find((m) => m.is_projector) || null;
   const sound = c.members.find((m) => m.is_avr) || null;
+  const player = c.members.find((m) => m.is_media) || null;
+  /* The two machines the key actually drives. A media player is a member of the
+     cinema for reading but NOT for switching: /api/cinema commands the screen
+     and the sound, and a set-top box has no honest off to command anyway. Left
+     in the quorum it would have broken the key outright — the box reports
+     itself awake essentially always, so an every-test would have been false with the
+     film already running and the key would have tried to switch everything ON
+     instead of off. That is exactly the All COBs bug this card already records,
+     arriving by a different door. */
+  const driven = c.members.filter((m) => !m.is_media);
   /* Lit if either is running — something is happening in that room, and the
-     glow is about the room rather than about a quorum. */
-  const on = c.members.some((m) => m.status);
+     glow is about the room rather than about a quorum. The player is left out
+     of this too, or the card would read as lit around the clock. */
+  const on = driven.some((m) => m.status);
   /* But the key means "make them both the same", which is the lesson the All
      COBs key already recorded: switching off whenever *any* member was on made
      a control called "all" do the opposite of what it offers. Here the receiver
      is often on by itself with the projector dark, and pressing the cinema key
      then put the music out instead of starting the film. So anything short of
      both-on turns both on, and only a fully running cinema switches off. */
-  const allOn = c.members.length > 0 && c.members.every((m) => m.status);
+  const allOn = driven.length > 0 && driven.every((m) => m.status);
 
   const tile = document.createElement('div');
   tile.className = 'tile enter screen cinema wide' + (on ? ' on' : '');
   tile.dataset.cinema = c.info.id;
   tile.title = c.info.name + ' — ' +
-    [screen && 'the projector', sound && 'the receiver'].filter(Boolean).join(' and ') +
-    ', together';
+    [screen && 'the projector', sound && 'the receiver', player && 'the media player']
+      .filter(Boolean).join(', ') + ', together';
   // The lit wash takes the receiver's cool colour rather than a lamp's amber:
   // nothing here is a lamp, and a television in this house already glows cool.
   tile.style.setProperty('--lit', on ? '1' : '0');
@@ -16222,7 +17441,8 @@ function cinemaTile(c) {
   body.innerHTML =
     '<span class="headline"><span class="roomname"></span></span>' +
     '<span class="cineread"><span class="cinehalf screenhalf"></span>' +
-    '<span class="cinehalf soundhalf"></span></span>';
+    '<span class="cinehalf soundhalf"></span>' +
+    '<span class="cinehalf playerhalf"></span></span>';
   body.querySelector('.roomname').textContent = c.info.name.toUpperCase();
   body.onclick = () => openCinema(c);
   tile.appendChild(body);
@@ -16236,6 +17456,10 @@ function cinemaTile(c) {
   };
   half('.screenhalf', 'SCREEN', screen ? (screen.status ? 'HUB SENT ON' : 'HUB SENT OFF') : '');
   half('.soundhalf', 'SOUND', sound ? soundRead(sound) : '');
+  /* A third reading, and the only one on this card that says what is actually
+     *playing*. No hedge on it: the box reports its own foreground app, whoever
+     changed it. */
+  half('.playerhalf', 'PLAYER', player ? playerRead(player) : '');
 
   const ring = document.createElement('button');
   ring.type = 'button';
@@ -16245,6 +17469,15 @@ function cinemaTile(c) {
   tile.appendChild(ring);
 
   return tile;
+}
+
+/* The media player's own line, and it is a reading for the same reason the
+   receiver's is: the box tells us, rather than us remembering what we sent. */
+function playerRead(p) {
+  if (!p.media_paired) return 'NOT PAIRED';
+  if (!p.media_online) return 'NOT ANSWERING';
+  if (!p.status) return 'ASLEEP';
+  return (p.media_app_name || 'ON').toUpperCase();
 }
 
 /* The receiver's own line. It answers, so this is a reading and needs no hedge —
@@ -16703,6 +17936,36 @@ const ICONS = {
   home:  '<path d="M3.5 11.2L12 4l8.5 7.2"/><path d="M6.2 9.6V20h11.6V9.6"/><path d="M10 20v-5h4v5"/>',
   play:  '<path d="M8.5 5.2l10.5 6.8-10.5 6.8z" fill="currentColor" stroke="none"/>',
   pause: '<path d="M9.5 5v14" stroke-width="2.1"/><path d="M14.5 5v14" stroke-width="2.1"/>',
+  /* ── app marks ─────────────────────────────────────────────────────────
+     The televisions serve their own icons and none are drawn for them — real
+     brand art, straight off the set. This box serves nothing: it has no app
+     list and no icons, so these are drawn, and drawn in the same hand as every
+     other glyph here — one weight, currentColor, no brand colour. That is not
+     only consistency: this dashboard's oldest rule is that the interface is
+     neutral and the only colour is light, so a red YouTube mark on a lit board
+     would be the one thing on screen claiming to be a lamp.
+
+     A silhouette has to survive at 21px, so each is the shape people actually
+     recognise rather than the full logo: the rounded screen and triangle, the
+     N, a star. The generic mark is the fallback and is deliberately not another
+     play triangle — it would be indistinguishable from YouTube's. */
+  appYoutube: '<rect x="2.6" y="5.4" width="18.8" height="13.2" rx="4"/>'
+    + '<path d="M10.4 9.6l5.4 2.8-5.4 2.8z" fill="currentColor" stroke="none"/>',
+  appNetflix: '<path d="M7.6 4.6v14.8" stroke-width="2.5"/>'
+    + '<path d="M16.4 4.6v14.8" stroke-width="2.5"/>'
+    + '<path d="M7.6 4.6l8.8 14.8" stroke-width="2.5"/>',
+  appHotstar: '<path d="M12 3.6l2.36 5.3 5.74.56-4.3 3.86 1.24 5.66L12 16.1 6.96 19'
+    + ' 8.2 13.32 3.9 9.46l5.74-.56z" fill="currentColor" stroke="none"/>',
+  appGeneric: '<rect x="3.6" y="3.6" width="7" height="7" rx="1.8"/>'
+    + '<rect x="13.4" y="3.6" width="7" height="7" rx="1.8"/>'
+    + '<rect x="3.6" y="13.4" width="7" height="7" rx="1.8"/>'
+    + '<rect x="13.4" y="13.4" width="7" height="7" rx="1.8"/>',
+  /* The transport four, filled for the same reason play is: at this size a
+     triangle outline reads as a stray arrow rather than as a direction. */
+  rewind:  '<path d="M12.4 6.6v10.8L4.6 12z" fill="currentColor" stroke="none"/><path d="M20 6.6v10.8L12.2 12z" fill="currentColor" stroke="none"/>',
+  forward: '<path d="M11.6 6.6v10.8L19.4 12z" fill="currentColor" stroke="none"/><path d="M4 6.6v10.8L11.8 12z" fill="currentColor" stroke="none"/>',
+  prev:    '<path d="M19 6.6v10.8L10.4 12z" fill="currentColor" stroke="none"/><path d="M6.6 5.6v12.8" stroke-width="2.1"/>',
+  next:    '<path d="M5 6.6v10.8L13.6 12z" fill="currentColor" stroke="none"/><path d="M17.4 5.6v12.8" stroke-width="2.1"/>',
   loud:  '<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M15.6 9.2a4.4 4.4 0 0 1 0 5.6"/><path d="M18.4 6.8a8 8 0 0 1 0 10.4"/>',
   muted: '<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M16 10l5 4"/><path d="M21 10l-5 4"/>',
   minus: '<path d="M5.5 12h13"/>',
@@ -16888,21 +18151,39 @@ function closeTv() { hideScrim(el('#tvscrim'), () => { tvOpen = null; }); }
  */
 let prjOpen = null;
 let avrOpen = null;
+let mediaOpen = null;
 let cineOpen = null;
 const prjDev = () => state.devices.find((d) => String(d.record_id) === String(prjOpen));
 const avrDev = () => state.devices.find((d) => String(d.record_id) === String(avrOpen));
+const mediaDev = () => state.devices.find((d) => String(d.record_id) === String(mediaOpen));
 
 /* One panel, opened three ways: from a cinema card, from a lone projector, or
    from a lone receiver. Whichever halves exist are shown and the rest is
    hidden, so a house with only one of the two gets a panel about that one
    rather than a heading over nothing. */
+/* Fresh state each time the panel opens. The sound mode is folded on a phone
+   and open on a desktop, where there is a column to spare — set here rather
+   than in drawCinema, which runs on every push from the receiver and would
+   slam the disclosure back open under somebody's finger. The projector's setup
+   is folded on both: it is a once-a-year block. */
+function resetPanelFolds() {
+  const wide = window.matchMedia('(min-width: 861px)').matches;
+  const modes = el('#avrmodemore');
+  if (modes) modes.open = wide;
+  const more = el('#prjmore');
+  if (more) more.open = false;
+}
+
 function openCinema(c) {
   const screen = c.members.find((m) => m.is_projector) || null;
   const sound = c.members.find((m) => m.is_avr) || null;
+  const player = c.members.find((m) => m.is_media) || null;
   cineOpen = c.info.id;
   prjOpen = screen ? screen.record_id : null;
   avrOpen = sound ? sound.record_id : null;
+  mediaOpen = player ? player.record_id : null;
   el('#prjeyebrow').textContent = title(c.info.room) + ' \u00b7 ' + c.info.name;
+  resetPanelFolds();
   drawCinema();
   el('#prjscrim').hidden = false;
 }
@@ -16911,7 +18192,9 @@ function openPrj(d) {
   cineOpen = null;
   prjOpen = d.record_id;
   avrOpen = null;
+  mediaOpen = null;
   el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  resetPanelFolds();
   drawCinema();
   el('#prjscrim').hidden = false;
 }
@@ -16920,29 +18203,151 @@ function openAvr(d) {
   cineOpen = null;
   prjOpen = null;
   avrOpen = d.record_id;
+  mediaOpen = null;
   el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  resetPanelFolds();
+  drawCinema();
+  el('#prjscrim').hidden = false;
+}
+
+/* A media player on its own — not paired into a cinema — opens the same panel
+   with only its own block showing. */
+function openMedia(d) {
+  cineOpen = null;
+  prjOpen = null;
+  avrOpen = null;
+  mediaOpen = d.record_id;
+  el('#prjeyebrow').textContent = title(d.room) + ' \u00b7 ' + pretty(d.name);
+  resetPanelFolds();
   drawCinema();
   el('#prjscrim').hidden = false;
 }
 
 function closePrj() {
-  hideScrim(el('#prjscrim'), () => { prjOpen = null; avrOpen = null; cineOpen = null; });
+  hideScrim(el('#prjscrim'), () => {
+    prjOpen = null; avrOpen = null; mediaOpen = null; cineOpen = null;
+  });
+}
+
+/* ── filling the stage ────────────────────────────────────────────────────
+ * One function for both panels, because they show the same thing. It is handed
+ * the sheet, the three slots, and a reading; it decides nothing about the
+ * hardware itself.
+ *
+ * "Live" means something is actually on screen — not merely that a machine has
+ * power. A set sitting on its home screen and a box showing its screensaver are
+ * both awake and neither is a film, and lighting the room for them would make
+ * the signal meaningless. */
+function fillStage(sheet, ids, read) {
+  const art = el(ids.art);
+  const want = read.icon || '';
+  if (art.dataset.src !== want) {
+    art.dataset.src = want;
+    art.innerHTML = '';
+    if (want) {
+      const img = document.createElement('img');
+      img.src = want;
+      img.alt = '';
+      /* No placeholder box on failure: an empty frame is what a dark screen
+         looks like, and a grey square reads as something failing to load. */
+      img.onerror = () => { art.innerHTML = ''; art.dataset.src = ''; };
+      art.appendChild(img);
+    }
+  }
+  el(ids.title).textContent = read.title;
+  el(ids.state).textContent = read.state;
+  sheet.classList.toggle('live', !!read.live);
+}
+
+/* What the cinema's stage says. The projector cannot be asked, so the stage
+   takes its cue from the media player, which answers — hanging the light on a
+   guess would mean the room glowed because we hoped it might be on. */
+function drawStage(sheet) {
+  const d = mediaDev();
+  const a = avrDev();
+  const idle = !d || !d.media_app
+    || /screensaver/i.test(d.media_app_name || '')
+    || d.media_app === 'com.airtel.tv';
+  const live = !!(d && d.media_online && d.status && !idle);
+
+  let title = 'Cinema';
+  if (live) title = d.media_app_name;
+  else if (d && d.media_online && d.status) title = 'Ready';
+  else if (d && !d.media_paired) title = 'Not paired';
+
+  const bits = [];
+  if (a) {
+    if (!a.avr_online) bits.push('receiver not answering');
+    else if (!a.status) bits.push('sound in standby');
+    else {
+      const src = (a.avr_sources || []).find((x) => x.code === a.avr_input);
+      bits.push((src ? src.name : a.avr_input || 'sound') + ' \u00b7 ' + a.avr_volume);
+      if (a.avr_muted) bits.push('muted');
+    }
+  }
+  const p = prjDev();
+  if (p) bits.push('hub sent ' + (p.status ? 'on' : 'off'));
+
+  fillStage(sheet, { art: '#stageart', title: '#cinestagetitle', state: '#cinestagestate' },
+    { icon: (d && d.media_app_icon) || '', title, state: bits.join('  \u00b7  '), live });
+}
+
+/* And the television's. This one needs no hedge at all: the set reports its own
+   power, volume and running app, whoever changed them. */
+function drawTvStage(sheet) {
+  const d = tvDev();
+  if (!d) return;
+  const running = ((d.tv_apps || []).find((x) => x.id === d.tv_app)) || null;
+  const name = running ? appLabel(running.title) : '';
+  const homey = /^(home|lg channels)$/i.test(name);
+  const live = !!(d.status && name && !homey);
+
+  const title = !d.status ? 'Asleep' : (name && !homey ? name : 'Ready');
+  const bits = [];
+  if (d.status) {
+    bits.push('volume ' + (d.tv_volume == null ? '?' : d.tv_volume));
+    if (d.tv_muted) bits.push('muted');
+  } else bits.push('nothing on screen');
+
+  fillStage(sheet, { art: '#tvstageart', title: '#tvstagetitle', state: '#tvstagestate' },
+    { icon: running ? '/api/tv/' + encodeURIComponent(d.record_id) + '/icon/'
+        + encodeURIComponent(running.id) : '',
+      title, state: bits.join('  \u00b7  '), live });
 }
 
 /* Draws whichever halves are open. Named for the panel rather than for the
    projector now that it carries both. */
 function drawCinema() {
   drawAvrHalf();
+  drawMediaHalf();
+  drawWatchHalf();
   drawPrjHalf();
+
+  /* The foot's pair drives the screen and the sound, which is what "the cinema"
+     means — the player is not in it, having no honest off. So this still asks
+     whether BOTH of those two are present, not whether the panel has two
+     blocks: a projector and a media player with no receiver is not a cinema key. */
   const both = !!(prjOpen && avrOpen);
   el('#cineon').hidden = !both;
   el('#cineoff').hidden = !both;
-  /* The two section headings only earn their place when there are two sections
-     to tell apart. Alone, the panel is about one machine and does not need to
-     say so twice. */
-  el('#prjlegend').hidden = !both;
-  el('#avrlegend').hidden = !both;
-  el('#prjsound').hidden = both;
+  /* A section heading only earns its place when there is another section to
+     tell it apart from. Alone, the panel is about one machine and does not need
+     to say so twice — but the player counts towards that, so a receiver beside
+     a player is still two things and both get named. */
+  const many = [prjOpen, avrOpen, mediaOpen].filter(Boolean).length > 1;
+  /* Wide only when there are two machines to put side by side. A lone
+     projector in a 1000px dialog is a column of keys in an empty room. */
+  const sheet = el('#prjscrim .sheet');
+  sheet.classList.toggle('cinesheet', many);
+  drawStage(sheet);
+  el('#prjlegend').hidden = !many;
+  el('#avrlegend').hidden = !many;
+  /* The projector's own speaker keys are hidden whenever a receiver is present
+     — two blocks headed Sound is worse than not offering the one nobody would
+     use — and of course whenever there is no projector at all. Both halves
+     matter: keyed on the receiver alone this revealed an empty block on a panel
+     that had no projector in it. */
+  el('#prjsound').hidden = !prjOpen || !!avrOpen;
   paintIcons(el('#prjscrim'));
 }
 
@@ -17009,7 +18414,304 @@ function drawAvrHalf() {
     b.classList.toggle('on', mine);
     b.setAttribute('aria-pressed', String(mine));
   }
+
+  /* Sound mode. The vocabulary is fixed — the protocol has no query that
+     enumerates it, unlike the sources above — so it rides in on the snapshot
+     from the one list the server keeps rather than being written out twice. */
+  const modes = el('#avrmodes');
+  const list = a.avr_modes || [];
+  const wantM = list.map((m) => m.cmd).join(',');
+  if (modes.dataset.list !== wantM) {
+    modes.dataset.list = wantM;
+    modes.innerHTML = '';
+    for (const m of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tvkey wide';
+      b.dataset.mode = m.cmd;
+      b.textContent = m.label;
+      b.onclick = () => avrSend({ mode: m.cmd });
+      modes.appendChild(b);
+    }
+  }
+  /* Marked only where the unit's own word for what it is doing IS this key's
+     command word. Movie, Music, Game and Auto all come back as one shared
+     decoder name, so none of them can ever be marked — lighting all four, or
+     guessing from whichever was pressed last, would both be the dashboard
+     inventing a fact. What it is really in is said in words on the legend. */
+  for (const b of modes.querySelectorAll('[data-mode]')) {
+    const m = list.find((x) => x.cmd === b.dataset.mode);
+    const mine = !!(m && m.settles && a.avr_mode
+      && String(a.avr_mode).toUpperCase() === m.cmd);
+    b.classList.toggle('on', mine);
+    b.setAttribute('aria-pressed', String(mine));
+  }
+  el('#avrmodenow').textContent = a.avr_mode_label || '';
 }
+
+/* Which mark a tile wears. Config may name one; otherwise it is matched from
+   the tile's own name. A guess here is cosmetic — the worst case is a generic
+   four-square where a brand mark would have been, never a wrong action — which
+   is why this is allowed to guess at all when nothing else in this file is. */
+function appMark(a) {
+  const named = String(a.icon || '').trim();
+  if (named) return 'app' + named.charAt(0).toUpperCase() + named.slice(1);
+  const n = String(a.name || '').toLowerCase();
+  if (n.includes('youtube')) return 'appYoutube';
+  if (n.includes('netflix')) return 'appNetflix';
+  if (n.includes('hotstar')) return 'appHotstar';
+  return 'appGeneric';
+}
+
+/* ── watch something ──────────────────────────────────────────────────────
+ * The block that leads the panel: a link, a Play key that does the whole
+ * errand, and a tile per app somebody has verified opens.
+ *
+ * It is drawn from the media player's own record, so a house with no player
+ * declared simply never sees it. */
+function drawWatchHalf() {
+  const block = el('#watchblock');
+  const d = mediaDev();
+  /* Only where there is a player to open a link on. A projector and a receiver
+     can be switched on, but nothing on this pair can play a URL. */
+  block.hidden = !d;
+  if (!d) return;
+
+  const usable = !!(d.media_paired && d.media_online);
+  el('#watchlink').disabled = !usable;
+  el('#watchplay').disabled = !usable;
+
+  const host = el('#watchapps');
+  const apps = d.media_apps || [];
+  /* With nothing to sit beside, the field takes the whole band rather than
+     leaving a hole on a desktop where the tiles would be. */
+  block.classList.toggle('noapps', apps.length === 0);
+  const want = apps.map((a) => a.name + '|' + a.link).join(',');
+  if (host.dataset.list !== want) {
+    host.dataset.list = want;
+    host.innerHTML = '';
+    for (const a of apps) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tvkey wide appkey';
+      /* Mark over the name, the same arrangement the television's app row uses
+         — a brand mark is only recognisable to somebody who already knows the
+         service, so the word carries the ones that are not.
+
+         Real art where the box has it, a drawn glyph where it does not. The
+         server only sets the icon field when the file is really there, so this
+         cannot draw a broken image; onerror still swaps the glyph back in,
+         because a file can go missing between the snapshot and the request. */
+      if (a.icon) {
+        const img = document.createElement('img');
+        img.className = 'appart';
+        img.src = a.icon;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.onerror = () => {
+          img.remove();
+          b.insertAdjacentHTML('afterbegin', icon(appMark(a)));
+        };
+        b.appendChild(img);
+      } else {
+        b.dataset.ico = appMark(a);
+      }
+      const label = document.createElement('span');
+      label.className = 'appname';
+      label.textContent = a.name;
+      b.appendChild(label);
+      b.title = a.name + ' \u2014 ' + a.link;
+      b.disabled = !usable;
+      b.onclick = () => playLink(a.link, a.name);
+      host.appendChild(b);
+    }
+    /* paintIcons writes innerHTML, which would eat the label and the art, so a
+       drawn mark is put in front by hand rather than through that helper. Only
+       the tiles that have no real icon carry data-ico at all. */
+    for (const b of host.querySelectorAll('.appkey[data-ico]')) {
+      b.insertAdjacentHTML('afterbegin', icon(b.dataset.ico));
+      delete b.dataset.ico;
+    }
+  } else {
+    for (const b of host.querySelectorAll('button')) b.disabled = !usable;
+  }
+  /* Marked while an app is the one in the foreground, so the row doubles as a
+     reading of where the box actually is — the same job the receiver's source
+     chips do. Matched on the app's own name against what the box reports,
+     which is the only thing the two have in common: a deep link carries no
+     package name. */
+  const now = (d.media_app_name || '').toLowerCase();
+  for (const b of host.querySelectorAll('button')) {
+    const mine = !!now && b.textContent.toLowerCase() === now;
+    b.classList.toggle('on', mine);
+    b.setAttribute('aria-pressed', String(mine));
+  }
+}
+
+/* One key, three machines. The reply reports each of them separately and the
+   note keeps them apart, because two of the three answer for themselves and the
+   projector cannot — a single line saying "playing" would quietly promise
+   something about the one machine that can never confirm it. */
+async function playLink(link, what) {
+  const d = mediaDev();
+  if (!d || !d.cinema) return;
+  const note_ = el('#watchnote');
+  const btn = el('#watchplay');
+  btn.disabled = true;
+  note_.hidden = false;
+  note_.textContent = 'Starting ' + (what || 'that link') + '\u2026';
+  try {
+    const r = await fetch('/api/cinema/play', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: d.cinema.id, link }),
+    }).then((x) => x.json());
+    if (!r.ok) {
+      note_.textContent = r.error || 'That did not play';
+      note(r.error || 'That did not play');
+    } else {
+      /* Built from nodes rather than a string of HTML: these lines carry an
+         app name out of config and an error message off the wire, and there is
+         no escaping helper in this page to make that safe. textContent needs
+         none. */
+      note_.textContent = '';
+      const parts = [['Player', r.player], ['Sound', r.sound], ['Screen', r.screen]];
+      parts.filter((x) => x[1]).forEach((x, i) => {
+        if (i) note_.appendChild(document.createTextNode(' \u00b7 '));
+        const b = document.createElement('b');
+        b.textContent = x[0];
+        note_.appendChild(b);
+        note_.appendChild(document.createTextNode(' ' + x[1]));
+      });
+      note(r.spoken);
+    }
+    tick_haptic();
+  } catch (e) {
+    note_.textContent = 'That did not play: ' + e.message;
+  }
+  btn.disabled = false;
+  drawCinema();
+}
+
+el('#watchplay').onclick = () => {
+  const field = el('#watchlink');
+  const link = field.value.trim();
+  if (!link) return note('Paste a link first');
+  playLink(link, 'that link');
+  /* Deliberately not cleared, the same choice the command bar makes: pressing
+     Play again is how somebody retries after switching the projector on by
+     hand, and a field that empties itself makes that a re-paste. */
+};
+el('#watchlink').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); el('#watchplay').click(); }
+});
+
+/* The media player's half. Like the receiver and unlike the projector, every
+   reading here is a reading: the box pushes its power, its volume and the app
+   in the foreground, whoever caused the change. */
+function drawMediaHalf() {
+  const block = el('#mediablock');
+  const d = mediaDev();
+  block.hidden = !d;
+  if (!d) return;
+
+  /* Never paired, or paired and unreachable, or live — three different states
+     and only the first one has an action attached to it. */
+  el('#mediapair').hidden = !!d.media_paired;
+  const usable = !!(d.media_paired && d.media_online);
+  for (const b of block.querySelectorAll('[data-media]')) b.disabled = !usable;
+
+  /* What it is showing, on the legend line — the same treatment the sound mode
+     gets, and for the same reason: it is the answer to the heading's own
+     implied question. */
+  const now = !d.media_paired ? 'not paired yet'
+    : !d.media_online ? 'not answering'
+    : !d.status ? 'asleep'
+    : (d.media_app_name || 'on');
+  el('#medianow').textContent = now;
+
+  /* Only the keys this box actually carries, the same rule the projector's
+     panel follows — another install's player may be a shorter remote, and a
+     key that sends a code the box does not know is a button that silently does
+     nothing. */
+  const has = new Set(d.media_keys || []);
+  for (const b of block.querySelectorAll('[data-media]')) {
+    if (has.size) b.hidden = !has.has(b.dataset.media);
+  }
+  /* A row whose every key has gone goes with them, or the panel grows an empty
+     band — the same reservation trap as a tile's foot. */
+  for (const row of block.querySelectorAll('.tvrow, .tvpad')) {
+    const keys = [...row.querySelectorAll('[data-media]')];
+    if (!keys.length) continue;
+    row.hidden = keys.every((b) => b.hidden);
+  }
+  el('#mediapair').hidden = !!d.media_paired;
+}
+
+/* One key, or a run of them. The box answers, so the reply is what it reported
+   and the board is corrected from that rather than from what was asked. */
+async function mediaSend(patch) {
+  const d = mediaDev();
+  if (!d) return;
+  try {
+    const r = await fetch('/api/media/' + encodeURIComponent(d.record_id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then((x) => x.json());
+    if (!r.ok) return note(r.error || 'The media player did not take that');
+    d.status = r.on;
+    d.level = r.on ? 100 : 0;
+    d.media_online = r.online;
+    d.media_app = r.app;
+    d.media_app_name = r.app_name;
+    d.media_volume = r.volume;
+    d.media_muted = r.muted;
+    paint(d);
+    drawCinema();
+    if (d.cinema) paintCinema(d.cinema.id);
+    /* Silent for a navigation key. A toast per press would bury the room in
+       them, and the legend already says what the box moved to — which is the
+       whole point of it being a reading. Launching an app says so, because
+       that is the one press with a destination worth naming. */
+    if (patch.app != null) note(r.spoken);
+    tick_haptic();
+  } catch (e) {
+    note('The media player did not take that: ' + e.message);
+  }
+}
+
+for (const b of document.querySelectorAll('#prjscrim [data-media]')) {
+  b.onclick = () => mediaSend({ key: b.dataset.media });
+}
+
+/* Pairing, which is a person: the box puts a six-character code on its own
+   screen and somebody reads it back. Two calls with the socket held open in
+   between, because the code dies with the connection. */
+el('#mediapairstart').onclick = async () => {
+  const d = mediaDev();
+  if (!d) return;
+  const btn = el('#mediapairstart');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/media/' + encodeURIComponent(d.record_id) + '/pair', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then((x) => x.json());
+    if (!r.ok) { btn.disabled = false; return note(r.error || 'Pairing did not start'); }
+    /* A prompt rather than a field on the panel: this happens once in the life
+       of a box, and a permanent input for it would sit there for ever asking a
+       question nobody has. */
+    const code = window.prompt('A six-character code is on the media player screen. Type it here:');
+    if (!code) { btn.disabled = false; return; }
+    const done = await fetch('/api/media/' + encodeURIComponent(d.record_id) + '/pair', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }).then((x) => x.json());
+    note(done.ok ? done.spoken : (done.error || 'That code was not accepted'));
+  } catch (e) {
+    note('Pairing did not finish: ' + e.message);
+  }
+  btn.disabled = false;
+};
 
 function drawPrjHalf() {
   const d = prjDev();
@@ -17066,15 +18768,12 @@ function panelSentence() {
       + (a.avr_muted ? ', muted' : '')
     : '';
 
-  let big;
-  if (d && a) {
-    big = 'The receiver <b>' + soundWord + '</b>' + playing
-      + '; the hub last sent <b>' + (d.status ? 'on' : 'off') + '</b> to the projector.';
-  } else if (a) {
-    big = 'The receiver <b>' + soundWord + '</b>' + playing + '.';
-  } else {
-    big = 'The hub last sent <b>' + (d && d.status ? 'on' : 'off') + '</b>.';
-  }
+  /* The stage above states all of that now — the receiver's power, its source
+     and volume, and what the hub last sent the projector — in the biggest type
+     on the panel. Saying it again here in prose was the same fact twice at two
+     sizes, which is exactly what made these panels feel wordy and flat. What is
+     left is the half the stage cannot carry: what a reading here is worth. */
+  const big = '';
 
   let note;
   if (d && a) {
@@ -17090,7 +18789,7 @@ function panelSentence() {
     note = 'Infrared is one-way, so that is what was asked for rather than what '
       + 'the projector is doing. Anything done with its own remote is invisible here.';
   }
-  return big + '<small>' + note + '</small>';
+  return '<small>' + note + '</small>';
 }
 
 /* One change on the receiver. Unlike the projector this is confirmed, so the
@@ -17111,11 +18810,18 @@ async function avrSend(patch) {
     a.avr_muted = r.muted;
     a.avr_input = r.input;
     a.avr_mode = r.mode;
+    a.avr_mode_label = r.mode_label;
     a.avr_online = r.online;
     paint(a);
     drawCinema();
     // Silent for a volume nudge: a toast per step would bury the room in them.
     if (patch.input != null || patch.mute != null || patch.on != null) note(r.spoken);
+    /* A mode always says something, and it has to: the receiver answers nothing
+       at all to a mode it cannot use with the signal it has, so a silent press
+       is the normal case rather than a fault. The toast names what the unit
+       reports it is in, which is true whether or not it moved — and when it did
+       not move, seeing the old mode named back is the whole message. */
+    else if (patch.mode != null) note(r.spoken);
     tick_haptic();
   } catch (e) {
     note('The receiver did not take that: ' + e.message);
@@ -17211,7 +18917,12 @@ for (const b of document.querySelectorAll('#prjscrim [data-avr]')) {
 function drawTv() {
   const d = tvDev();
   if (!d) return;
-  el('#tvsay').innerHTML = tvSentence(d);
+  drawTvStage(el('#tvscrim .sheet'));
+  /* The stage says what the set is doing, in the biggest type on the panel, and
+     a television answers for itself — there is no hedge to add. So the sentence
+     is dropped here rather than repeating the same fact a size smaller. The
+     cinema keeps its own, because the projector genuinely cannot be asked. */
+  el('#tvsay').hidden = true;
   el('#tvpower').textContent = d.status ? 'Switch it off' : 'Switch it on';
 
   const mute = el('#tvmute');
@@ -17259,7 +18970,19 @@ function drawTv() {
          as long as the page stayed open. */
       let tries = 0;
       img.onerror = () => {
-        if (++tries > 3) { img.classList.add('gone'); return; }
+        if (++tries > 3) {
+          img.classList.add('gone');
+          /* Its initial, in the same box the picture would have filled. The
+             chip keeps its shape and its rhythm with the ones that did load,
+             instead of collapsing into a label floating in space. */
+          if (!b.querySelector('.fallback')) {
+            const mark = document.createElement('span');
+            mark.className = 'fallback';
+            mark.textContent = (appLabel(a.title).trim()[0] || '?').toUpperCase();
+            b.insertBefore(mark, img);
+          }
+          return;
+        }
         setTimeout(() => { img.src = img.src.split('#')[0] + '#' + tries; }, tries * 700);
       };
       const cap = document.createElement('span');
