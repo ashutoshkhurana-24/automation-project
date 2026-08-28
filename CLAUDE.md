@@ -211,6 +211,68 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+### HOME THEATRE's air conditioner is a panel, and it answers (2026-08-28)
+
+**The claim in this file that record 496 "really is just a switch" was wrong, and
+it cost that unit every control it has.** `device_type: RL` was read as "a plain
+relay"; the hub dispatches `RL` + `AC` to `ac_panel_opr.pannel_ac_control`, and
+that function packs a temperature, a mode and a fan speed **out of the record's
+own fields** into every frame it sends:
+
+```python
+temp      = struct.pack('B', int(param['ac_temp']))
+ac_mode   = mode_reverse(str(param['mode']))
+fan_speed = speed_reverse(str(param['fspeed']))
+operation = AC_PANEL_CONTROL + deviceId + ac_no + on_or_off + temp + mode_set + ...
+```
+
+So the two air conditioners are opposites, and the record shapes say so plainly:
+an infrared one carries a **codebook** (`on: 11`, `cool: 12`, `high: 35`), the
+panel carries **state** (`ac_temp: 25`, `mode: C`, `fspeed: H`, `swing`,
+`rm_temp`).
+
+**It reports back, which makes it the only air conditioner here whose reading is a
+reading.** `device_operations.py` catches the panel's own `e0ef` / `e0ed` frames
+and files `device_status`, `ac_temp`, `rm_temp`, `mode`, `swing` and `fspeed`.
+Proven live: 25 &rarr; 24 read back as 24, fan high &rarr; medium read back as
+medium, both restored in one send, with the hub logging a panel status frame after
+each.
+
+**One send does everything, which is the whole difference from infrared.** The IR
+road spaces four commands `SCENE_SETTLE_MS` apart because each is its own remote
+press; `acPanelSet()` writes the fields onto the record and sends once, because
+the hub reads all of them off it. The fields are written back onto our own copy
+too &mdash; the next command is built from that record, so leaving them off would
+re-assert the old setpoint.
+
+**A consequence nobody knew: every on/off ever sent to this unit has also been
+asserting 25&deg;C, Cool and High**, because those are what the record held. Not
+caused by this change; true since the dashboard was built.
+
+Vocabularies come from the hub's own `mode_reverse`/`speed_reverse` tables, and
+they are **not** the infrared ones &mdash; there is a fan mode the remotes have not,
+and the speeds are lettered the other way round:
+
+| | |
+|---|---|
+| mode | `C` cool, `H` heat, `F` fan, `A` auto, `D` dry |
+| fan | `A` auto, `H` high, `M` medium, `L` low |
+
+**Swing is refused rather than quietly ignored**: `set_panel_ac_status` returns a
+constant empty string for it and `pannel_ac_control` never reads it.
+
+**`rm_temp` is a room temperature** decoded at byte 31 &mdash; the only such sensor
+anywhere in this house. It reads **0** on this unit, so it is projected as null and
+the card draws it only if it ever comes alive. Whether a sensor is fitted is
+unknown; do not report 0&deg; as a reading.
+
+**Two things left deliberately.** `/do` still carries only on and off for it, so
+the reference calls it `air conditioner &middot; panel` and says *"temperature and
+mode on its card"* &mdash; promising verbs an address has not got is how a reference
+starts lying. And the 2px clearance between a lit AC's reading and its drawer is
+**pre-existing on both kinds** (measured identical on DINING's infrared unit): the
+`.climate.on` reservation grows 46px while the auto-off row adds about 54.
+
 ### The relay air conditioner had a card and nothing on it (2026-08-28)
 
 *"why does the home theatre ac does not have controls?"* HOME THEATRE 496 is the
@@ -254,9 +316,11 @@ it the same way.
 **`/api/ac` no longer refuses it outright.** Power and an auto-off mean the same
 thing whichever way a unit is wired. Mode, fan speed, swing and temperature are
 the infrared remote's own keys, and it names which of them was asked for rather
-than refusing the whole request. `climateDrawer` draws only the auto-off row for
-a relay, because three controls that answer with an error is the confident lie
-this file is written against.
+than refusing the whole request. `climateDrawer` drew only the auto-off row for a
+relay &mdash; **which was itself wrong, and is corrected in the section above**: the
+unit is an AC panel with a real temperature, mode and fan speed. What survives is
+the split, and the rule that a control which answers with an error must not be
+drawn.
 
 **And the reply stops hedging where it does not have to.** An infrared timer says
 *"the hub will send off in 45 minutes"*, because off is only what was transmitted;

@@ -308,6 +308,7 @@ function deviceList() {
        air conditioner that can be read back. */
     is_ac: (record.app_type || '') === 'AC',
     is_ac_ir: isAcRecord(record),
+    is_ac_panel: isAcPanelRecord(record),
     /* A remote, not a switch. One-way like the air conditioners, so nothing it
        reports is a reading — and the keys are listed rather than assumed,
        because another install's projector may not carry all twenty-two. */
@@ -316,6 +317,16 @@ function deviceList() {
     // Which single card this circuit is drawn as part of, if any.
     cinema: cinemaOf(record.record_id),
     ac_temp: Number(record.ac_temp) || null,
+    /* A panel's own reading of itself, in this project's words rather than the
+       hub's letters. Only for a panel: an infrared record carries no such
+       fields, and the browser fills its own defaults in for those. */
+    ac_mode: isAcPanelRecord(record) ? (AC_PANEL_MODE_OF[record.mode] || null) : null,
+    ac_fan: isAcPanelRecord(record) ? (AC_PANEL_FAN_OF[record.fspeed] || null) : null,
+    /* The room temperature the panel measures, and the only such sensor anywhere
+       in this house. It reads 0 on this unit — either nothing is fitted or it is
+       not wired — so it is passed through as null rather than shown as a very
+       cold room, and the card draws it only if it ever comes alive. */
+    ac_room_temp: isAcPanelRecord(record) ? (Number(record.rm_temp) || null) : null,
     channel_open: String(record.channel_open || ''),
     channel_close: String(record.channel_close || ''),
     // A dimmed light reports its percentage here, so on/off is "above zero".
@@ -523,9 +534,7 @@ const itemLabel = (it) => it.tv
    the browser is sent. */
 const isCurtainRecord = (rec) => !!rec && (rec.app_type || '') === 'C';
 const itemIsCurtain = (it) => !!it.entry && isCurtainRecord(it.entry.record);
-/* An air conditioner that is infrared, which is six of the seven. HOME THEATRE
-   496 is device_type RL — a real relay — so it is a plain switch and stays on
-   the batch path, which is correct for it.
+/* An air conditioner that is infrared, which is six of the seven.
    The record-level test is the one every bulk sender needs, since a batch
    carries records rather than schedule items; itemIsAc is the same question
    asked of a schedule's item. */
@@ -533,6 +542,25 @@ const isAcRecord = (rec) => !!rec
   && (rec.app_type || '') === 'AC'
   && rec.device_type === 'IR';
 const itemIsAc = (it) => !!it.entry && isAcRecord(it.entry.record);
+
+/* The seventh: HOME THEATRE 496, an **AC panel** on the bus rather than a remote
+   blasted at a box. It was written up here as "a plain relay, so it is just a
+   switch", which was wrong and cost this unit its controls — the hub dispatches
+   RL + AC to ac_panel_opr.pannel_ac_control, which packs a temperature, a mode
+   and a fan speed **out of the record's own fields** into every packet it sends.
+
+   So this one is the opposite of infrared in every way that matters. Its
+   setpoint, mode and fan speed are real state rather than a codebook, one send
+   sets all of them at once (the hub reads them off the record), and the panel
+   reports its own status back on the bus — device_operations.py catches the
+   e0ef/e0ed frames and files ac_temp, rm_temp, mode, swing and fspeed. It is the
+   only air conditioner in this house whose reading is a reading.
+
+   RLOLD is accepted because the hub's own status receiver accepts it; no unit
+   here is one. */
+const isAcPanelRecord = (rec) => !!rec
+  && (rec.app_type || '') === 'AC'
+  && (rec.device_type === 'RL' || rec.device_type === 'RLOLD');
 
 /* Fan and light, written once. Three callers have to agree about whether a
    circuit is a fan — circuitsOf() for /do/<room>/lights and the board's Lights
@@ -1766,7 +1794,9 @@ class TvLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'TV', device_type: 'SSAP', device_id: this.mac, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      channel_open: '', channel_close: '',
       is_tv: true, tv_volume: this.volume, tv_muted: this.muted,
       /* Nothing is playing on a set that is off. A television can hold its SSAP
          socket open with the panel dark — the same screen-off standby that
@@ -2382,7 +2412,9 @@ class AvrLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'AVR', device_type: 'DIP', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      channel_open: '', channel_close: '',
       is_tv: false, is_projector: false,
       is_avr: true,
       avr_online: this.online,
@@ -2572,7 +2604,9 @@ class MediaLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'MP', device_type: 'ATV', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      channel_open: '', channel_close: '',
       is_tv: false, is_projector: false, is_avr: false,
       is_media: true,
       media_online: this.online,
@@ -3853,6 +3887,42 @@ const AC_FAN = { auto: 'a', low: 'l', medium: 'm', high: 'h' };
 const AC_SWING = { auto: 'a', '30': '3', '45': '4', '60': '6' };
 const AC_MODES = ['cool', 'heat', 'dry', 'auto'];
 
+/* The panel's vocabulary, and it is not the infrared one — read off the hub's
+   own mode_reverse/speed_reverse tables in ac_panel_opr.py rather than guessed.
+   It has a fan mode the remotes do not, and its speeds are lettered the other
+   way round from AC_FAN above. The words stay the API's, so a caller says
+   "cool" to either wiring and this is the only place that knows the difference. */
+const AC_PANEL_MODES = { cool: 'C', heat: 'H', fan: 'F', auto: 'A', dry: 'D' };
+const AC_PANEL_FAN = { auto: 'A', high: 'H', medium: 'M', low: 'L' };
+const AC_PANEL_MODE_OF = Object.fromEntries(
+  Object.entries(AC_PANEL_MODES).map(([word, code]) => [code, word]));
+const AC_PANEL_FAN_OF = Object.fromEntries(
+  Object.entries(AC_PANEL_FAN).map(([word, code]) => [code, word]));
+/* A byte on the wire, so nothing overflows. 16-30 is the ordinary range for
+   these panels; only the middle of it has been exercised on this unit, and the
+   panel is free to clamp what it does not like. */
+const AC_PANEL_TEMP = { min: 16, max: 30 };
+
+/* Everything the panel takes, in one send — which is the whole difference from
+   the infrared road. pannel_ac_control reads device_status, ac_temp, mode and
+   fspeed off the record it is handed and packs all four into a single frame, so
+   there is nothing to space out and no SCENE_SETTLE_MS to wait: a temperature,
+   a mode and a fan speed asked for together arrive together.
+
+   The fields are written back onto our own record because the next command will
+   be built from it — leave them off and the following send would re-assert the
+   old setpoint. */
+async function acPanelSet(entry, want) {
+  const fields = {};
+  if (want.on != null) fields.device_status = String(!!want.on);
+  if (want.temp != null) fields.ac_temp = String(want.temp);
+  if (want.mode != null) fields.mode = AC_PANEL_MODES[want.mode];
+  if (want.fan != null) fields.fspeed = AC_PANEL_FAN[want.fan];
+  if (!Object.keys(fields).length) return;
+  await sendToHub(entry.record.record_id, fields);
+  Object.assign(entry.record, fields);
+}
+
 function acCommand(record, verb, arg) {
   // IR records carry no channel_id, and the hub's own app renders that missing
   // value as the literal "null" — so "on 194.null", not "on 194.undefined".
@@ -4567,25 +4637,49 @@ app.post('/api/ac', async (req, res) => {
   if (entry.record.app_type !== 'AC') {
     return res.status(400).json({ ok: false, error: `${entry.record.device_name.trim()} is not an air conditioner` });
   }
-  /* Power and an auto-off mean the same thing whichever way a unit is wired, and
-     acPower picks the road, so neither is refused here any more. Mode, fan speed,
-     swing and temperature are the infrared remote's own keys: HOME THEATRE 496 is
-     a relay and has none of them, and it says which rather than refusing the
-     whole request, since the caller may only have wanted the power. */
   const ir = isAcRecord(entry.record);
-  if (!ir) {
-    const remote = [['mode', mode], ['fan', fan], ['swing', swing], ['temperature', temp]]
-      .filter(([, v]) => v != null).map(([k]) => k);
-    if (remote.length) {
-      return res.status(400).json({ ok: false,
-        error: 'This one is wired to a relay, so it only switches on and off. It has no '
-          + remote.join(', ') });
-    }
-  }
+  const panel = isAcPanelRecord(entry.record);
 
   const sent = [];
+
+  /* A panel takes everything in one frame, so it is done first and whole rather
+     than as four spaced sends. Swing is the one thing it has not got: the hub's
+     own status decoder returns a constant empty string for it and
+     pannel_ac_control never reads it, so asking is refused rather than quietly
+     doing nothing. */
+  if (panel) {
+    if (swing != null) return res.status(400).json({ ok: false, error: 'This one has no swing control' });
+    if (mode != null && !AC_PANEL_MODES[mode]) {
+      return res.status(400).json({ ok: false,
+        error: 'mode must be one of ' + Object.keys(AC_PANEL_MODES).join(', ') });
+    }
+    if (fan != null && !AC_PANEL_FAN[fan]) {
+      return res.status(400).json({ ok: false,
+        error: 'fan must be one of ' + Object.keys(AC_PANEL_FAN).join(', ') });
+    }
+    let want = null;
+    if (temp != null) {
+      want = Number(temp);
+      if (!Number.isInteger(want) || want < AC_PANEL_TEMP.min || want > AC_PANEL_TEMP.max) {
+        return res.status(400).json({ ok: false,
+          error: 'temp must be a whole number between ' + AC_PANEL_TEMP.min
+            + ' and ' + AC_PANEL_TEMP.max });
+      }
+    }
+    const on = power == null ? null : (power === true || power === 'true' || power === 'on');
+    try {
+      await acPanelSet(entry, { on, temp: want, mode, fan });
+    } catch (err) {
+      console.error('ac panel ' + recordId + ' failed:', err.message);
+      return res.status(502).json({ ok: false, error: err.message });
+    }
+    if (on != null) { sent.push(on ? 'on' : 'off'); if (!on && offAfter == null) clearAcTimer(recordId); }
+    if (want != null) sent.push(want + '°');
+    if (mode != null) sent.push(mode);
+    if (fan != null) sent.push('fan ' + fan);
+  }
   try {
-    if (power != null) {
+    if (power != null && !panel) {
       const on = power === true || power === 'true' || power === 'on';
       await acPower(entry, on);
       sent.push(on ? 'on' : 'off');
@@ -4597,7 +4691,7 @@ app.post('/api/ac', async (req, res) => {
          breath, or "off, then on again in a moment" would drop the new one. */
       if (!on && offAfter == null) clearAcTimer(recordId);
     }
-    if (mode != null) {
+    if (mode != null && !panel) {
       if (!AC_MODES.includes(mode)) {
         return res.status(400).json({ ok: false, error: 'mode must be one of ' + AC_MODES.join(', ') });
       }
@@ -4605,13 +4699,13 @@ app.post('/api/ac', async (req, res) => {
       await sendToHub(recordId, {}, acCommand(entry.record, mode));
       sent.push(mode);
     }
-    if (fan != null) {
+    if (fan != null && !panel) {
       if (!AC_FAN[fan]) return res.status(400).json({ ok: false, error: 'fan must be auto, low, medium or high' });
       await sleep(SCENE_SETTLE_MS);
       await sendToHub(recordId, {}, acCommand(entry.record, 'fspeed', AC_FAN[fan]));
       sent.push('fan ' + fan);
     }
-    if (swing != null) {
+    if (swing != null && !panel) {
       if (!AC_SWING[String(swing)]) {
         return res.status(400).json({ ok: false, error: 'swing must be auto, 30, 45 or 60' });
       }
@@ -4619,7 +4713,7 @@ app.post('/api/ac', async (req, res) => {
       await sendToHub(recordId, {}, acCommand(entry.record, 'swing', AC_SWING[String(swing)]));
       sent.push('swing ' + swing);
     }
-    if (temp != null) {
+    if (temp != null && !panel) {
       const t = Number(temp);
       if (!Number.isFinite(t) || t < 19 || t > 26) {
         return res.status(400).json({ ok: false, error: 'temp must be between 19 and 26' });
@@ -5662,6 +5756,7 @@ function circuitKind(records) {
   if (curtains) return curtains === records.length ? 'curtain' : 'curtain + others';
   const kinds = new Set(records.map((r) =>
     isAcRecord(r) ? 'air conditioner · infrared'
+    : isAcPanelRecord(r) ? 'air conditioner · panel'
     : isPrjRecord(r) ? 'projector · infrared'
     /* The hub's own screen record. The board hides it wherever a real
        television is driven directly (shadowedByTv), but /do still addresses it
@@ -6120,6 +6215,11 @@ const GUIDE_KINDS = {
   switch: 'On / off only',
   curtain: 'Open, close, or stop halfway',
   'air conditioner · infrared': 'Infrared — on / off only',
+  /* On and off is all /do carries for it, and saying so is the point: the
+     temperature, mode and fan speed are real and are on the card, but promising
+     them from an address that has no verb for them is how a reference starts
+     lying. */
+  'air conditioner · panel': 'On / off here — temperature and mode on its card',
   'projector · infrared': 'Infrared — on / off only',
   mixed: 'Everything in one go',
 };
@@ -13675,16 +13775,6 @@ const HTML = /* html */ `<!doctype html>
      drawer gap measures 46px. */
   .tile.climate.on { height: calc(var(--tile-h) + 152px); }
   .tile.climate.on .tile-body { padding-bottom: 210px; }
-  /* The relay unit has only the fourth row, and only while it runs. Reserving
-     three rows of controls it does not have is what left HOME THEATRE's air
-     conditioner a tall card with an empty foot and nothing to press. */
-  .tile.climate.relayac { height: var(--tile-h); }
-  .tile.climate.relayac .tile-body { padding-bottom: 18px; }
-  /* Measured at 1280 and at 375, where the drawer sits 72px off the foot either
-     way. Reserving the 46px the card grew by is the trap this file records for
-     the tunable tiles: it left the reading sitting on the AUTO OFF caption. */
-  .tile.climate.relayac.on { height: calc(var(--tile-h) + 54px); }
-  .tile.climate.relayac.on .tile-body { padding-bottom: 78px; }
   .autooff[hidden] { display: none; }
   /* A select rather than the chip rows above it, because half-hour steps to
      seven hours is fourteen choices. Styled off --field like the sheets' own
@@ -15624,10 +15714,6 @@ const HTML = /* html */ `<!doctype html>
        tile — height here buys nothing and costs a whole row per screen */
     .tile { --tile-h: 132px; }
     .tile.climate { height: calc(var(--tile-h) + 112px); }
-    .tile.climate.relayac { height: var(--tile-h); }
-    .tile.climate.relayac.on { height: calc(var(--tile-h) + 54px); }
-    .tile.climate.relayac .tile-body { padding-bottom: 13px; }
-    .tile.climate.relayac.on .tile-body { padding-bottom: 78px; }
     .key { top: 8px; right: 8px; width: 38px; height: 38px; }
     .key i { width: 15px; height: 15px; }
     .tile-body { padding: 13px; }
@@ -16484,9 +16570,7 @@ const KIND_ORDER = ['light', 'fan', 'curtain', 'climate', 'screen', 'sound'];
 /* A wide screen lays the board out in four columns. A category asks for the
    columns its circuits need and no more, so the small ones pack together. */
 const BOARD_COLS = 4;
-// Width follows the controls, so the wide card is the infrared one: a relay air
-// conditioner carries a single dropdown and is a plain square.
-const tileUnits = (d) => (d.is_tunable || d.is_ac_ir || d.is_curtain) ? 2 : 1;
+const tileUnits = (d) => (d.is_tunable || d.is_ac || d.is_curtain) ? 2 : 1;
 
 const kindOf = (d) =>
   // What the install declared, where it declared anything.
@@ -16771,10 +16855,25 @@ function applySnapshot(snap) {
     // This snapshot was taken before we last commanded this circuit, so it
     // cannot know about that command. Wait for a read that does.
     if ((commandedAt.get(d.record_id) || 0) > (snap.synced_at || 0)) continue;
-    if (now.status === d.status && now.level === d.level && now.tune === d.tune) continue;
+    /* A panel reports its own setpoint, mode, fan speed and room temperature, so
+       those are compared and copied like status — the rule this file already
+       records for televisions and receivers: anything in the projection beyond
+       status, level and tune has to be merged here explicitly or it silently
+       never updates. It keeps the settle guard above, unlike a television,
+       because these arrive in the hub's own site_config and are exactly as old
+       as the rest of it. */
+    if (now.status === d.status && now.level === d.level && now.tune === d.tune
+      && now.ac_temp === d.ac_temp && now.ac_mode === d.ac_mode
+      && now.ac_fan === d.ac_fan && now.ac_room_temp === d.ac_room_temp) continue;
     d.status = now.status;            // someone used a wall switch or the phone app
     d.level = now.level;
     d.tune = now.tune;
+    if (d.is_ac_panel) {
+      d.ac_temp = now.ac_temp;
+      d.ac_mode = now.ac_mode;
+      d.ac_fan = now.ac_fan;
+      d.ac_room_temp = now.ac_room_temp;
+    }
     paint(d);
     moved = true;
   }
@@ -17636,7 +17735,7 @@ function circuitTile(d, compact) {
   const tile = document.createElement('div');
   // Width follows what the circuit can actually do: two sliders need room, a
   // plain switch does not.
-  const roomy = d.is_tunable || d.is_ac_ir || d.is_curtain;
+  const roomy = d.is_tunable || d.is_ac || d.is_curtain;
   // A television carries one strip, so it wants the same room a dimmable lamp
   // does — the layout keys off .dims for that, and volume is close enough in
   // shape to brightness that reusing it beats a parallel set of rules.
@@ -17646,7 +17745,6 @@ function circuitTile(d, compact) {
   // until something happened to redraw it.
   tile.className = 'tile enter ' + kind + (strips ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
     + (roomy ? ' wide' : '') + (strips && !d.is_tunable ? ' tall' : '')
-    + (d.is_ac && !d.is_ac_ir ? ' relayac' : '')
     + (compact ? ' cobmember' : '');
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
@@ -18129,6 +18227,19 @@ function stateWord(d) {
        read from across the room — and on the board, without opening the card. */
     const t = acTimerFor(d.record_id);
     return 'HUB SENT ON' + (t ? ' · OFF IN ' + leftWord(t.seconds_left) : '');
+  }
+  /* A panel says its setpoint plainly, with no hedge in front of it, because it
+     reports its own state back on the bus — the one air conditioner in the house
+     that can be asked. The room temperature joins it if the sensor ever answers;
+     on this unit it reads zero, so it is left out rather than invented. */
+  if (d.is_ac_panel) {
+    if (!d.status) return 'OFF';
+    const t = acTimerFor(d.record_id);
+    return 'ON'
+      + (d.ac_temp ? ' · ' + d.ac_temp + '°C' : '')
+      + (d.ac_mode ? ' · ' + d.ac_mode.toUpperCase() : '')
+      + (d.ac_room_temp ? ' · ROOM ' + d.ac_room_temp + '°' : '')
+      + (t ? ' · OFF IN ' + leftWord(t.seconds_left) : '');
   }
   /* The projector is infrared too, and even weaker than an air conditioner: the
      vendor's own record for it carries no status field at all, so the only
@@ -19662,15 +19773,18 @@ function climateDrawer(d) {
   const wrap = document.createElement('div');
   wrap.className = 'drawer';
 
-  /* A relay air conditioner has a switch and nothing else — no temperature, no
-     mode, no fan speed, and the endpoint refuses all three. Drawing them anyway
-     would put three controls on the card that answer with an error, which is the
-     confident lie this whole file is written against. It keeps the auto-off,
-     because an hour from now means the same thing however a unit is wired. */
-  if (!d.is_ac_ir) {
-    wrap.appendChild(acAutoRow(d));
-    return wrap;
-  }
+  /* Two air conditioners with two vocabularies, taken from what each one is
+     rather than assumed to be the same. A panel has a fan mode the remotes have
+     not, its speeds run high to low, and its range is wider; it also reports all
+     three, so its buttons start on the truth instead of on a default. */
+  const panel = d.is_ac_panel;
+  const modes = panel
+    ? [['cool', 'Cool'], ['heat', 'Heat'], ['fan', 'Fan'], ['auto', 'Auto'], ['dry', 'Dry']]
+    : [['cool', 'Cool'], ['heat', 'Heat'], ['dry', 'Dry'], ['auto', 'Auto']];
+  const fans = panel
+    ? [['auto', 'Auto'], ['high', 'High'], ['medium', 'Med'], ['low', 'Low']]
+    : [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Med'], ['high', 'High']];
+  const range = panel ? { min: 16, max: 30 } : { min: 19, max: 26 };
 
   if (d.ac_mode == null) d.ac_mode = AC_DEFAULTS.mode;
   if (d.ac_fan == null) d.ac_fan = AC_DEFAULTS.fan;
@@ -19683,11 +19797,11 @@ function climateDrawer(d) {
   let temp = d.ac_temp || AC_DEFAULTS.temp;
   const show = () => {
     value.textContent = temp + '°C';
-    down.disabled = temp <= 19;
-    up.disabled = temp >= 26;
+    down.disabled = temp <= range.min;
+    up.disabled = temp >= range.max;
   };
   const nudge = (by) => {
-    temp = Math.max(19, Math.min(26, temp + by));
+    temp = Math.max(range.min, Math.min(range.max, temp + by));
     d.ac_temp = temp;
     show();
     queueAc(d, 'temp', () => temp, [value]);
@@ -19700,8 +19814,8 @@ function climateDrawer(d) {
   wrap.appendChild(degrees);
   // The rows are captioned: nothing else says the second one is fan speed, and
   // "Fan auto" does not fit inside a button this narrow.
-  wrap.appendChild(segRow(d, 'mode', ['cool', 'heat', 'dry', 'auto'], ['Cool', 'Heat', 'Dry', 'Auto'], 'Mode'));
-  wrap.appendChild(segRow(d, 'fan', ['auto', 'low', 'medium', 'high'], ['Auto', 'Low', 'Med', 'High'], 'Fan'));
+  wrap.appendChild(segRow(d, 'mode', modes.map(m => m[0]), modes.map(m => m[1]), 'Mode'));
+  wrap.appendChild(segRow(d, 'fan', fans.map(m => m[0]), fans.map(m => m[1]), 'Fan'));
   wrap.appendChild(acAutoRow(d));
   return wrap;
 }
