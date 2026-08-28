@@ -2304,9 +2304,27 @@ the first command after waking is the one that gets dropped, so the input is
 sent, confirmed against the unit's own report, and sent once more if it did not
 move.
 
-**A cue step for the media player has no on or off.** Its only power control is
-KEYCODE_POWER, a toggle, and a cue firing a toggle does the opposite of what it
-says whenever the box is already awake. A cue asks for a thing to be on screen.
+**A cue step for the media player CAN switch it**, which the first version of
+this refused on the grounds that the box's only control is a toggle. That
+objection does not survive `setPower()`, which compares against the awake state
+the box reports before sending anything — asking for on twice is a no-op. The
+danger was never the toggle; it was firing one blind, and this one is not
+blind. It matters for a film night: switching the receiver to the player's
+input while the box is asleep gives a black screen.
+
+**Movie Night and Game Night are the pair this was built for**, and the useful
+observation is how little separates them. Both put the room dark-ish, run the
+projector and the air conditioner; they differ almost entirely at the receiver:
+
+| | source | sound mode | lamps |
+|---|---|---|---|
+| Movie Night | `MPLAY` (the box, woken) | `MOVIE` | all ten out |
+| Game Night | `GAME` (the PS5) | `GAME` | the four COBs at 20% |
+
+Game Night leaves the COBs low rather than out because a controller and a bowl
+of something need finding, which a film does not. Neither carries a media app:
+the box is woken for a film so somebody can choose, and the PS5 is on its own
+input and never touches it.
 
 **But the panel and the cinema key DO switch it**, because the box reports its
 own awake state — so `MediaLink.setPower()` compares before it sends and the

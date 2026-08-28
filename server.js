@@ -4874,16 +4874,31 @@ async function runAvrStep(step) {
   return { id: a.id, room: a.room, did: did.join(', ') || 'unchanged' };
 }
 
-/* A media player in a cue. There is no on or off here on purpose: the box's
-   only power control is a toggle, and a cue that fires a toggle does the
-   opposite of what it says whenever the box was already awake. What a cue can
-   honestly ask for is a thing to be on screen. */
+/* A media player in a cue.
+ *
+ * It CAN be switched on and off here, which the first version of this refused
+ * on the grounds that the box's only power control is a toggle. That objection
+ * does not survive contact with setPower(), which compares against the awake
+ * state the box reports before it sends anything — so asking for on twice is a
+ * no-op rather than a switch-off. The danger was never the toggle; it was
+ * firing one blind, and this one is not blind.
+ *
+ * It matters for a cue like a film night: switching the receiver to the
+ * player's input while the box is asleep gives a black screen. */
 async function runMediaStep(step) {
   const m = medias.get(step.record_id);
   if (!m) return { id: step.record_id, did: 'no such media player' };
   if (!m.paired) return { id: m.id, room: m.room, did: 'not paired' };
   if (!m.online) return { id: m.id, room: m.room, did: 'not answering' };
-  if (!step.app) return { id: m.id, room: m.room, did: 'nothing asked' };
+
+  const did = [];
+  if (step.on === false) {
+    await m.setPower(false);
+    return { id: m.id, room: m.room, did: 'off' };
+  }
+  const woke = await m.setPower(true);
+  if (woke.changed) did.push('woken');
+  if (!step.app) return { id: m.id, room: m.room, did: did.join(', ') || 'left as it was' };
   const was = (m.session && m.session.app) || '';
   m.launch(step.app);
   const until = Date.now() + 9000;
@@ -4892,8 +4907,8 @@ async function runMediaStep(step) {
     await sleep(200);
   }
   const now = (m.session && m.session.app) || '';
-  return { id: m.id, room: m.room,
-    did: now && now !== was ? 'opened ' + mediaAppName(now) : 'sent, nothing opened' };
+  did.push(now && now !== was ? 'opened ' + mediaAppName(now) : 'sent, nothing opened');
+  return { id: m.id, room: m.room, did: did.join(', ') };
 }
 
 async function runTvStep(step) {
@@ -9335,8 +9350,8 @@ function cleanSteps(raw) {
     if (isMediaStep(step)) {
       if (seen.has(step.record_id)) continue;
       seen.add(step.record_id);
-      const out = { record_id: step.record_id, on: true };
-      if (step.app) out.app = String(step.app).slice(0, 300);
+      const out = { record_id: step.record_id, on: step.on !== false };
+      if (out.on && step.app) out.app = String(step.app).slice(0, 300);
       clean.push(out);
       continue;
     }
@@ -21039,7 +21054,7 @@ function stepControls(st, d) {
     drawTvStep(edit, st, d, lit, (redraw) => { saveSteps(); if (redraw) drawSheet(); });
   }
   if (d && d.is_avr) drawAvrStep(edit, st, d, lit);
-  if (d && d.is_media) drawMediaStep(edit, st, d);
+  if (d && d.is_media) drawMediaStep(edit, st, d, lit);
   return edit;
 }
 
@@ -21119,7 +21134,9 @@ function drawAvrStep(edit, st, d, lit) {
  * One question: what should be on screen. There is no on or off — its only
  * power control is a toggle, and a cue that fires one does the opposite of what
  * it says whenever the box is already awake. */
-function drawMediaStep(edit, st, d) {
+function drawMediaStep(edit, st, d, lit) {
+  // Nothing to open on a box the step is switching off.
+  if (!lit) return;
   const wrap = document.createElement('label');
   wrap.className = 'step-field';
   const cap = document.createElement('span');
