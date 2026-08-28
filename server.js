@@ -299,9 +299,15 @@ function deviceList() {
     // A curtain is two momentary relays, not a switch, and the hub keeps no
     // state for it — device_status stays "false" whatever you send.
     is_curtain: (record.app_type || '') === 'C',
-    // Only the IR units take mode, fan speed and a temperature; the Home
-    // Theatre one is relay-wired and really is just a switch.
-    is_ac: (record.app_type || '') === 'AC' && record.device_type === 'IR',
+    /* Two questions that look like one, and this file has already recorded the
+       cost of conflating them once: **what this is** and **how it is sent to**.
+       is_ac is the identity — it decides the card's shape, its auto-off row and
+       the word the picker prints. is_ac_ir is the wiring, and it is what earns
+       the HUB SENT hedge, the one-way note and the command-string road. Six of
+       the seven units are both; HOME THEATRE 496 is a real relay, so it is an
+       air conditioner that can be read back. */
+    is_ac: (record.app_type || '') === 'AC',
+    is_ac_ir: isAcRecord(record),
     /* A remote, not a switch. One-way like the air conditioners, so nothing it
        reports is a reading — and the keys are listed rather than assumed,
        because another install's projector may not carry all twenty-two. */
@@ -1760,7 +1766,7 @@ class TvLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'TV', device_type: 'SSAP', device_id: this.mac, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
       is_tv: true, tv_volume: this.volume, tv_muted: this.muted,
       /* Nothing is playing on a set that is off. A television can hold its SSAP
          socket open with the panel dark — the same screen-off standby that
@@ -2376,7 +2382,7 @@ class AvrLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'AVR', device_type: 'DIP', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
       is_tv: false, is_projector: false,
       is_avr: true,
       avr_online: this.online,
@@ -2566,7 +2572,7 @@ class MediaLink {
       record_id: this.id, name: this.name, room: roomKey(this.room),
       app_type: 'MP', device_type: 'ATV', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
-      is_ac: false, ac_temp: null, channel_open: '', channel_close: '',
+      is_ac: false, is_ac_ir: false, ac_temp: null, channel_open: '', channel_close: '',
       is_tv: false, is_projector: false, is_avr: false,
       is_media: true,
       media_online: this.online,
@@ -3867,11 +3873,17 @@ function spokenMins(m) {
 
 /* The one way an air conditioner is switched, shared by the endpoint and by a
    timer that has run down — the same reason runSleep is shared by "sleep now"
-   and a sleep timer. An IR unit needs its command string; a bare record is
-   dropped by the hub without a word (see runAcOff). */
+   and a sleep timer.
+
+   It picks the road, so no caller has to. An IR unit needs its command string,
+   and a bare record is dropped by the hub without a word (see runAcOff); HOME
+   THEATRE 496 is a relay, where the command string is what would be wrong and an
+   empty opr_param is exactly a plain switch. Every bulk sender still splits the
+   IR units out ahead of this, so none of them ever hands it a relay — but the
+   endpoint and the auto-off timer do, and both are right to. */
 async function acPower(entry, on) {
   await sendToHub(entry.record.record_id, { device_status: String(on) },
-    acCommand(entry.record, on ? 'on' : 'off'));
+    isAcRecord(entry.record) ? acCommand(entry.record, on ? 'on' : 'off') : undefined);
   entry.record.device_status = String(on);
 }
 
@@ -4555,9 +4567,20 @@ app.post('/api/ac', async (req, res) => {
   if (entry.record.app_type !== 'AC') {
     return res.status(400).json({ ok: false, error: `${entry.record.device_name.trim()} is not an air conditioner` });
   }
-  // The Home Theatre unit is wired to a relay, so it really is a plain switch.
-  if (entry.record.device_type !== 'IR') {
-    return res.status(400).json({ ok: false, error: 'This one is a relay — use /api/toggle' });
+  /* Power and an auto-off mean the same thing whichever way a unit is wired, and
+     acPower picks the road, so neither is refused here any more. Mode, fan speed,
+     swing and temperature are the infrared remote's own keys: HOME THEATRE 496 is
+     a relay and has none of them, and it says which rather than refusing the
+     whole request, since the caller may only have wanted the power. */
+  const ir = isAcRecord(entry.record);
+  if (!ir) {
+    const remote = [['mode', mode], ['fan', fan], ['swing', swing], ['temperature', temp]]
+      .filter(([, v]) => v != null).map(([k]) => k);
+    if (remote.length) {
+      return res.status(400).json({ ok: false,
+        error: 'This one is wired to a relay, so it only switches on and off. It has no '
+          + remote.join(', ') });
+    }
   }
 
   const sent = [];
@@ -4641,8 +4664,14 @@ app.post('/api/ac', async (req, res) => {
     if (!sent.length) return res.status(400).json({ ok: false, error: 'Nothing to change' });
     res.json({
       ok: true, record_id: recordId, sent, timer,
-      // "will send", not "will switch off": there is no feedback channel here.
-      spoken: timer ? 'the hub will send off in ' + spokenMins(Math.round(timer.seconds_left / 60)) : undefined,
+      /* "will send" for an infrared unit, because there is no feedback channel
+         and off is only what was transmitted. The relay one really does switch
+         off, and saying so is the same honesty the hedge is: neither reading is
+         allowed to borrow the other's certainty. */
+      spoken: timer
+        ? (ir ? 'the hub will send off in ' : 'it will switch off in ')
+          + spokenMins(Math.round(timer.seconds_left / 60))
+        : undefined,
     });
   } catch (err) {
     console.error(`ac ${recordId} failed:`, err.message);
@@ -10049,9 +10078,11 @@ async function runAcOff(t) {
   const name = (entry.record.device_name || 'AC').trim();
   try {
     await acPower(entry, false);
-    /* "sent", never "switched off". This is infrared: the hub blasts a code and
-       hears nothing back, so what we know is what was sent. */
-    console.log('ac timer: sent off to ' + name + ' in ' + entry.room);
+    /* "sent", never "switched off", for an infrared unit: the hub blasts a code
+       and hears nothing back, so what we know is what was sent. The relay one is
+       a reading, and gets the plainer word. */
+    console.log('ac timer: ' + (isAcRecord(entry.record) ? 'sent off to ' : 'switched off ')
+      + name + ' in ' + entry.room);
   } catch (err) {
     console.error('ac timer: ' + name + ' would not take it:', err.message);
   }
@@ -13644,6 +13675,16 @@ const HTML = /* html */ `<!doctype html>
      drawer gap measures 46px. */
   .tile.climate.on { height: calc(var(--tile-h) + 152px); }
   .tile.climate.on .tile-body { padding-bottom: 210px; }
+  /* The relay unit has only the fourth row, and only while it runs. Reserving
+     three rows of controls it does not have is what left HOME THEATRE's air
+     conditioner a tall card with an empty foot and nothing to press. */
+  .tile.climate.relayac { height: var(--tile-h); }
+  .tile.climate.relayac .tile-body { padding-bottom: 18px; }
+  /* Measured at 1280 and at 375, where the drawer sits 72px off the foot either
+     way. Reserving the 46px the card grew by is the trap this file records for
+     the tunable tiles: it left the reading sitting on the AUTO OFF caption. */
+  .tile.climate.relayac.on { height: calc(var(--tile-h) + 54px); }
+  .tile.climate.relayac.on .tile-body { padding-bottom: 78px; }
   .autooff[hidden] { display: none; }
   /* A select rather than the chip rows above it, because half-hour steps to
      seven hours is fourteen choices. Styled off --field like the sheets' own
@@ -15583,6 +15624,10 @@ const HTML = /* html */ `<!doctype html>
        tile — height here buys nothing and costs a whole row per screen */
     .tile { --tile-h: 132px; }
     .tile.climate { height: calc(var(--tile-h) + 112px); }
+    .tile.climate.relayac { height: var(--tile-h); }
+    .tile.climate.relayac.on { height: calc(var(--tile-h) + 54px); }
+    .tile.climate.relayac .tile-body { padding-bottom: 13px; }
+    .tile.climate.relayac.on .tile-body { padding-bottom: 78px; }
     .key { top: 8px; right: 8px; width: 38px; height: 38px; }
     .key i { width: 15px; height: 15px; }
     .tile-body { padding: 13px; }
@@ -16439,7 +16484,9 @@ const KIND_ORDER = ['light', 'fan', 'curtain', 'climate', 'screen', 'sound'];
 /* A wide screen lays the board out in four columns. A category asks for the
    columns its circuits need and no more, so the small ones pack together. */
 const BOARD_COLS = 4;
-const tileUnits = (d) => (d.is_tunable || d.is_ac || d.is_curtain) ? 2 : 1;
+// Width follows the controls, so the wide card is the infrared one: a relay air
+// conditioner carries a single dropdown and is a plain square.
+const tileUnits = (d) => (d.is_tunable || d.is_ac_ir || d.is_curtain) ? 2 : 1;
 
 const kindOf = (d) =>
   // What the install declared, where it declared anything.
@@ -16794,7 +16841,14 @@ function drawRoomSay() {
   const on = lit(items);
   const cobs = cobsIn(state.room);
   const tunable = on.filter(d => d.is_tunable);
-  const blind = items.filter(d => d.is_ac || d.is_curtain);
+  /* Two reasons a circuit cannot be read, counted apart so the sentence names
+     only the ones this room actually has. It used to say both whatever was in
+     front of it, which HOME THEATRE made obvious: its air conditioner is a relay
+     and does answer, so the only blind thing in there is the curtain, and the
+     note still claimed an AC was infrared. */
+  const blindIr = items.filter(d => d.is_ac_ir);
+  const blindCurtain = items.filter(d => d.is_curtain);
+  const blind = blindIr.concat(blindCurtain);
 
   el('#roomsay').textContent = on.length
     ? Math.round(output(items) * 100) + '% across ' + on.length +
@@ -16804,9 +16858,14 @@ function drawRoomSay() {
 
   const notes = [];
   if (tunable.length) notes.push('COLOUR IS ASKED FOR AND NEVER READ BACK');
-  if (blind.length) notes.push(blind.length === 1
-    ? '1 CIRCUIT REPORTS NOTHING BACK — AN AC IS INFRARED AND A CURTAIN HAS NO POSITION'
-    : blind.length + ' CIRCUITS REPORT NOTHING BACK — AN AC IS INFRARED AND A CURTAIN HAS NO POSITION');
+  if (blind.length) {
+    const why = [];
+    if (blindIr.length) why.push('AN AC IS INFRARED');
+    if (blindCurtain.length) why.push('A CURTAIN HAS NO POSITION');
+    notes.push(blind.length === 1
+      ? '1 CIRCUIT REPORTS NOTHING BACK — ' + why.join(' AND ')
+      : blind.length + ' CIRCUITS REPORT NOTHING BACK — ' + why.join(' AND '));
+  }
   el('#roomnote').textContent = notes.join(' · ');
 }
 
@@ -17577,7 +17636,7 @@ function circuitTile(d, compact) {
   const tile = document.createElement('div');
   // Width follows what the circuit can actually do: two sliders need room, a
   // plain switch does not.
-  const roomy = d.is_tunable || d.is_ac || d.is_curtain;
+  const roomy = d.is_tunable || d.is_ac_ir || d.is_curtain;
   // A television carries one strip, so it wants the same room a dimmable lamp
   // does — the layout keys off .dims for that, and volume is close enough in
   // shape to brightness that reusing it beats a parallel set of rules.
@@ -17587,6 +17646,7 @@ function circuitTile(d, compact) {
   // until something happened to redraw it.
   tile.className = 'tile enter ' + kind + (strips ? ' dims' : '') + (d.is_tunable ? ' tunes' : '')
     + (roomy ? ' wide' : '') + (strips && !d.is_tunable ? ' tall' : '')
+    + (d.is_ac && !d.is_ac_ir ? ' relayac' : '')
     + (compact ? ' cobmember' : '');
   tile.dataset.id = d.record_id;
   // The wiring address is for whoever is chasing a circuit, not for whoever is
@@ -17661,7 +17721,8 @@ function circuitTile(d, compact) {
   }
 
   // The one circuit class that has to say why its reading is not a reading.
-  if (d.is_ac) {
+  // The relay unit is exempt: it answers, so there is nothing to apologise for.
+  if (d.is_ac_ir) {
     const note_ = document.createElement('span');
     note_.className = 'blindnote';
     note_.textContent = 'IR IS ONE-WAY — THE REMOTE IS INVISIBLE TO US';
@@ -18061,7 +18122,7 @@ function stateWord(d) {
   // An air conditioner is infrared and cannot be read back, so this one stays
   // hedged however much plainer 'ON' would be. Saying 'ON' about a unit the
   // hub cannot hear would be the dashboard inventing a fact.
-  if (d.is_ac) {
+  if (d.is_ac_ir) {
     if (!d.status) return 'HUB SENT OFF';
     /* An armed auto-off belongs in the reading, not only in the control that set
        it. A timer nobody can see is a trap, and this is the one line that is
@@ -18178,7 +18239,7 @@ async function setDevice(d, next) {
     // command string rather than a record; a television is not a hub device at
     // all and is reached over its own protocol, where "on" is a broadcast to a
     // set that is asleep and cannot be asked anything.
-    const res = d.is_ac
+    const res = d.is_ac_ir
       ? await fetch('/api/ac', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ record_id: d.record_id, power: next }) })
       : d.is_tv
@@ -19600,6 +19661,16 @@ function queueAc(d, key, read, marks) {
 function climateDrawer(d) {
   const wrap = document.createElement('div');
   wrap.className = 'drawer';
+
+  /* A relay air conditioner has a switch and nothing else — no temperature, no
+     mode, no fan speed, and the endpoint refuses all three. Drawing them anyway
+     would put three controls on the card that answer with an error, which is the
+     confident lie this whole file is written against. It keeps the auto-off,
+     because an hour from now means the same thing however a unit is wired. */
+  if (!d.is_ac_ir) {
+    wrap.appendChild(acAutoRow(d));
+    return wrap;
+  }
 
   if (d.ac_mode == null) d.ac_mode = AC_DEFAULTS.mode;
   if (d.ac_fan == null) d.ac_fan = AC_DEFAULTS.fan;
@@ -21598,9 +21669,9 @@ async function switchOffMany(devs, saying) {
   // because opening one per command is what this hub drops; an air conditioner
   // needs its command string; and a television is not a hub device at all, so
   // its id would simply not be found in the record map.
-  const acs = devs.filter(d => d.is_ac);
+  const acs = devs.filter(d => d.is_ac_ir);
   const televisions = devs.filter(d => d.is_tv);
-  const rest = devs.filter(d => !d.is_ac && !d.is_tv);
+  const rest = devs.filter(d => !d.is_ac_ir && !d.is_tv);
   try {
     const calls = [];
     if (rest.length) calls.push(fetch('/api/group', {

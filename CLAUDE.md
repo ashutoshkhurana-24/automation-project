@@ -211,6 +211,73 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+### The relay air conditioner had a card and nothing on it (2026-08-28)
+
+*"why does the home theatre ac does not have controls?"* HOME THEATRE 496 is the
+one air conditioner in the house wired to a **relay** (`device_type: RL`) rather
+than infrared, and it was drawn as a tall `.tile.climate` reserving 106px of
+height and 164px of foot for a drawer that was never appended. A card with an
+empty bottom third and nothing to press.
+
+**The cause is the trap this file recorded two days earlier, one layer down.**
+`isAcRecord` answers **how a unit is sent to**; a UI question needs **what it
+is**. The device projection's `is_ac` was the infrared test doing both jobs under
+one name, and it gated five different things:
+
+| gated on `is_ac` | which question it was really asking |
+|---|---|
+| the `HUB SENT` hedge | wiring &mdash; a relay answers, so it reads a plain `ON` |
+| the "IR is one-way" note | wiring |
+| the power key's route to `/api/ac` | wiring |
+| `switchOffMany`'s one-at-a-time split | wiring |
+| the room sentence's "reports nothing back" set | wiring |
+| **the auto-off timer row** | **identity** |
+| **the wide two-column card** | wiring, as it turns out |
+
+So it is `is_ac` (identity, `app_type === 'AC'`) and `is_ac_ir` (wiring,
+`isAcRecord`) now, and each site names the one it means.
+
+**`acPower()` picks the road, so no caller has to.** An IR unit needs its command
+string and a bare record is dropped silently; a relay needs the empty
+`opr_param`, which is what `/api/toggle` has always sent it. Every bulk sender
+still splits the IR units out ahead of it, so none of them ever hands it a relay
+&mdash; but `/api/ac` and the auto-off timer do, and both are right to.
+
+**Proven identical to the road that already worked**, which is what made this safe
+to change: `/api/ac {power:true}` and `/api/toggle {status:true}` on 496, back to
+back with the unit already on so the room could not move, produce the *same single
+line* in the hub's journal &mdash; `Recevied status of AC Panel : 195 AC No. 00`.
+Worth knowing that this record dispatches to the hub's **AC-panel** handler rather
+than to a plain relay, and logs no `Sending Operation` line at all; both paths hit
+it the same way.
+
+**`/api/ac` no longer refuses it outright.** Power and an auto-off mean the same
+thing whichever way a unit is wired. Mode, fan speed, swing and temperature are
+the infrared remote's own keys, and it names which of them was asked for rather
+than refusing the whole request. `climateDrawer` draws only the auto-off row for
+a relay, because three controls that answer with an error is the confident lie
+this file is written against.
+
+**And the reply stops hedging where it does not have to.** An infrared timer says
+*"the hub will send off in 45 minutes"*, because off is only what was transmitted;
+the relay one says *"it will switch off in 45 minutes"*, and the timer's own log
+line makes the same distinction. Neither reading is allowed to borrow the other's
+certainty &mdash; which is the same rule as the hedge itself, pointing the other way.
+
+**Two things measured rather than derived.** The relay card reserves **78px** and
+grows by **54px**: reserving the 46px the card grew by left the reading sitting
+6px on top of the AUTO OFF caption, the trap this file already records for the
+tunable tiles, and the drawer sits 72px off the foot at 1280 *and* at 375. And the
+room sentence used to say *"an AC is infrared AND a curtain has no position"*
+whatever was in front of it; HOME THEATRE made that visibly wrong, so the reasons
+are counted apart and only the ones present are named.
+
+Verified in a browser at both widths: the relay card is a plain square reading
+`ON` with an auto-off dropdown and 8px of clearance, and the infrared card is
+untouched &mdash; wide, `HUB SENT OFF`, the one-way note, the temperature stepper,
+Mode and Fan. On the hub afterwards: a 45-minute auto-off armed, listed and
+cancelled, with nothing sent to the unit.
+
 ## Making it somebody else's house too (2026-08-22, in progress)
 
 The target is **another installation of the same vendor's controller** — an Abneo/Tistron hub, a different house. Everything in the protocol sections above transfers as-is; nothing here attempts a different brand, because every line of that protocol was measured against this hardware and there is no way to write, let alone test, a driver for a box nobody has.
