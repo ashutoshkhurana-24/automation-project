@@ -2414,6 +2414,55 @@ edit that split it to create `openMedia`, so a lone receiver would have opened a
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
 
+### Play now gets the box ready, not just the room (2026-08-28)
+
+*"in orchestration for play with link in cinema, integrate turning on media
+player."* `/api/cinema/play` woke the projector and the receiver and then fired
+the link into whatever state the box happened to be in. On a cold cinema that
+meant a sleeping box, nothing opening, and a reply reading *"the app may not be
+installed"* &mdash; a **wrong** diagnosis, which is worse than no diagnosis: it
+sends somebody to reinstall Netflix to fix a power problem.
+
+**`MediaLink.setPower(true)` is safe to call unconditionally, and that is what
+makes this a three-line change rather than a state machine.** The box reports its
+own awake state, so it is a no-op when the box is up rather than a toggle fired
+at a belief &mdash; the distinction this file already draws for the cinema key.
+
+**It runs during the projector's warm-up rather than before or after it.** Both
+are the same job, getting the room ready, and the box takes a few seconds the
+projector is spending anyway, so on a cold cinema the wake is free:
+`await sleep(warmup)` then `await wake` is `max(the two)`, not the sum.
+
+**The reply distinguishes a box that would not wake from an app that is missing**,
+which is the whole point of having done this.
+
+#### The screensaver, which is the state an idle cinema is actually in
+
+Found by looking: at 23:23 the box was on `com.glance.tv.screensaver`, reporting
+`started: true` &mdash; so the wake above is a no-op against it, while this file
+already records that it **swallows the first key it is sent**. One nudge ahead of
+the link means the link is not the thing eaten.
+
+**Nothing waits for the report to clear, because it does not clear.** Measured
+against the live box: **three `down` presses and fourteen seconds later the
+foreground still read `com.glance.tv.screensaver`.** That is the masking this
+file warns about, and the first version of this fix looped waiting for it &mdash;
+which would have stalled every Play by its whole six-second timeout and then
+carried on regardless. It is a nudge plus an 800ms settle, and **the reply claims
+no dismissal, because nothing here can see one.**
+
+**Unverified, and deliberately so.** Both halves want a cold cinema and somebody
+watching the screen; the receiver was on at volume 64 with the media player as its
+source, so any launch would have put sound into the room at half past eleven. What
+*is* measured is the screensaver's masking above, and that the endpoint's three
+refusals still send nothing. The wake path itself is proven only by construction.
+Test it in daylight with a link somebody wants to watch.
+
+One consequence worth knowing: if the foreground report is masked while
+screensaving, the launch check downstream can also fail to see the change and
+report *"sent, but nothing opened"* about a launch that worked. Pre-existing, and
+the same masking.
+
 ### The stage's masking frame was drawn backwards (2026-08-28)
 
 *"cinema's hero tile top and bottom has a black rectangle."* `.stage::before` and

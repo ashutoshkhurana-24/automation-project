@@ -4309,6 +4309,9 @@ app.post('/api/cinema/play', async (req, res) => {
   if (!m.paired) return res.status(409).json({ ok: false, error: 'the media player is not paired yet' });
 
   const out = { screen: null, sound: null, player: null };
+  /* Kept apart from out.player's sentence, which now carries how the box got
+     there as well as what opened. The spoken line needs the bare app name. */
+  let opened = '';
   const jobs = [];
   /* How long the projector takes to actually show a picture, measured in the
      room: five to six seconds from the infrared blast. Nothing reports this —
@@ -4322,6 +4325,10 @@ app.post('/api/cinema/play', async (req, res) => {
      an empty screen. */
   const PRJ_WARMUP_MS = 6000;
   let warmup = 0;
+  /* By what it is rather than by what this box calls it: the package here is
+     com.glance.tv.screensaver, and glance is an install-specific brand where
+     "a screensaver is up" is not. */
+  const SCREENSAVER = /screensaver|daydream/i;
 
   /* The screen. Skipped when the hub already believes it is on — which is a
      belief rather than a reading, so this is the one step that can be wrong;
@@ -4398,11 +4405,62 @@ app.post('/api/cinema/play', async (req, res) => {
      failure. */
   jobs.push((async () => {
     try {
-      const was = (m.session && m.session.app) || '';
+      /* The box is woken first, and it was missing from this orchestration
+         entirely: pressing Play on a cinema that was fully off switched the
+         projector and the receiver on, sent the link into a sleeping box, and
+         then reported "the app may not be installed" — a wrong diagnosis, which
+         is worse than no diagnosis at all.
+
+         setPower is safe to call unconditionally and that is the whole reason it
+         can go here: this box reports its own awake state, so it is a no-op when
+         the box is already up rather than a toggle fired at a belief.
+
+         It runs *during* the projector's warm-up rather than before or after.
+         Both are the same job — getting the room ready — and the box takes a few
+         seconds the projector is spending anyway, so on a cold cinema the wake
+         is free. */
+      let woke = '';
+      let stuck = false;
+      const wake = m.setPower(true).then((p) => {
+        if (p.stuck) { stuck = true; woke = 'the box would not wake, so '; }
+        else if (p.changed) woke = 'woken, then ';
+      }).catch((e) => { stuck = true; woke = 'could not wake the box (' + e.message + '), so '; });
+
       /* Hold the link back until there is something to show it on. The receiver
          is being woken and switched over during this same wait, so the pause
          costs nothing but the projector's own warm-up. */
       if (warmup) await sleep(warmup);
+      await wake;
+
+      /* Awake is not the same as ready, and the screensaver is the state an idle
+         cinema is actually found in — this box was sitting in it when this was
+         written. It reports started: true, so the wake above is a no-op against
+         it, and this file already records that it swallows the first key it is
+         sent. One nudge ahead of the link means the link is not the thing eaten.
+
+         **Nothing waits on the report clearing, because it does not.** Measured
+         at 23:30 against the live box: three down presses and fourteen seconds
+         later the foreground still read com.glance.tv.screensaver. That is the
+         masking this file already warns about, and a loop watching for it to
+         clear would stall every Play by its whole timeout and then carry on
+         anyway. A short settle for the box to process the press is all there is
+         to wait for.
+
+         The key is safe to send blind because it only goes when the screensaver
+         is what is reported: if it has in fact cleared, a down press moves a
+         selection on the launcher and does nothing else. And the reply does not
+         claim a dismissal — nothing here can see one. */
+      if (SCREENSAVER.test((m.session && m.session.app) || '')) {
+        m.key('down');
+        await sleep(800);
+      }
+
+      /* Read *after* the wake and the nudge, either of which can change the
+         foreground app. Taken before them, simply leaving the screensaver would
+         satisfy the "something opened" test below and a launch that never landed
+         would be reported as a success. */
+      const was = (m.session && m.session.app) || '';
+
       m.launch(link);
       const until = Date.now() + 9000;
       while (Date.now() < until) {
@@ -4410,8 +4468,12 @@ app.post('/api/cinema/play', async (req, res) => {
         await sleep(200);
       }
       const now = (m.session && m.session.app) || '';
-      out.player = now && now !== was
-        ? 'opened ' + mediaAppName(now)
+      opened = now && now !== was ? mediaAppName(now) : '';
+      /* A box that would not wake is not an app that is missing, and saying the
+         second about the first is how somebody ends up reinstalling Netflix to
+         fix a power problem. */
+      out.player = opened ? woke + 'opened ' + opened
+        : stuck ? woke + 'the link went nowhere'
         : 'sent, but nothing opened — the app may not be installed';
     } catch (e) { out.player = 'failed: ' + e.message; }
   })());
@@ -4419,14 +4481,14 @@ app.post('/api/cinema/play', async (req, res) => {
   await Promise.all(jobs);
   pushSoon();
 
-  const worked = /^opened /.test(out.player || '');
   res.json({
     ok: true, id: c.id, link, ...out,
     /* Says what happened rather than what was asked for, and keeps the
        projector's hedge: the box can confirm, the receiver can confirm, the
-       projector never can. */
-    spoken: worked
-      ? out.player.replace(/^opened /, 'playing on ') + ' — the hub sent the projector on'
+       projector never can. Built from the app name rather than by unpicking
+       out.player, which now also says how the box got there. */
+    spoken: opened
+      ? 'playing on ' + opened + ' — the hub sent the projector on'
       : 'the link did not open',
   });
 });
