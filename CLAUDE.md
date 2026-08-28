@@ -211,6 +211,36 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+#### The labels were then confirmed against the hardware, by ear (2026-08-29)
+
+The units are **Mitsubishi Heavy**, whose FAN SPEED button cycles
+**AUTO &rarr; LOW &rarr; MED &rarr; HIGH** &mdash; four positions to our three codes. That
+raised a good hypothesis and it was **wrong**: that the installer had recorded the
+first three presses, making 33/34/35 really Auto/Low/Med with the unit's HIGH out
+of reach. It fitted the early evidence, including a report that 34 "seems like
+Low".
+
+Settled the only way it can be, with a person in the room and the brand's own
+remote: **33 low, 34 medium, 35 high is correct as it stands.** The fourth
+position is **AUTO**, and that is the one not recorded &mdash; not a speed above
+high. Nothing to remap.
+
+Two things worth keeping so this is not re-opened:
+
+- **33 and 34 are hard to tell apart by ear on a settled room.** Reported as
+  "pretty much the same" at 2am with the room already at 24&deg;C, while 35 was
+  "definitely loud". That is low against medium on a blower with nothing to work
+  against, not a duplicate slot. Judge fan speeds on a warm room or not at all.
+- **Auto is unreachable for two independent reasons**, so do not go looking for a
+  fourth code: no record here carries one, and `get_channel_id_from_fan` has
+  exactly three branches with everything else falling through to `res['low']`.
+
+And the instrument note, which is the general one: `ir_opr` converts the code to a
+single hex byte and hands it to the IR module as a **slot number**, so 33/34/35
+are positions in the installer's blaster rather than Mitsubishi waveforms. No
+amount of protocol documentation can say what slot 34 emits. The manufacturer's
+manual is useful for the *shape* of the remote and nothing more.
+
 ### A mode was filing the air conditioner as off (2026-08-29)
 
 Found by taking the user's *"check vendor's code as well"* literally. The hub
