@@ -2342,6 +2342,25 @@ class AvrLink {
      owner's own labels. Anything SSSOD calls in use but SSFUN never named is a
      built-in source (TUNER, NET) and is appended with its code as its name. */
   sources() {
+    const live = this.liveSources();
+    if (live.length) {
+      /* Remembered only when it changes, so a receiver answering every few
+         minutes does not rewrite the file for nothing. */
+      const key = live.map((x) => x.code + ':' + x.name).join('|');
+      if (this.srcSaved !== key) {
+        this.srcSaved = key;
+        AVR_SOURCES_SEEN[this.id] = live;
+        writeAvrSources(this.id, live);
+      }
+      return live;
+    }
+    /* Asleep or unplugged. What it told us last time is far better than
+       nothing — without it a cue editor shows no sources to choose from, which
+       reads as a broken control rather than a receiver that is switched off. */
+    return AVR_SOURCES_SEEN[this.id] || [];
+  }
+
+  liveSources() {
     const out = [];
     for (const [code, name] of this.srcNames) {
       if (this.srcUse.size === 0 || this.srcUse.has(code)) out.push({ code, name });
@@ -2383,6 +2402,31 @@ class AvrLink {
     };
   }
 }
+
+/* ── the source list, remembered ──────────────────────────────────────────
+ * Sources are discovered from the unit and the unit has to be awake to be
+ * asked — so with the receiver off at the wall the list is empty, and a cue
+ * editor offering no sources is indistinguishable from one that is broken. The
+ * televisions already had this exact problem and this exact answer:
+ * data/tv-apps.json caches the app list so a sleeping set does not draw an
+ * empty panel.
+ *
+ * The file is never the source of truth. It is overwritten from the unit on
+ * every connection, and it only ever stands in for the gap between the process
+ * starting and the receiver next answering. */
+const AVR_SRC_PATH = path.join(__dirname, 'data', 'avr-sources.json');
+function readAvrSources() {
+  try { return JSON.parse(fs.readFileSync(AVR_SRC_PATH, 'utf8')); } catch (_) { return {}; }
+}
+function writeAvrSources(id, list) {
+  if (!list || !list.length) return;
+  try {
+    const all = readAvrSources();
+    all[id] = list;
+    fs.writeFileSync(AVR_SRC_PATH, JSON.stringify(all, null, 2));
+  } catch (e) { console.error('could not save the receiver sources:', e.message); }
+}
+const AVR_SOURCES_SEEN = readAvrSources();
 
 const avrs = new Map(AVRS.map((a) => [a.id, new AvrLink(a)]));
 const avrList = () => [...avrs.values()].map((a) => a.snapshot());
@@ -2484,6 +2528,31 @@ class MediaLink {
   key(name) {
     this.commandedAt = Date.now();
     this.live().key(name);
+  }
+
+  /* An honest on/off out of a toggle.
+   *
+   * The box's only power control is KEYCODE_POWER, which toggles — and a
+   * toggle computed from a belief does the opposite of what was asked, which
+   * is the oldest trap in this project. What makes it safe here is that this
+   * box is not a belief: it PUSHES its own awake state, so the toggle is only
+   * sent when the state actually needs to change, and asking for off twice is
+   * a no-op rather than a switch-on.
+   *
+   * It still waits for the box to report the change rather than assuming it —
+   * everything else about this device is a reading and this should be too. */
+  async setPower(on) {
+    const want = !!on;
+    const s = this.live();
+    if (s.started === want) return { changed: false, started: want };
+    this.commandedAt = Date.now();
+    s.key('power');
+    const until = Date.now() + 8000;
+    while (Date.now() < until) {
+      if (s.started === want) return { changed: true, started: want };
+      await sleep(200);
+    }
+    return { changed: false, started: s.started, stuck: true };
   }
   launch(link) {
     this.commandedAt = Date.now();
@@ -4064,7 +4133,7 @@ app.post('/api/cinema', async (req, res) => {
   }
 
   const jobs = [];
-  const out = { screen: null, sound: null };
+  const out = { screen: null, sound: null, player: null };
 
   if (c.projector != null) {
     const entry = devices.get(Number(c.projector));
@@ -4082,6 +4151,21 @@ app.post('/api/cinema', async (req, res) => {
         .then(() => { out.sound = a.power ? 'on' : 'off'; })
         .catch((e) => { out.sound = 'failed: ' + e.message; }));
     } else out.sound = 'no receiver';
+  }
+  /* The box goes with them. It was left out when this was written, on the
+     grounds that its only power control is a toggle — but it reports its own
+     awake state, so setPower can compare before it sends and the toggle is
+     safe. Leaving it out meant "Home Theatre off" put the screen and the sound
+     out and left the player running, which is not what off means. */
+  if (c.media) {
+    const m = medias.get(c.media);
+    if (!m) out.player = 'no media player';
+    else if (!m.paired) out.player = 'not paired';
+    else {
+      jobs.push(m.setPower(on)
+        .then((r) => { out.player = r.started ? 'on' : 'off'; })
+        .catch((e) => { out.player = 'failed: ' + e.message; }));
+    }
   }
   await Promise.all(jobs);
   pushSoon();
@@ -4284,7 +4368,7 @@ app.post('/api/media/:id', async (req, res) => {
       paired: false,
     });
   }
-  const { key, app: appLink, keys } = req.body || {};
+  const { key, app: appLink, keys, on } = req.body || {};
   /* A run of keys in one request, because navigating a grid is several presses
      and one round trip per press would make the pad feel like a form. Spaced
      on the wire below, since the box drops a burst sent flat out.
@@ -4295,6 +4379,9 @@ app.post('/api/media/:id', async (req, res) => {
      with an early let three times. */
   const run = Array.isArray(keys) ? keys : (key != null ? [key] : []);
   try {
+    /* Power first, so a key or a launch in the same request lands on a box that
+       is awake to receive it. */
+    if (on != null) await m.setPower(!!on);
     for (const k of run) {
       if (!(k in ATV_KEYS)) {
         return res.status(400).json({ ok: false, error: 'no such key: ' + k,
@@ -4713,6 +4800,101 @@ async function sendSteps(list) {
  * resending a launch is precisely the hijack the rule exists to prevent.
  */
 const isTvStep = (step) => typeof step.record_id === 'string' && tvs.has(step.record_id);
+const isAvrStep = (step) => typeof step.record_id === 'string' && avrs.has(step.record_id);
+const isMediaStep = (step) => typeof step.record_id === 'string' && medias.has(step.record_id);
+/* Anything whose id is a name of ours rather than one of the hub's numbers.
+   Every place that means "this is not a hub record" has to ask THIS, not
+   isTvStep: the receiver and the media player arrived later and inherited the
+   television's whole trap — Number('avr-theatre') is NaN, so cleanSteps
+   dropped both of them on save and a cue holding one silently held nothing. */
+const isLinkStep = (step) => isTvStep(step) || isAvrStep(step) || isMediaStep(step);
+
+/* ── one receiver, several things asked of it ─────────────────────────────
+ * Shared by the cue runner and by /api/cinema/play so the two cannot drift
+ * about the order, or about how long a unit fresh out of standby needs.
+ *
+ * Order matters: power first, because a sleeping unit ignores everything else;
+ * then the input, then the sound mode — which this file records as being
+ * ignored outright in standby — and the volume last, so it is set against the
+ * source that will actually be playing. */
+async function avrApply(a, want) {
+  const did = [];
+  if (want.on === false) { await a.setPower(false); return ['off']; }
+
+  if (!a.power) {
+    await a.setPower(true);
+    await sleep(2600);
+    await avrSettle(a, () => a.power, 3000);
+    did.push('on');
+  }
+  if (want.input) {
+    const code = String(want.input).toUpperCase();
+    if (a.input !== code) {
+      /* Sent, confirmed, and sent once more if it did not move. The command
+         that gets dropped is the first one after waking. */
+      await a.setInput(code);
+      let landed = await avrSettle(a, () => a.input === code, 3000);
+      if (!landed) {
+        await a.setInput(code);
+        landed = await avrSettle(a, () => a.input === code, 3000);
+      }
+      did.push(landed ? code : 'stayed on ' + (a.input || '?'));
+    }
+  }
+  if (want.mode) {
+    /* No equality test: six of the eight keys report back under one shared
+       decoder name, so all that can be waited for is movement. A mode the unit
+       will not take with the signal it has produces none, which is normal. */
+    const was = a.mode;
+    await a.setMode(want.mode);
+    await avrSettle(a, () => a.mode !== was, 2500);
+    did.push(avrModeLabel(a.mode));
+  }
+  if (want.volume != null) {
+    await a.setVolume(want.volume);
+    await avrSettle(a, () => Math.round(a.volume) === Math.max(0, Math.min(a.ceiling(), Math.round(Number(want.volume)))), 2500);
+    did.push('at ' + a.volume);
+  }
+  if (want.mute != null) {
+    await a.setMute(!!want.mute);
+    did.push(want.mute ? 'muted' : 'unmuted');
+  }
+  return did;
+}
+
+/* A receiver in a cue. It answers, so what comes back is a reading. */
+async function runAvrStep(step) {
+  const a = avrs.get(step.record_id);
+  if (!a) return { id: step.record_id, did: 'no such receiver' };
+  if (!a.online) return { id: a.id, room: a.room, did: 'not answering' };
+  const did = await avrApply(a, {
+    on: step.on, input: step.input, mode: step.mode,
+    volume: step.volume, mute: step.mute,
+  });
+  return { id: a.id, room: a.room, did: did.join(', ') || 'unchanged' };
+}
+
+/* A media player in a cue. There is no on or off here on purpose: the box's
+   only power control is a toggle, and a cue that fires a toggle does the
+   opposite of what it says whenever the box was already awake. What a cue can
+   honestly ask for is a thing to be on screen. */
+async function runMediaStep(step) {
+  const m = medias.get(step.record_id);
+  if (!m) return { id: step.record_id, did: 'no such media player' };
+  if (!m.paired) return { id: m.id, room: m.room, did: 'not paired' };
+  if (!m.online) return { id: m.id, room: m.room, did: 'not answering' };
+  if (!step.app) return { id: m.id, room: m.room, did: 'nothing asked' };
+  const was = (m.session && m.session.app) || '';
+  m.launch(step.app);
+  const until = Date.now() + 9000;
+  while (Date.now() < until) {
+    if (m.session && m.session.app !== was) break;
+    await sleep(200);
+  }
+  const now = (m.session && m.session.app) || '';
+  return { id: m.id, room: m.room,
+    did: now && now !== was ? 'opened ' + mediaAppName(now) : 'sent, nothing opened' };
+}
 
 async function runTvStep(step) {
   const t = tvs.get(step.record_id);
@@ -4784,10 +4966,13 @@ async function applyScene(scene, opts) {
      back to see what landed; a television is its own host, answers for itself,
      and is never retried. They are started together because neither waits on
      the other — a set taking nine seconds to wake must not hold up the lamps. */
-  const tvSteps = scene.steps.filter(isTvStep);
-  const hubSteps = scene.steps.filter((st) => !isTvStep(st));
-  const screens = Promise.all(tvSteps.map((st) =>
-    runTvStep(st).catch((e) => ({ id: st.record_id, did: 'failed: ' + e.message, failed: true }))));
+  const linkSteps = scene.steps.filter(isLinkStep);
+  const hubSteps = scene.steps.filter((st) => !isLinkStep(st));
+  const runLink = (st) => isTvStep(st) ? runTvStep(st)
+    : isAvrStep(st) ? runAvrStep(st)
+    : runMediaStep(st);
+  const screens = Promise.all(linkSteps.map((st) =>
+    runLink(st).catch((e) => ({ id: st.record_id, did: 'failed: ' + e.message, failed: true }))));
 
   let sent = 0;
   try { sent = await sendSteps(sceneTargets(hubSteps)); }
@@ -4884,7 +5069,10 @@ function captureBefore(steps) {
        further on: we could record that a set was on, but not *what it was
        showing*, and switching it back on to its default app is not putting it
        back — it is a second interruption dressed as an undo. */
-    if (isTvStep(step)) { skipped++; continue; }
+    /* None of these are hub records, so there is nothing here to read them
+       back from — and resending a launch is the very hijack the screen rule
+       exists to prevent. */
+    if (isLinkStep(step)) { skipped++; continue; }
     const entry = devices.get(step.record_id);
     if (!entry) continue;
     if ((entry.record.app_type || '') === 'C') { skipped++; continue; }
@@ -9122,6 +9310,36 @@ function cleanSteps(raw) {
       clean.push(out);
       continue;
     }
+    /* The receiver. Its own fields, none of which a hub record has. */
+    if (isAvrStep(step)) {
+      if (seen.has(step.record_id)) continue;
+      seen.add(step.record_id);
+      const on = step.on !== false;
+      const out = { record_id: step.record_id, on };
+      if (on) {
+        if (step.input) out.input = String(step.input).toUpperCase().slice(0, 20);
+        if (step.mode) out.mode = String(step.mode).toUpperCase().slice(0, 20);
+        if (step.volume != null) {
+          const a = avrs.get(step.record_id);
+          const cap = a ? a.ceiling() : 70;
+          out.volume = Math.max(0, Math.min(cap, Math.round(Number(step.volume) || 0)));
+        }
+        if (step.mute != null) out.mute = !!step.mute;
+      }
+      clean.push(out);
+      continue;
+    }
+    /* The media player. No on or off: its only power control is a toggle, and
+       a cue firing a toggle does the opposite of what it says whenever the box
+       is already awake. A cue asks for a thing to be on screen. */
+    if (isMediaStep(step)) {
+      if (seen.has(step.record_id)) continue;
+      seen.add(step.record_id);
+      const out = { record_id: step.record_id, on: true };
+      if (step.app) out.app = String(step.app).slice(0, 300);
+      clean.push(out);
+      continue;
+    }
     const id = Number(step?.record_id);
     const entry = devices.get(id);
     if (!entry || seen.has(id)) continue;
@@ -9145,7 +9363,10 @@ function noteFor(steps) {
   // Read straight off devices.get() this threw the moment a cue held a
   // television.
   const rooms = [...new Set(steps.map((st) => {
-    const room = isTvStep(st) ? tvs.get(st.record_id).room : devices.get(st.record_id).room;
+    const link = isTvStep(st) ? tvs.get(st.record_id)
+      : isAvrStep(st) ? avrs.get(st.record_id)
+      : isMediaStep(st) ? medias.get(st.record_id) : null;
+    const room = link ? link.room : devices.get(st.record_id).room;
     return roomKey(room).toLowerCase();
   }))];
   return rooms.length === 1 ? rooms[0] : rooms.length + ' rooms';
@@ -13569,6 +13790,20 @@ const HTML = /* html */ `<!doctype html>
     background: var(--paper-2); border: 1px solid var(--line);
   }
   .step-field { display: grid; gap: 6px; }
+  /* The receiver's volume in a cue: a choice about whether to set it at all,
+     beside the number itself. Greyed rather than hidden when it is off, so the
+     control still says what it would do. "Leave it" is the default and the
+     commonest answer — a cue that always set a volume would overwrite whatever
+     the room was last happy with. */
+  .step-vol { display: flex; align-items: center; gap: 10px; }
+  .step-vol input[type=range] { flex: 1; min-width: 0; }
+  .step-vol input[type=range]:disabled { opacity: .4; }
+  .step-tick {
+    flex: 0 0 auto; padding: 6px 11px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--line-up); background: none; color: var(--soft);
+    font: 500 11.5px/1 var(--sans); letter-spacing: .02em;
+  }
+  .step-tick.picked { background: var(--ink); border-color: var(--ink); color: var(--base); }
   .step-field > span {
     font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
     text-transform: uppercase; color: var(--faint);
@@ -15871,6 +16106,14 @@ const HTML = /* html */ `<!doctype html>
            project — so it is offered as the toggle it is and named as one. -->
       <div class="tvblock" id="mediablock">
         <div class="tvlegend avrmodehead" id="medialegend">Player<em id="medianow"></em></div>
+        <!-- Its own power, like the other two machines. The box's only control
+             is a toggle, but it reports whether it is awake, so the server can
+             compare before it sends — which is what turns a toggle into an
+             honest on and off. -->
+        <div class="tvrow words" id="mediapower">
+          <button class="tvkey wide" type="button" data-mediapow="on">Player on</button>
+          <button class="tvkey wide" type="button" data-mediapow="off">Player off</button>
+        </div>
         <div class="tvpad" id="mediapad">
           <button class="tvkey pad up ico"    type="button" data-media="up"    data-ico="up"    aria-label="Up"></button>
           <button class="tvkey pad left ico"  type="button" data-media="left"  data-ico="left"  aria-label="Left"></button>
@@ -18706,6 +18949,12 @@ function drawMediaHalf() {
   el('#mediapair').hidden = !!d.media_paired;
   const usable = !!(d.media_paired && d.media_online);
   for (const b of block.querySelectorAll('[data-media]')) b.disabled = !usable;
+  /* Power stays live whenever the box is reachable at all, even asleep — it is
+     the one control you need when it is off, and greying it out would be the
+     trap the receiver's own power row already avoids. */
+  for (const b of block.querySelectorAll('[data-mediapow]')) {
+    b.disabled = !(d.media_paired && d.media_online);
+  }
 
   /* What it is showing, on the legend line — the same treatment the sound mode
      gets, and for the same reason: it is the answer to the heading's own
@@ -18724,6 +18973,9 @@ function drawMediaHalf() {
   for (const b of block.querySelectorAll('[data-media]')) {
     if (has.size) b.hidden = !has.has(b.dataset.media);
   }
+  /* The power row is not keyed on the box's key list: it goes through
+     setPower, which decides whether to send anything at all. */
+  el('#mediapower').hidden = false;
   /* A row whose every key has gone goes with them, or the panel grows an empty
      band — the same reservation trap as a tile's foot. */
   for (const row of block.querySelectorAll('.tvrow, .tvpad')) {
@@ -18768,6 +19020,9 @@ async function mediaSend(patch) {
 
 for (const b of document.querySelectorAll('#prjscrim [data-media]')) {
   b.onclick = () => mediaSend({ key: b.dataset.media });
+}
+for (const b of document.querySelectorAll('#prjscrim [data-mediapow]')) {
+  b.onclick = () => mediaSend({ on: b.dataset.mediapow === 'on' });
 }
 
 /* Pairing, which is a person: the box puts a six-character code on its own
@@ -20760,7 +21015,10 @@ function stepControls(st, d) {
     b.onclick = () => {
       st.on = want;
       // Off carries no level, colour or screen; on without one takes it as it is.
-      if (!want) { delete st.level; delete st.tune; delete st.tv_app; delete st.youtube; delete st.volume; }
+      if (!want) {
+        delete st.level; delete st.tune; delete st.tv_app; delete st.youtube;
+        delete st.volume; delete st.input; delete st.mode; delete st.app;
+      }
       else if (d) {
         if (d.is_dimmable && st.level == null) st.level = d.level > 0 ? d.level : 100;
         if (d.is_tunable && st.tune == null) st.tune = d.tune;
@@ -20780,7 +21038,103 @@ function stepControls(st, d) {
   if (d && d.is_tv) {
     drawTvStep(edit, st, d, lit, (redraw) => { saveSteps(); if (redraw) drawSheet(); });
   }
+  if (d && d.is_avr) drawAvrStep(edit, st, d, lit);
+  if (d && d.is_media) drawMediaStep(edit, st, d);
   return edit;
+}
+
+/* ── what a cue may do to the receiver ───────────────────────────────────
+ *
+ * This is the machine a cue has most to say to. "Movie night" and "game night"
+ * differ barely at all in the lamps and almost entirely here: which input, how
+ * loud, and which sound mode. All three are optional — a step that sets none of
+ * them just switches the receiver on and leaves it as it was.
+ *
+ * The sources are the unit's own, under the owner's own names, so GAME reads as
+ * PS5 here exactly as it does everywhere else. */
+function drawAvrStep(edit, st, d, lit) {
+  if (!lit) return;
+
+  const pick = (label, key, options, blank) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'step-field';
+    const cap = document.createElement('span');
+    cap.textContent = label;
+    const sel = document.createElement('select');
+    sel.appendChild(new Option(blank, ''));
+    for (const o of options) sel.appendChild(new Option(o.label, o.value));
+    sel.value = st[key] || '';
+    sel.onchange = () => {
+      if (sel.value) st[key] = sel.value; else delete st[key];
+      saveSteps();
+      drawSheet();
+    };
+    wrap.append(cap, sel);
+    edit.appendChild(wrap);
+  };
+
+  pick('Source', 'input',
+    (d.avr_sources || []).map((x) => ({ label: x.name, value: x.code })),
+    'Leave it');
+  pick('Sound mode', 'mode',
+    (d.avr_modes || []).map((x) => ({ label: x.label, value: x.cmd })),
+    'Leave it');
+
+  /* Volume is its own control rather than the lamps' slider: that one is a
+     percentage of 100 and this is a number the receiver reports, capped by the
+     ceiling in config — which is a safety limit, not a preference. */
+  const wrap = document.createElement('label');
+  wrap.className = 'step-field';
+  const cap = document.createElement('span');
+  const max = d.avr_volume_max || 70;
+  const set = st.volume != null;
+  cap.textContent = 'Volume' + (set ? '  ' + st.volume : '');
+  const row = document.createElement('span');
+  row.className = 'step-vol';
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.min = '0'; range.max = String(max); range.step = '1';
+  range.value = String(set ? st.volume : Math.min(45, max));
+  range.disabled = !set;
+  range.oninput = () => { st.volume = Number(range.value); cap.textContent = 'Volume  ' + st.volume; };
+  range.onchange = () => { saveSteps(); };
+  /* Off by default and switched on deliberately, because "leave the volume
+     alone" is a real answer and the commonest one — a cue that always sets a
+     volume would overwrite whatever the room was last happy with. */
+  const tick = document.createElement('button');
+  tick.type = 'button';
+  tick.className = 'step-tick' + (set ? ' picked' : '');
+  tick.textContent = set ? 'Set' : 'Leave it';
+  tick.onclick = () => {
+    if (st.volume == null) st.volume = Math.min(45, max); else delete st.volume;
+    saveSteps();
+    drawSheet();
+  };
+  row.append(tick, range);
+  wrap.append(cap, row);
+  edit.appendChild(wrap);
+}
+
+/* ── and to the media player ─────────────────────────────────────────────
+ * One question: what should be on screen. There is no on or off — its only
+ * power control is a toggle, and a cue that fires one does the opposite of what
+ * it says whenever the box is already awake. */
+function drawMediaStep(edit, st, d) {
+  const wrap = document.createElement('label');
+  wrap.className = 'step-field';
+  const cap = document.createElement('span');
+  cap.textContent = 'Open';
+  const sel = document.createElement('select');
+  sel.appendChild(new Option('Leave it as it is', ''));
+  for (const a of d.media_apps || []) sel.appendChild(new Option(a.name, a.link));
+  sel.value = st.app || '';
+  sel.onchange = () => {
+    if (sel.value) st.app = sel.value; else delete st.app;
+    saveSteps();
+    drawSheet();
+  };
+  wrap.append(cap, sel);
+  edit.appendChild(wrap);
 }
 
 /* ── what a cue may do to a television ───────────────────────────────────

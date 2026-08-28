@@ -50,6 +50,10 @@ data/atv-keys.json
 # The televisions app lists: a cache, rebuilt from the sets themselves.
 data/tv-apps.json
 
+# The receiver's own source names: the same kind of cache, rebuilt from the
+# unit whenever it answers. Only ever stands in while it is switched off.
+data/avr-sources.json
+
 # The media player's app icons: third-party brand art, per-install, and
 # refetchable with tools/fetch-app-icons.js. Generated rather than committed,
 # the same choice make-icon.js makes for the home-screen icon.

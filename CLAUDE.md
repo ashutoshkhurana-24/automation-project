@@ -2282,3 +2282,41 @@ from DOM nodes so there is nothing to escape. And `openAvr` lost its tail to an
 edit that split it to create `openMedia`, so a lone receiver would have opened an
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
+
+### Cues reach the receiver and the player now (2026-08-28)
+
+**They never did, and the reason is the string-id trap for the third time.**
+`cleanSteps` special-cased `tvs.has(id)` and nothing else, so an AVR or media
+step fell through to `Number('avr-theatre')` → `NaN` → `devices.get(NaN)` →
+undefined → **dropped on save**. Adding either to a cue appeared to work and
+stored nothing. `noteFor` would have thrown on one had it ever got that far.
+
+The fix is `isLinkStep()` — a string id in `tvs`, `avrs` OR `medias` — and
+**every place that means "this is not a hub record" now asks that**, not
+`isTvStep`. Those places are `cleanSteps`, `applyScene`'s split, `noteFor` and
+`captureBefore`. `stepTarget` already returned nothing for a string id, so
+`sceneTargets` and `outstanding` were safe by accident.
+
+**`avrApply()` is shared with `/api/cinema/play`**, so the cue path and the Play
+path cannot drift about the order or about how long a unit fresh out of standby
+needs: power, then input, then mode, then volume. Mode is ignored in standby and
+the first command after waking is the one that gets dropped, so the input is
+sent, confirmed against the unit's own report, and sent once more if it did not
+move.
+
+**A cue step for the media player has no on or off.** Its only power control is
+KEYCODE_POWER, a toggle, and a cue firing a toggle does the opposite of what it
+says whenever the box is already awake. A cue asks for a thing to be on screen.
+
+**But the panel and the cinema key DO switch it**, because the box reports its
+own awake state — so `MediaLink.setPower()` compares before it sends and the
+toggle becomes an honest on and off. It was left out of `/api/cinema` at first,
+which meant "Home Theatre off" put the screen and the sound out and left the
+player running.
+
+**The receiver's source names are cached in `data/avr-sources.json`**, the same
+answer `data/tv-apps.json` gives for the televisions and for the same reason:
+sources are discovered from the unit, the unit has to be awake to be asked, and
+a cue editor offering no sources reads as a broken control rather than as a
+receiver that is switched off. Rewritten from the unit on every connection, so
+the file is never the source of truth.
