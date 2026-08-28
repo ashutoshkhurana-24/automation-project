@@ -2319,10 +2319,12 @@ projector and the air conditioner; they differ almost entirely at the receiver:
 | | source | sound mode | lamps |
 |---|---|---|---|
 | Movie Night | `MPLAY` (the box, woken) | `MOVIE` | all ten out |
-| Game Night | `GAME` (the PS5) | `GAME` | the four COBs at 20% |
+| Game Night | `GAME` (the PS5) | `GAME` | all ten out |
 
-Game Night leaves the COBs low rather than out because a controller and a bowl
-of something need finding, which a film does not. Neither carries a media app:
+The lamps are identical — Game Night was built with the COBs at 20%, on the
+reasoning that a controller needs finding, and the user's answer was to leave
+them off. So the two cues differ *only* at the receiver, which is the neatest
+statement of why cues needed to reach it at all. Neither carries a media app:
 the box is woken for a film so somebody can choose, and the PS5 is on its own
 input and never touches it.
 
