@@ -14509,15 +14509,17 @@ const HTML = /* html */ `<!doctype html>
     padding: 26px 22px; min-height: 132px;
     isolation: isolate;
   }
-  /* The frame. Thin, hard-edged, and always there — a dark cinema is still a
-     cinema, so this does not depend on anything being on. */
-  .stage::before, .stage::after {
-    content: ''; position: absolute; left: 0; right: 0; height: 9px;
-    background: #000; opacity: .55; pointer-events: none; z-index: 3;
-  }
-  .stage::before { top: 0; }
-  .stage::after { bottom: 0; }
-  /* The screen's own light, behind everything in the frame. */
+  /* There was a masking frame here — two 9px bars of #000 at .55, pinned top and
+     bottom, meant to say "a dark cinema is still a cinema". It was removed
+     because it did the opposite of that, and the arithmetic is the argument:
+     over the unlit stage (#0b0d11) black at .55 is a six-level difference and
+     cannot be seen at all, so the dark cinema it was drawn for never showed one.
+     The only time it appeared was with the glow lit — sitting at z-index 3, above
+     the light, cutting two hard-edged rectangles across it. Visible exactly when
+     it should not be and invisible when it should. Reported as a rendering fault,
+     which is what a design that reads as one has become; the screen is already a
+     screen from its gradient, its rim and its beam. */
+  /* The screen's own light, behind everything. */
   .stage-glow {
     position: absolute; inset: 0; z-index: 0; pointer-events: none;
     background: radial-gradient(78% 120% at 18% 50%,

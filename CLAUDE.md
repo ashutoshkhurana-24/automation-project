@@ -2414,6 +2414,30 @@ edit that split it to create `openMedia`, so a lone receiver would have opened a
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
 
+### The stage's masking frame was drawn backwards (2026-08-28)
+
+*"cinema's hero tile top and bottom has a black rectangle."* `.stage::before` and
+`::after` were two 9px bars of `#000` at `.55`, pinned to the top and bottom of the
+hero on the cinema and television sheets. The comment called them a frame &mdash;
+*"thin, hard-edged, and always there, a dark cinema is still a cinema"*.
+
+**The arithmetic is the whole argument, and it says the rule did the opposite of
+what it was written for.** Over the unlit stage (`#0b0d11`) black at `.55` is a
+six-level difference and cannot be seen, so the dark cinema it existed for never
+showed a frame at all. It became visible only once `.live` lit `.stage-glow`
+&mdash; and it sits at `z-index: 3`, *above* the light, so what it drew was two
+hard-edged rectangles across the glow. Visible exactly when it should not have
+been, invisible when it should.
+
+Removed rather than softened. A design that gets reported as a rendering fault has
+failed at the only thing it was for &mdash; the same call this file records for the
+app icon's rounded square inside a rounded square &mdash; and the stage is already
+a screen from its gradient, its rim and its beam.
+
+Verified at 1280 and 375, and on the television sheet too, which shares the rule:
+an unlit stage renders identically (the bars were invisible there, which is the
+point), and a lit one is now a clean screen.
+
 ### Cues reach the receiver and the player now (2026-08-28)
 
 **They never did, and the reason is the string-id trap for the third time.**
