@@ -211,6 +211,53 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+### Every fan speed on every infrared AC was going to low (2026-08-29)
+
+*"for AC's with IR, the low and high seems to be mismapped."* They were not
+mismapped &mdash; **all three went to low**, and the cause is one letter's case.
+The hub's own `get_channel_id_from_fan`:
+
+```python
+if fan == "H":   return res['high']
+elif fan == "M": return res['medium']
+elif fan == "L": return res['low']
+return res['low']          # <- anything else
+```
+
+`AC_FAN` sent `'a' 'l' 'm' 'h'`, lower case, so **every** value fell through that
+last line. Low appeared to work by accident; High did nothing. Proven on the wire
+against DINING with its unit off, so nothing could move: asking for high logged
+`IR PARAMETER ISSS IR 197 33`, where that record's low is 33 and its high is 35.
+After the fix, high/medium/low log 35/34/33.
+
+**Auto went with them.** The hub has no branch for it and no record here carries
+an auto-fan code, so it too was falling through to low.
+
+**Then the same else-branch showed that Heat and Auto had never worked either.**
+A mode is sent as a bare verb and the hub looks the word up as a **field on the
+record** &mdash; `channel_id = res[request[0]]`. All six units carry exactly
+`on off cool dry fan low medium high`, so `heat` and `auto` raise a KeyError the
+hub swallows, leaving the payload `"IR 193 "` with no code at all: accepted,
+transmitted, inert. The card was offering two modes that could not work **and
+hiding one that does** &mdash; `fan`, code 31. Verified: cool/dry/fan log 12/32/31.
+
+**Swing was inert for the same reason** &mdash; it goes down that branch wanting a
+`swing` field, and not one unit has one. Asked for, it is refused now rather than
+sent.
+
+**So the vocabulary is read from the record, the way the projector's keys already
+are.** `acIrModes()` and `acIrFans()` filter the word list by which code fields
+the record actually carries; the projection publishes `ac_modes` and `ac_fans`,
+and `climateDrawer` draws from those, hiding a row whose every option has gone.
+A panel's lists stay fixed, being state rather than a codebook. The endpoint
+validates against the same test, so a mode a unit has not got is a refusal that
+names what it does have rather than a silent success.
+
+The general rule, which this file keeps re-earning: **when the hub swallows an
+exception, a wrong request is indistinguishable from a right one at our end.**
+The only instrument is its own journal, and `IR PARAMETER ISSS` prints the exact
+code it resolved.
+
 ### HOME THEATRE's air conditioner is a panel, and it answers (2026-08-28)
 
 **The claim in this file that record 496 "really is just a switch" was wrong, and

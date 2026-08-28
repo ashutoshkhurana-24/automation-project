@@ -321,6 +321,15 @@ function deviceList() {
        hub's letters. Only for a panel: an infrared record carries no such
        fields, and the browser fills its own defaults in for those. */
     ac_mode: isAcPanelRecord(record) ? (AC_PANEL_MODE_OF[record.mode] || null) : null,
+    /* The vocabulary this particular unit has, rather than what an air
+       conditioner generally has — the same rule the projector's keys follow, and
+       for the same reason: a control the record carries no code for is accepted
+       by the hub, transmitted empty, and does nothing. A panel's list is fixed
+       because it is state rather than a codebook. */
+    ac_modes: isAcPanelRecord(record) ? Object.keys(AC_PANEL_MODES)
+      : isAcRecord(record) ? acIrModes(record) : null,
+    ac_fans: isAcPanelRecord(record) ? Object.keys(AC_PANEL_FAN)
+      : isAcRecord(record) ? acIrFans(record) : null,
     ac_fan: isAcPanelRecord(record) ? (AC_PANEL_FAN_OF[record.fspeed] || null) : null,
     /* The room temperature the panel measures, and the only such sensor anywhere
        in this house. It reads 0 on this unit — either nothing is fitted or it is
@@ -1795,7 +1804,7 @@ class TvLink {
       app_type: 'TV', device_type: 'SSAP', device_id: this.mac, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
       is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
-      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null, ac_modes: null, ac_fans: null,
       channel_open: '', channel_close: '',
       is_tv: true, tv_volume: this.volume, tv_muted: this.muted,
       /* Nothing is playing on a set that is off. A television can hold its SSAP
@@ -2413,7 +2422,7 @@ class AvrLink {
       app_type: 'AVR', device_type: 'DIP', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
       is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
-      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null, ac_modes: null, ac_fans: null,
       channel_open: '', channel_close: '',
       is_tv: false, is_projector: false,
       is_avr: true,
@@ -2605,7 +2614,7 @@ class MediaLink {
       app_type: 'MP', device_type: 'ATV', device_id: this.host, channel_id: '',
       is_dimmable: false, is_tunable: false, is_fan: false, is_curtain: false,
       is_ac: false, is_ac_ir: false, is_ac_panel: false, ac_temp: null,
-      ac_mode: null, ac_fan: null, ac_room_temp: null,
+      ac_mode: null, ac_fan: null, ac_room_temp: null, ac_modes: null, ac_fans: null,
       channel_open: '', channel_close: '',
       is_tv: false, is_projector: false, is_avr: false,
       is_media: true,
@@ -3883,9 +3892,34 @@ app.post('/api/curtain', async (req, res) => {
  * compiled web app; the record alone does nothing, which is why our on/off
  * never reached the unit.
  */
-const AC_FAN = { auto: 'a', low: 'l', medium: 'm', high: 'h' };
+/* **Upper case, and it is the whole of a bug that ran for months.** The hub's
+   get_channel_id_from_fan compares `fan == "H"` / `"M"` / `"L"` and **falls
+   through to res['low'] for anything else** — so the lower-case letters this
+   sent put *every* speed on low, including high. Proven on the wire against
+   DINING: asking for high logged `IR PARAMETER ISSS IR 197 33`, where 33 is that
+   record's low and 35 is its high.
+
+   Auto is gone with them. The hub has no branch for it, so it fell through to
+   low as well, and no record here carries an auto-fan code to send. */
+const AC_FAN = { low: 'L', medium: 'M', high: 'H' };
+
+/* A mode is sent as a bare verb ("cool 193.null") and the hub's own else-branch
+   looks the word up as a **field on the record** — `channel_id = res[request[0]]`.
+   So the modes a unit has are exactly the code fields it carries, and a word it
+   has not got raises a KeyError the hub swallows, leaving the payload as
+   "IR 193 " with no code: accepted, transmitted, and completely inert.
+
+   Which is what Heat and Auto have always been on these six. Every one of them
+   carries on/off/cool/dry/fan/low/medium/high and nothing else, so the card was
+   offering two modes that could not work and hiding one that does. Read from the
+   record now, the way the projector's keys already are. */
+const AC_MODE_WORDS = ['cool', 'heat', 'dry', 'fan', 'auto'];
+const acIrModes = (rec) => AC_MODE_WORDS.filter((w) => rec[w] != null && String(rec[w]) !== '');
+const acIrFans = (rec) => Object.keys(AC_FAN).filter((w) => rec[w] != null && String(rec[w]) !== '');
+/* Swing goes down the same else-branch and wants a `swing` field. Not one unit
+   here has one, so it was inert too; asked for, it is refused rather than sent. */
+const acIrHasSwing = (rec) => rec.swing != null && String(rec.swing) !== '';
 const AC_SWING = { auto: 'a', '30': '3', '45': '4', '60': '6' };
-const AC_MODES = ['cool', 'heat', 'dry', 'auto'];
 
 /* The panel's vocabulary, and it is not the infrared one — read off the hub's
    own mode_reverse/speed_reverse tables in ac_panel_opr.py rather than guessed.
@@ -4754,20 +4788,32 @@ app.post('/api/ac', async (req, res) => {
       if (!on && offAfter == null) clearAcTimer(recordId);
     }
     if (mode != null && !panel) {
-      if (!AC_MODES.includes(mode)) {
-        return res.status(400).json({ ok: false, error: 'mode must be one of ' + AC_MODES.join(', ') });
+      const has = acIrModes(entry.record);
+      if (!has.includes(mode)) {
+        /* Named from the record rather than from a fixed list, so a unit is never
+           offered a mode it has no code for — which the hub accepts, transmits
+           empty and does nothing about. */
+        return res.status(400).json({ ok: false,
+          error: has.length ? 'this one does ' + has.join(', ') : 'this one has no modes' });
       }
       await sleep(SCENE_SETTLE_MS);
       await sendToHub(recordId, {}, acCommand(entry.record, mode));
       sent.push(mode);
     }
     if (fan != null && !panel) {
-      if (!AC_FAN[fan]) return res.status(400).json({ ok: false, error: 'fan must be auto, low, medium or high' });
+      const has = acIrFans(entry.record);
+      if (!has.includes(fan)) {
+        return res.status(400).json({ ok: false,
+          error: has.length ? 'fan must be ' + has.join(', ') : 'this one has no fan speeds' });
+      }
       await sleep(SCENE_SETTLE_MS);
       await sendToHub(recordId, {}, acCommand(entry.record, 'fspeed', AC_FAN[fan]));
       sent.push('fan ' + fan);
     }
     if (swing != null && !panel) {
+      if (!acIrHasSwing(entry.record)) {
+        return res.status(400).json({ ok: false, error: 'This one has no swing control' });
+      }
       if (!AC_SWING[String(swing)]) {
         return res.status(400).json({ ok: false, error: 'swing must be auto, 30, 45 or 60' });
       }
@@ -19837,17 +19883,16 @@ function climateDrawer(d) {
   const wrap = document.createElement('div');
   wrap.className = 'drawer';
 
-  /* Two air conditioners with two vocabularies, taken from what each one is
-     rather than assumed to be the same. A panel has a fan mode the remotes have
-     not, its speeds run high to low, and its range is wider; it also reports all
-     three, so its buttons start on the truth instead of on a default. */
+  /* Drawn from what this unit has, which the server works out from its own
+     record — the same rule as the projector's keys. An infrared unit's modes are
+     the code fields it carries, so the six here offer Cool, Dry and Fan and no
+     longer offer Heat and Auto, which had no codes and did nothing. A panel's
+     list is fixed, being state rather than a codebook. */
   const panel = d.is_ac_panel;
-  const modes = panel
-    ? [['cool', 'Cool'], ['heat', 'Heat'], ['fan', 'Fan'], ['auto', 'Auto'], ['dry', 'Dry']]
-    : [['cool', 'Cool'], ['heat', 'Heat'], ['dry', 'Dry'], ['auto', 'Auto']];
-  const fans = panel
-    ? [['auto', 'Auto'], ['high', 'High'], ['medium', 'Med'], ['low', 'Low']]
-    : [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Med'], ['high', 'High']];
+  const AC_WORD = { cool: 'Cool', heat: 'Heat', dry: 'Dry', fan: 'Fan', auto: 'Auto',
+    low: 'Low', medium: 'Med', high: 'High' };
+  const modes = (d.ac_modes || []).map((w) => [w, AC_WORD[w] || pretty(w)]);
+  const fans = (d.ac_fans || []).map((w) => [w, AC_WORD[w] || pretty(w)]);
   const range = panel ? { min: 16, max: 30 } : { min: 19, max: 26 };
 
   if (d.ac_mode == null) d.ac_mode = AC_DEFAULTS.mode;
@@ -19878,8 +19923,14 @@ function climateDrawer(d) {
   wrap.appendChild(degrees);
   // The rows are captioned: nothing else says the second one is fan speed, and
   // "Fan auto" does not fit inside a button this narrow.
-  wrap.appendChild(segRow(d, 'mode', modes.map(m => m[0]), modes.map(m => m[1]), 'Mode'));
-  wrap.appendChild(segRow(d, 'fan', fans.map(m => m[0]), fans.map(m => m[1]), 'Fan'));
+  /* A unit with no codes for one of these gets no row for it, legend and all —
+     the projector panel's rule, which hides a block whose every key has gone. */
+  if (modes.length) {
+    wrap.appendChild(segRow(d, 'mode', modes.map(m => m[0]), modes.map(m => m[1]), 'Mode'));
+  }
+  if (fans.length) {
+    wrap.appendChild(segRow(d, 'fan', fans.map(m => m[0]), fans.map(m => m[1]), 'Fan'));
+  }
   wrap.appendChild(acAutoRow(d));
   return wrap;
 }
