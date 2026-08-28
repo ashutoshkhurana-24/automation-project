@@ -3903,18 +3903,32 @@ app.post('/api/curtain', async (req, res) => {
    low as well, and no record here carries an auto-fan code to send. */
 const AC_FAN = { low: 'L', medium: 'M', high: 'H' };
 
-/* A mode is sent as a bare verb ("cool 193.null") and the hub's own else-branch
-   looks the word up as a **field on the record** — `channel_id = res[request[0]]`.
-   So the modes a unit has are exactly the code fields it carries, and a word it
-   has not got raises a KeyError the hub swallows, leaving the payload as
-   "IR 193 " with no code: accepted, transmitted, and completely inert.
+/* **A mode is `mode <dev>.<ch> <letter>`, and sending the bare verb corrupts the
+   record.** Both forms reach a code, which is why the bare one looked fine for
+   months, but they are not equivalent: `get_channel_id_from_mode` only resolves a
+   channel, while the else-branch that catches a bare verb *also* writes
 
-   Which is what Heat and Auto have always been on these six. Every one of them
-   carries on/off/cool/dry/fan/low/medium/high and nothing else, so the card was
-   offering two modes that could not work and hiding one that does. Read from the
-   record now, the way the projector's keys already are. */
-const AC_MODE_WORDS = ['cool', 'heat', 'dry', 'fan', 'auto'];
-const acIrModes = (rec) => AC_MODE_WORDS.filter((w) => rec[w] != null && String(rec[w]) !== '');
+       device_object['device_status'] = 'true' if request[0] == "on" else 'false'
+
+   and saves it. So "cool" filed the air conditioner as **off** while it carried
+   on running — proven on ASHU's unit, which the hub reported off within four
+   seconds of a mode change and kept cooling throughout. Every reading downstream
+   inherits that: the board, the left-on advisory, sleepSteps, the auto-off timer.
+
+   The vendor's own client never does this. Its logs on the box are a packet
+   capture of it, and across five years it has sent exactly five verbs to an IR
+   air conditioner — on, off, temp, fspeed and `mode` — with mode always carrying
+   a letter: C 39 times, F 34, A 17, H 6.
+
+   The letters are the hub's, and only three of them mean anything:
+   C cool, F fan, H dry, and **anything else falls through to fan** — which is
+   where the vendor's own A lands, so its Auto has always been a second Fan. Not
+   copied: a mode is offered only where a letter exists *and* the record carries
+   the code that letter resolves to. Heat and Auto satisfy neither on these six,
+   which is why they are gone rather than merely renamed. */
+const AC_MODE_LETTER = { cool: 'C', fan: 'F', dry: 'H' };
+const acIrModes = (rec) => Object.keys(AC_MODE_LETTER)
+  .filter((w) => rec[w] != null && String(rec[w]) !== '');
 const acIrFans = (rec) => Object.keys(AC_FAN).filter((w) => rec[w] != null && String(rec[w]) !== '');
 /* Swing goes down the same else-branch and wants a `swing` field. Not one unit
    here has one, so it was inert too; asked for, it is refused rather than sent. */
@@ -4797,7 +4811,7 @@ app.post('/api/ac', async (req, res) => {
           error: has.length ? 'this one does ' + has.join(', ') : 'this one has no modes' });
       }
       await sleep(SCENE_SETTLE_MS);
-      await sendToHub(recordId, {}, acCommand(entry.record, mode));
+      await sendToHub(recordId, {}, acCommand(entry.record, 'mode', AC_MODE_LETTER[mode]));
       sent.push(mode);
     }
     if (fan != null && !panel) {

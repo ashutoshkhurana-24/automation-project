@@ -211,6 +211,44 @@ ssh abneo@192.168.1.3 "journalctl -u tistron_backend --since '5 min ago' --no-pa
 
 Each line names device id, channel and value. When five commands appear there and one lamp moves, the fault is downstream of the hub — which is exactly how the colour timing above was pinned down.
 
+### A mode was filing the air conditioner as off (2026-08-29)
+
+Found by taking the user's *"check vendor's code as well"* literally. The hub
+keeps the vendor client's own logs at `static/logs/log_*.txt`, and they are a
+packet capture of it: across five years it has sent an infrared air conditioner
+**exactly five verbs** &mdash; `on`, `off`, `temp`, `fspeed` and `mode` &mdash; with
+mode always carrying a letter, `C` 39 times, `F` 34, `A` 17, `H` 6. It never sends
+a bare mode verb. This project did.
+
+**Both forms reach a code, which is why the bare one looked right for months.**
+They are not equivalent. `get_channel_id_from_mode` only resolves a channel, while
+the else-branch that catches a bare verb *also* writes
+
+```python
+device_object['device_status'] = 'true' if request[0] == "on" else 'false'
+update_data.save()          # saved before res[request[0]] can even raise
+```
+
+so `cool` filed the unit as **off**. Proven on ASHU's running AC: `on=true` before,
+`on=false` four seconds after a mode change, the room still being cooled. Every
+reading downstream inherits that &mdash; the board, the left-on advisory,
+`sleepSteps`, the auto-off timer. It is fixed by sending `mode <dev>.<ch> <letter>`,
+verified to reach the same codes (cool 12, fan 31, dry 32) and to leave the record
+alone.
+
+**The rest of the vendor's design is coherent, and it is why the other three paths
+were already right.** Only the verbs that genuinely imply power touch it: `on` and
+`off` set it, `temp` sets it true (asking for a temperature means the unit is
+wanted on), and `fspeed` and `mode` leave it be. Our `acPower` and temperature
+paths use the bare verb correctly; mode was the one that did not belong there.
+
+**Only three letters mean anything**, and the fourth is a vendor bug worth not
+copying: C is cool, F is fan, H is dry, and **anything else falls through to
+`res['fan']`** &mdash; which is where the vendor's own `A` lands, so its Auto has
+always been a second Fan. A mode is offered here only where a letter exists *and*
+the record carries the code that letter resolves to, so Heat and Auto are absent
+rather than renamed.
+
 ### Every fan speed on every infrared AC was going to low (2026-08-29)
 
 *"for AC's with IR, the low and high seems to be mismapped."* They were not
