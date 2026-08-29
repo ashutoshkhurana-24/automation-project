@@ -29,14 +29,22 @@
   "_goodnight": [
     "Who sleeps where. Saying \"good night\" puts the speaker's own room to bed:",
     "lights and screens off, the fan and the air conditioner left running.",
-    "The key is the name the phone sends as `who` (case does not matter); the",
-    "value is a room exactly as the hub names it. Leave it out and good night is",
-    "simply not set up, which it says rather than guessing at somebody's room.",
-    "Two names can share a room, as a couple does."
+    "The key is the name the phone sends as `who` (case does not matter). Leave",
+    "it out and good night is simply not set up, which it says rather than",
+    "guessing at somebody's room. Two names can share a room, as a couple does.",
+    "The value is either a room exactly as the hub names it, or an object:",
+    "  { \"room\": \"MASTER ROOM\", \"night_light\": \"foot light\" }",
+    "night_light names a circuit in that room, or a list of them, and good night",
+    "switches it ON and never off — a bedside lamp that is reliably there",
+    "whatever the room was doing. The name is matched the way an address is, on a",
+    "unique prefix of the circuit's own name, so \"foot\" is enough where nothing",
+    "else in the room starts with it. A name this room has not got is said in the",
+    "reply rather than swallowed."
   ],
   "goodnight": {
-    "mum": "MASTER ROOM",
-    "dad": "MASTER ROOM"
+    "mum": { "room": "MASTER ROOM", "night_light": "foot light" },
+    "dad": { "room": "MASTER ROOM", "night_light": "foot light" },
+    "kid": "HARSHIT ROOM"
   },
   "_room_aliases": [
     "A second name a room answers to, for the families who call it something",

@@ -208,6 +208,12 @@ var DEVICE_RENAMES = {};
    startup ReferenceError that node --check cannot see — which this file records
    having hit twice in one session with KIND_OVERRIDES. */
 var ROOM_ALIASES = {};
+/* Who sleeps where, and what stays burning. Up here with the others and `var`
+   for the same reason — but it is here rather than beside runGoodnight for a
+   second one: as a const down there it could only be read at startup, so a
+   console save of somebody's bedroom needed a restart to take effect. Built by
+   applyConfig() from goodnightMap() below. */
+var GOODNIGHT_WHO = {};
 
 /* Up here with the rest, and `var` rather than `let`, for the reason this file
    already records twice: applyConfig() runs long before the voice code is
@@ -1473,6 +1479,15 @@ const tvKeyKnown = (mac) => {
   catch (e) { return false; }
 };
 
+/* The same question for a media player, whose certificate is filed the same way.
+   Losing that file costs another walk to the screen to read six hex characters
+   off it, so the console says plainly whether it is there. */
+const atvKeyKnown = (mac) => {
+  if (!mac) return false;
+  try { return !!readAtvKeys(ATV_KEY_FILE)[String(mac).trim().toLowerCase()]; }
+  catch (e) { return false; }
+};
+
 /* The order the app row is drawn in.
  *
  * The set's own launcher order puts its housekeeping first — Apps, then LG
@@ -1634,6 +1649,33 @@ function applyConfig() {
   for (const id of Object.keys(kinds)) {
     if (KIND_NAMES.includes(String(kinds[id]))) KIND_OVERRIDES[String(id)] = String(kinds[id]);
   }
+
+  GOODNIGHT_WHO = goodnightMap(config.goodnight);
+}
+
+/* Both config shapes for a person's bedtime, read in one place so that nothing
+ * downstream has to know there were ever two: a bare room string, which is what
+ * every install wrote before there was anything else to say about it, or an
+ * object carrying the room and that person's night light.
+ *
+ * Declared as a function so applyConfig() above can call it — a const here would
+ * not be hoisted, which is the trap the two comments above are about.
+ */
+function goodnightMap(raw) {
+  const out = {};
+  for (const [who, val] of Object.entries(raw || {})) {
+    const room = typeof val === 'string' ? val : (val && val.room);
+    if (!who || !room) continue;
+    const nl = (val && typeof val === 'object') ? val.night_light : null;
+    out[String(who).trim().toLowerCase()] = {
+      room: roomKey(room),
+      /* One name or a list. One is the case here and a list costs nothing, and a
+         room with two night lights is not a strange thing to want. */
+      nightLights: (Array.isArray(nl) ? nl : nl ? [nl] : [])
+        .map((n) => String(n).trim()).filter(Boolean),
+    };
+  }
+  return out;
 }
 applyConfig();
 const groupsIn = (room) => GROUPS.filter((g) => g.room === roomKey(String(room)));
@@ -3049,6 +3091,71 @@ app.delete('/api/backdrops/:file', (req, res) => {
  * takes a path from the request.
  */
 const FONT_NAME = /^[a-z0-9-]+\.woff2$/;
+/* The three typefaces, served from this box. Declared once and used by both the
+ * dashboard and the console, because two copies of eleven @font-face rules is
+ * two things to keep in step — and the console wanting the same faces is the
+ * whole point of it looking like the same product.
+ *
+ * Only latin and latin-ext are kept: the interface is English, and unicode-range
+ * means a browser fetches what a character needs and stops. Hanken Grotesk is one
+ * variable file declared with a weight range — the 400 and 500 downloads were
+ * byte-identical, which saved 54KB of 189KB. Not fonts.googleapis.com: that was
+ * 749ms of blocking fetch on the tablet, paid again on every walk-up, for a
+ * dependency that on a house network can simply be absent.
+ */
+const FONT_FACES = `
+  @font-face {
+    font-family: 'Hanken Grotesk'; font-style: normal; font-weight: 400 500; font-display: swap;
+    src: url('/fonts/hanken-grotesk-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Hanken Grotesk'; font-style: normal; font-weight: 400 500; font-display: swap;
+    src: url('/fonts/hanken-grotesk-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'Instrument Serif'; font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Instrument Serif'; font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/instrument-serif-400-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; font-display: swap;
+    src: url('/fonts/instrument-serif-400-italic-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; font-display: swap;
+    src: url('/fonts/instrument-serif-400-italic-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/ibm-plex-mono-400-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap;
+    src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap;
+    src: url('/fonts/ibm-plex-mono-500-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+`;
+
 app.get('/fonts/:file', (req, res) => {
   if (!FONT_NAME.test(req.params.file)) return res.status(404).end();
   const file = path.join(__dirname, 'data', 'fonts', req.params.file);
@@ -3250,6 +3357,70 @@ app.get('/api/setup', (req, res) => {
       paired: tvKeyKnown(t.mac),
     })),
     kind_names: KIND_NAMES,
+
+    /* ── the five keys that used to be a hand edit ────────────────────────
+       Every one of these was reachable only by SSH-ing to the box and editing
+       config.json, which for the receiver is worse than inconvenient: its
+       address is a DHCP lease and has already moved twice, and the symptom is a
+       perfectly healthy dashboard with a dead Sound card. */
+    receivers: (config.receivers || config.avrs || []).map((a) => ({
+      id: String(a.id || ''), name: String(a.name || 'AVR'),
+      room: String(a.room || ''), host: String(a.host || ''),
+      port: Number(a.port) || 23,
+      volume_max: Math.min(98, Number(a.volume_max) || 70),
+      // Whether it is answering right now, which is the question you open this
+      // page to ask when the Sound card has gone quiet.
+      online: !!(avrs.get(String(a.id)) || {}).online,
+    })),
+    media_players: (config.media_players || []).map((m) => ({
+      id: String(m.id || ''), name: String(m.name || 'Media player'),
+      room: String(m.room || ''), host: String(m.host || ''),
+      mac: String(m.mac || '').toLowerCase(),
+      /* Declared, because the box has no app list to ask for — four channels
+         were exhausted proving that. A name and a link somebody watched open. */
+      apps: (m.apps || []).filter((a) => a && a.name)
+        .map((a) => ({ name: String(a.name), link: String(a.link || '') })),
+      paired: atvKeyKnown(m.mac),
+      online: !!(medias.get(String(m.id)) || {}).online,
+    })),
+    cinemas: (config.cinemas || []).map((c) => ({
+      id: String(c.id || ''), name: String(c.name || 'Cinema'),
+      room: String(c.room || ''),
+      projector: c.projector == null || c.projector === '' ? null : Number(c.projector),
+      avr: String(c.avr || ''), media: String(c.media || ''),
+      media_input: String(c.media_input || ''),
+    })),
+    /* Normalised to the object shape whichever way it is written in the file, so
+       the console has one thing to draw and a save cannot depend on which
+       spelling happened to be there. */
+    goodnight: Object.fromEntries(Object.entries(GOODNIGHT_WHO).map(([who, plan]) => {
+      const got = nightLightsFor(plan.room, plan.nightLights);
+      return [who, {
+        room: plan.room,
+        night_light: plan.nightLights,
+        /* Which of those names this room actually has, so the console can flag a
+           name that resolves to nothing rather than showing it as working. */
+        resolved: got.labels, missing: got.missing,
+      }];
+    })),
+    room_aliases: config.room_aliases || {},
+
+    /* What the pickers above need to offer, read off the house rather than typed
+       into the page. A projector is the one cinema member that is a hub record. */
+    projectors: [...devices.entries()]
+      .filter(([, e]) => isPrjRecord(e.record))
+      .map(([id, e]) => ({ record_id: id, name: String(e.record.device_name || '').trim(),
+        room: roomKey(e.room) })),
+    /* Discovered from the unit, never hard-coded — SSFUN gives the owner's own
+       label, which is how GAME comes back called PS5. Empty until a receiver has
+       answered once, and cached in data/avr-sources.json across a restart. */
+    avr_sources: Object.fromEntries([...avrs.entries()]
+      .map(([id, link]) => [id, link.sources()])),
+
+    /* Every circuit a night light could name, per room, so that field is a
+       picker rather than a string somebody has to spell exactly. */
+    room_circuits: Object.fromEntries([...roomsIndex().values()]
+      .map((room) => [room, circuitsOf(room).map((c) => ({ slug: c.slug, label: c.label }))])),
   });
 });
 
@@ -3362,6 +3533,175 @@ app.post('/api/setup', (req, res) => {
     changed.push('televisions');
   }
 
+  /* ── the five keys that used to be a hand edit ──────────────────────────
+     Validated rather than trusted, and each refusal names what it wanted. This
+     is the console's whole job: an address typed here is the difference between
+     a working Sound card and one that reports `No route to host`, and a typo
+     that saves quietly is worse than one that is refused. */
+
+  const HOSTISH = /^[a-z0-9][a-z0-9.-]{0,62}$/i;
+  const MACISH = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+  const idish = (v, fallback) => String(v || fallback).trim().toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+  const bad = (msg) => { throw Object.assign(new Error(msg), { client: true }); };
+
+  try {
+    /* A receiver. `host` is the field this whole page earns its keep on: it is a
+       DHCP lease, it has moved twice, and there was nowhere to change it. */
+    if (Array.isArray(b.receivers)) {
+      const clean = [];
+      for (const a of b.receivers) {
+        const host = String((a && a.host) || '').trim();
+        if (!HOSTISH.test(host)) bad('not an address: ' + (host || '(empty)'));
+        const room = roomKey(String((a && a.room) || ''));
+        if (!room) bad('a receiver needs a room');
+        const port = Number(a.port) || 23;
+        if (!(port > 0 && port < 65536)) bad('port must be 1 to 65535');
+        /* Clamped here as well as at the link, because this is the field
+           somebody types into: the unit reports MVMAX 98 and 98 is deafening,
+           and a slider that reaches it is one slipped thumb from damaged
+           speakers. Testing that clamp once set the room to 70 and made it
+           briefly loud, which is why the ceiling is a number you would not mind
+           hearing rather than the unit's own maximum. */
+        const vmax = Number(a.volume_max) || 70;
+        /* Refused rather than clamped, unlike the link's own guard. That one is
+           protecting the code from a bad file; this is somebody typing, and
+           silently turning 200 into 98 hides a typo in the one field where being
+           wrong is loud. */
+        if (vmax < 20 || vmax > 98) bad('the loudest it may go must be 20 to 98 — the unit\'s own maximum is 98, and 98 is deafening');
+        clean.push({ id: idish(a.id, 'avr-' + room), name: String(a.name || 'AVR').trim().slice(0, 20),
+          room, host, port, volume_max: vmax });
+      }
+      next.receivers = clean;
+      delete next.avrs;                 // the old spelling, so both cannot disagree
+      changed.push('receivers');
+    }
+
+    /* A media player. The MAC is the identity, not the address: the pairing
+       certificate is filed under it, so a wrong one here orphans a pairing that
+       cost somebody a walk to the screen to read six hex characters off it. */
+    if (Array.isArray(b.media_players)) {
+      const clean = [];
+      for (const m of b.media_players) {
+        const host = String((m && m.host) || '').trim();
+        if (!HOSTISH.test(host)) bad('not an address: ' + (host || '(empty)'));
+        const mac = String((m && m.mac) || '').trim().toLowerCase();
+        if (!MACISH.test(mac)) bad('not a MAC address: ' + (mac || '(empty)'));
+        const room = roomKey(String((m && m.room) || ''));
+        if (!room) bad('a media player needs a room');
+        /* Both halves or neither. An app tile with no link draws a button that
+           does nothing, and the box answers a bad link with silence — so a name
+           on its own is a promise the tile cannot keep. */
+        const apps = [];
+        for (const a of (Array.isArray(m.apps) ? m.apps : [])) {
+          const name = String((a && a.name) || '').trim().slice(0, 24);
+          const link = String((a && a.link) || '').trim().slice(0, 300);
+          if (!name && !link) continue;
+          if (!name || !link) bad('an app needs both a name and a link');
+          apps.push({ name, link });
+        }
+        clean.push({ id: idish(m.id, 'media-' + room),
+          name: String(m.name || 'Media player').trim().slice(0, 20),
+          room, host, mac, apps });
+      }
+      next.media_players = clean;
+      changed.push('media_players');
+    }
+
+    /* A cinema is a declared pairing, never a guess: "the screen and the sound in
+       this room" is knowledge about the room, and inferring it from two devices
+       sharing one would be wrong the first time a house has a television and a
+       soundbar in the same place. Members are checked against what will exist
+       after this save, so a receiver renamed in the same request still resolves. */
+    if (Array.isArray(b.cinemas)) {
+      const avrIds = new Set((next.receivers || next.avrs || []).map((a) => String(a.id)));
+      const mediaIds = new Set((next.media_players || []).map((m) => String(m.id)));
+      const clean = [];
+      for (const c of b.cinemas) {
+        const room = roomKey(String((c && c.room) || ''));
+        if (!room) bad('a cinema needs a room');
+        let prj = null;
+        if (c.projector !== null && c.projector !== undefined && c.projector !== '') {
+          prj = Number(c.projector);
+          if (!devices.has(prj)) bad('no circuit ' + prj);
+          if (!isPrjRecord(devices.get(prj).record)) bad('circuit ' + prj + ' is not a projector');
+        }
+        const avr = String(c.avr || '');
+        if (avr && !avrIds.has(avr)) bad('no receiver called ' + avr);
+        const media = String(c.media || '');
+        if (media && !mediaIds.has(media)) bad('no media player called ' + media);
+        /* The same test CINEMAS filters on. A cinema with no members is drawn
+           nowhere and would look like a save that did nothing. */
+        if (prj == null && !avr && !media) bad('a cinema needs a projector, a receiver or a media player');
+        clean.push({ id: idish(c.id, 'cinema-' + room),
+          name: String(c.name || 'Cinema').trim().slice(0, 20), room,
+          projector: prj, avr, media,
+          media_input: String(c.media_input || '').trim().toUpperCase().slice(0, 12) });
+      }
+      next.cinemas = clean;
+      changed.push('cinemas');
+    }
+
+    /* Who sleeps where, and what stays burning. A room this hub has not got is
+       refused rather than saved: good night would answer "your good night is set
+       to a room this house does not have", which is a fault reported at bedtime
+       instead of at the moment somebody typed it. */
+    if (b.goodnight !== undefined && b.goodnight !== null) {
+      const rooms = new Set(roomsIndex().values());
+      const clean = {};
+      for (const who of Object.keys(b.goodnight)) {
+        const key = String(who).trim().toLowerCase().slice(0, 20);
+        if (!key) continue;
+        const v = b.goodnight[who] || {};
+        const room = roomKey(String(typeof v === 'string' ? v : (v.room || '')));
+        if (!room) continue;                       // cleared, rather than broken
+        if (!rooms.has(room)) bad('this house has no room called ' + room);
+        const raw = typeof v === 'string' ? [] : v.night_light;
+        const names = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+          .map((n) => String(n).trim()).filter(Boolean).slice(0, 4);
+        /* Refused at the point of typing, the same rule a schedule follows for an
+           unknown circuit: it is named in the spoken reply either way, but being
+           told now, beside a list of what the room does have, is the difference
+           between a typo and a mystery. */
+        const got = nightLightsFor(room, names);
+        if (got.missing.length) {
+          bad(room + ' has no circuit called ' + got.missing.join(', '));
+        }
+        clean[key] = names.length ? { room, night_light: names } : room;
+      }
+      next.goodnight = clean;
+      changed.push('goodnight');
+    }
+
+    /* A second name a room answers to. Two ways an alias can do harm and both are
+       refused rather than honoured — applyConfig() drops them silently, which is
+       right at startup and wrong when somebody is watching. */
+    if (b.room_aliases !== undefined && b.room_aliases !== null) {
+      const index = roomsIndex();
+      const rooms = new Set(index.values());
+      const clean = {};
+      for (const k of Object.keys(b.room_aliases)) {
+        const said = String(k).trim().toLowerCase().slice(0, 30);
+        const sl = said.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        if (!sl) continue;
+        const to = roomKey(String(b.room_aliases[k] || ''));
+        if (!to) continue;
+        /* One that shadows a real room's own slug would make that room
+           *ambiguous* rather than aliased: pick() finds two candidates and
+           refuses, so it would silently break every command to the very room it
+           was meant to help. */
+        if (index.has(sl)) bad('"' + said + '" is already how you address ' + index.get(sl));
+        if (!rooms.has(to)) bad('this house has no room called ' + to);
+        clean[said] = to;
+      }
+      next.room_aliases = clean;
+      changed.push('room_aliases');
+    }
+  } catch (err) {
+    if (err.client) return res.status(400).json({ ok: false, error: err.message });
+    throw err;
+  }
+
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n');
   } catch (err) {
@@ -3371,7 +3711,13 @@ app.post('/api/setup', (req, res) => {
   applyConfig();
   pushSoon();                                   // groups reach every open browser
 
-  const needsRestart = changed.filter((k) => RESTART_KEYS.includes(k) || k === 'televisions');
+  /* The link objects are built once, at startup, from module-level constants —
+     so a receiver, a media player or a cinema needs a restart in the way a
+     television already did. Good night and the room aliases do not: both are
+     rebuilt by applyConfig() above, which is why GOODNIGHT_WHO was moved up
+     there out of a const beside runGoodnight. */
+  const needsRestart = changed.filter((k) => RESTART_KEYS.includes(k)
+    || ['televisions', 'receivers', 'media_players', 'cinemas'].includes(k));
   res.json({
     ok: true, changed,
     needs_restart: needsRestart,
@@ -3415,6 +3761,58 @@ app.post('/api/setup/rediscover', async (req, res) => {
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message });
   }
+});
+
+/* Find the receiver again.
+ *
+ * This exists because of a specific, repeated failure: the Denon's address is a
+ * DHCP lease and has moved twice — 192.168.1.34, then .6 — and it presents as
+ * "the AVR does not work" with a perfectly healthy dashboard, an empty source
+ * list and `No route to host` from the box. The fix was a hand edit of
+ * config.json and a restart, because there was nowhere else to change it.
+ *
+ * It sweeps for **port 23** rather than looking for a Denon MAC prefix, and that
+ * is not laziness: this unit's `00:06:78` is Fujitsu-registered, not D&M, so the
+ * obvious grep finds nothing. One host on this LAN answers on 23.
+ *
+ * It reports what it found and changes nothing. Which host is the receiver is
+ * still a judgement — the same rule the television scan follows.
+ */
+app.post('/api/setup/find-avr', async (req, res) => {
+  const base = String(req.body?.subnet || HUB_IP).split('.').slice(0, 3).join('.');
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(base)) {
+    return res.status(400).json({ ok: false, error: 'could not work out the subnet from ' + HUB_IP });
+  }
+  const port = Number(req.body?.port) || 23;
+  const probe = (host) => new Promise((done) => {
+    const sock = net.createConnection({ host, port });
+    let over = false;
+    const end = (hit) => { if (over) return; over = true; sock.destroy(); done(hit ? host : null); };
+    sock.setTimeout(1200);
+    sock.once('connect', () => end(true));
+    sock.once('timeout', () => end(false));
+    sock.once('error', () => end(false));
+  });
+
+  /* In slices rather than all 254 at once: a laptop's file-descriptor limit and
+     a cheap router's connection table both object, and a sweep that half fails
+     reads as "nothing is there". */
+  const found = [];
+  const hosts = [];
+  for (let i = 1; i < 255; i++) hosts.push(base + '.' + i);
+  for (let i = 0; i < hosts.length; i += 32) {
+    const hit = await Promise.all(hosts.slice(i, i + 32).map(probe));
+    found.push(...hit.filter(Boolean));
+  }
+  const configured = new Set((config.receivers || config.avrs || []).map((a) => String(a.host)));
+  res.json({
+    ok: true, port, subnet: base + '.0/24',
+    hosts: found.map((h) => ({ host: h, configured: configured.has(h) })),
+    note: found.length
+      ? 'Answering on port ' + port + '. On this house exactly one host does, and it is the receiver.'
+      : 'Nothing answered on port ' + port + '. If the receiver is switched off at the wall it will not, '
+        + 'and neither will one whose Network Control is set to "Off in Standby".',
+  });
 });
 
 /* Restart, without betting the house on the unit file.
@@ -6437,6 +6835,47 @@ function guideRoomBlock(room) {
  * quiet lie; saved to a file and sent through Messages it absolutely can, so the
  * caveat is the honest thing to say. Same builder, one sentence apart.
  */
+/* Who puts which room to bed, read off the config rather than written out.
+ *
+ * It was four names typed into the page, which is the kind of thing that is true
+ * on the day it is written and quietly wrong afterwards — and it would have gone
+ * to a second house still naming this family. Grouped by room, because two names
+ * sharing one is the ordinary case and "Mum puts Master Room, Dad puts Master
+ * Room" reads as two different rooms. */
+function goodnightGuideWho() {
+  const byRoom = new Map();
+  for (const [who, plan] of Object.entries(GOODNIGHT_WHO)) {
+    if (!byRoom.has(plan.room)) byRoom.set(plan.room, []);
+    byRoom.get(plan.room).push(title_(who));
+  }
+  return [...byRoom].map(([room, names]) =>
+    andList(names.map((n) => '<b>' + escHtml(n) + '</b>'))
+    + (names.length > 1 ? ' put ' : ' puts ') + escHtml(title_(room)));
+}
+
+/* The night lights, named per room, or nothing at all where none is declared.
+ *
+ * The page has to say this. A lamp that comes on when you say good night and is
+ * not mentioned anywhere reads as the house getting it wrong, and it is the one
+ * clause somebody would otherwise ring up about. Built by concatenation rather
+ * than as a nested template, so there is no backtick inside guidePage's own
+ * literal to go wrong. */
+function goodnightGuideNight() {
+  const byRoom = new Map();
+  for (const plan of Object.values(GOODNIGHT_WHO)) {
+    if (!plan.nightLights.length) continue;
+    const got = nightLightsFor(plan.room, plan.nightLights);
+    if (got.labels.length) byRoom.set(plan.room, got.labels);
+  }
+  if (!byRoom.size) return '';
+  const each = [...byRoom].map(([room, labels]) =>
+    escHtml(title_(room)) + '&rsquo;s '
+    + andList(labels.map((l) => '<b>' + escHtml(l) + '</b>')));
+  return '<p class="lead">One lamp is left burning on purpose: ' + andList(each)
+    + '. It comes <b>on</b> when you say good night, even if it was off, so the'
+    + ' room is never pitch dark.</p>';
+}
+
 function guidePage(houseName, rooms, screens, health, saved) {
   /* Every set here is named "TV", so the name on its own is unsayable — what a
      person says is the room and then the screen. The receiver answers to both
@@ -6806,11 +7245,11 @@ lights.</p>
 </div>
 <p class="lead">The lights go off. <b>The fan and the AC keep running</b> — the
 point is to fall asleep, not to be woken at two by a room gone still and warm.</p>
+${goodnightGuideNight()}
 <div class="note">
 <span class="k">It knows whose room from the phone</span>
 <p>Each phone is set up with a name, so the same two words put a different room to
-bed. <b>Mum</b> and <b>Dad</b> put Master Room to bed, <b>Ashu</b> puts Ashu Room,
-<b>Bhai</b> puts Harshit Room.</p>
+bed. ${andList(goodnightGuideWho())}.</p>
 <p>On a phone that has not been set up it says <i>"I don't know whose good night
 that is"</i> and switches nothing off, rather than guessing at somebody's room.</p>
 </div>
@@ -8590,14 +9029,9 @@ async function runCancel(who) {
    reply would have been a confident "Nothing was on in Master Room" about a room
    that is not there. Absent from config, good night simply is not set up, and
    says so. Keys are lower case: whoSaid has already folded the case. */
-const GOODNIGHT_ROOM = (() => {
-  const raw = config.goodnight || {};
-  const out = {};
-  for (const [who, room] of Object.entries(raw)) {
-    if (who && room) out[String(who).trim().toLowerCase()] = roomKey(room);
-  }
-  return out;
-})();
+/* Built by applyConfig() from goodnightMap(), up beside the other config-derived
+   maps — so editing somebody's bedtime in the console takes effect at once
+   rather than at the next restart. */
 
 /* Matched before the grammar for the same reason cancel is: none of this is an
    address, so speechWords could only ever answer "I cannot find that", and
@@ -8694,27 +9128,72 @@ function goodnightSignoff(who, hour) {
 }
 
 /**
+ * This speaker's night lights, resolved by name inside their own room.
+ *
+ * Declared rather than guessed, for the same reason the ceiling groups are:
+ * which fitting somebody wants left burning while they sleep is knowledge about
+ * the room, and a heuristic over device names would be wrong occasionally and
+ * silently — which is exactly how the old `/^COB\b/` regex stopped this project
+ * working in anybody else's house.
+ *
+ * Resolved through the same circuitsOf/pick the address grammar uses, so
+ * "foot light" here means precisely what `/do/master/foot-light` means: a unique
+ * prefix is enough, and a name matching two circuits is refused rather than
+ * picked between. Resolved at bedtime rather than at startup, because the device
+ * map is what it resolves against and a vendor visit changes that under us.
+ *
+ * A name that resolves to nothing comes back in `missing` rather than being
+ * dropped: a silent misconfiguration here is a foot light that never comes on
+ * and nothing anywhere saying why.
+ */
+function nightLightsFor(room, names) {
+  if (!names.length) return { records: [], labels: [], missing: [] };
+  const circuits = circuitsOf(room);
+  const records = [];
+  const labels = [];
+  const missing = [];
+  const seen = new Set();
+  for (const name of names) {
+    const got = pick(slug(name), circuits);
+    if (!got.hit) { missing.push(name); continue; }
+    labels.push(got.hit.label);
+    for (const rec of got.hit.records) {
+      // A name may be a group, and two names may overlap.
+      if (seen.has(Number(rec.record_id))) continue;
+      seen.add(Number(rec.record_id));
+      records.push(rec);
+    }
+  }
+  return { records, labels, missing };
+}
+
+/** "a, b and c" — the same shape the refusal above reads its known names out in. */
+function andList(words) {
+  return words.length > 1
+    ? words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1]
+    : (words[0] || '');
+}
+
+/**
  * Puts this speaker's own room to bed, and says what it left running.
  */
 async function runGoodnight(who, remember) {
   const key = String(who || '');
-  const room = GOODNIGHT_ROOM[key];
+  const plan = GOODNIGHT_WHO[key];
   /* Named, not merely refused. "I do not know whose good night that is" leaves
      somebody standing in the dark guessing, and the fix is four words long. */
-  if (!room) {
-    const known = Object.keys(GOODNIGHT_ROOM);
+  if (!plan) {
+    const known = Object.keys(GOODNIGHT_WHO);
     if (!known.length) {
       return { ok: false, spoken: 'Nobody has a good night set up here yet' };
     }
     /* The list is read out because the fix is four words long, and somebody
        standing in the dark being told "I do not know" learns nothing. Built from
        the map rather than written out, so it cannot drift from what works. */
-    const names = known.length > 1
-      ? known.slice(0, -1).join(', ') + ' and ' + known[known.length - 1]
-      : known[0];
     return { ok: false, spoken: 'I do not know whose good night that is.'
-      + ' I know ' + names };
+      + ' I know ' + andList(known) };
   }
+  const room = plan.room;
 
   /* A room named in config that the hub does not have. Says so rather than
      reporting that nothing was on in a room that does not exist.
@@ -8722,7 +9201,11 @@ async function runGoodnight(who, remember) {
      it as one is silently always false, which would have refused every good
      night in the house and passed node --check without a murmur. */
   if (![...roomsIndex().values()].includes(room)) {
-    return { ok: false, spoken: 'Your good night is set to a room this house does'
+    /* Worded to end on "have" rather than on "set to a room", which SPEAK_WHOLE
+       reads as a circuit being *set* — it answered "Your good night is is now
+       set to". Pre-existing since good night was built, and caught only when
+       this refusal was finally added to say-speech-review.js. */
+    return { ok: false, spoken: 'Your good night names a room this house does'
       + ' not have' };
   }
 
@@ -8741,73 +9224,101 @@ async function runGoodnight(who, remember) {
      already, so this cannot name somebody the house does not know. */
   const you = ', ' + title_(key);
   const sign = goodnightSignoff(key, new Date().getHours());
-  const steps = sleepSteps(scope);
 
-  /* Said rather than silently doing nothing. A good night that answers "already
-     done" is the difference between a command that was heard and one that was
-     not, which is the only thing the speaker cannot check for themselves. */
-  if (!steps.length) {
-    return { ok: true, room, off: 0,
-      spoken: 'Nothing was on in ' + where + '. Good night' + you + '. ' + sign };
-  }
+  /* This person's night light comes out of the off list and is switched on
+     instead, so a bedside foot light is reliably there whatever the room was
+     doing when they said it. "Keep it on" would have been the literal reading
+     and is the useless one: MASTER ROOM's foot light is off most evenings, so an
+     exemption alone would have done nothing on exactly the nights it is wanted.
+     sendSteps sorts the off steps first, so the room goes dark and then the one
+     lamp comes up, rather than the other way about. */
+  const night = nightLightsFor(room, plan.nightLights);
+  const nightIds = new Set(night.records.map((r) => Number(r.record_id)));
+  const offSteps = sleepSteps(scope)
+    .filter((st) => !nightIds.has(Number(st.record_id)));
+  const onSteps = night.records
+    // circuitsOf hands back the hub's own records, not the device entries.
+    .filter((r) => decodeLevel(r.device_status) <= 0)
+    .map((r) => ({ record_id: Number(r.record_id), on: true }));
+  const steps = [...offSteps, ...onSteps];
 
   /* Cancellable, because this is the largest thing anybody says to the house in
      one breath and the easiest to say into the wrong phone. captureBefore drops
-     curtains and screens on its own, which is right here too. */
-  const { before } = captureBefore(steps);
-  if (before.length) remember({ kind: 'records', label: 'the lights', room, steps: before });
-
-  const r = await runSleep(scope, 'Good night, ' + where);
-
-  /* Re-counted before it is spoken, never taken from the first pass. A dimmable
-     light fades, and a fade still in flight reads as a level that is not the one
-     asked for — measured at one false alarm in four on the cancel path. Costs
-     nothing in the ordinary case, because the ordinary case is zero. */
-  let missed = r.missed;
-  if (missed > 0) {
-    await sleep(SETTLE_MS);
-    await readHubStateFresh().catch(() => {});
-    missed = sleepSteps(scope).length;
+     curtains and screens on its own, which is right here too — and the night
+     light rides in the same snapshot, so cancel puts it back out if that is
+     where it was. */
+  if (steps.length) {
+    const { before } = captureBefore(steps);
+    if (before.length) remember({ kind: 'records', label: 'the lights', room, steps: before });
   }
 
-  /* What is still running, named from the same test that spared it. This is the
-     one thing a person is likely to doubt on hearing "good night" — a fan that
-     went off with the lights is how you wake at two, so saying it is left on is
-     worth a clause. */
-  const keeps = [...devices.values()].filter(
-    (d) => roomKey(d.room) === room && decodeLevel(d.record.device_status) > 0
-      && sleepKeeps(d));
-  const kinds = [...new Set(keeps.map(
-    (d) => ((d.record.app_type || '') === 'AC' ? 'the air conditioner' : 'the fan')))];
+  /* Answered on send, with verify-and-resend still running behind the reply.
+     The safety net is the whole reason good night goes through a sleep rather
+     than a cue — a lamp dropped at bedtime burns all night with nobody awake to
+     see it — and none of it is given up here: applyScene still re-reads, still
+     resends what did not land, and still logs what it found. What is given up is
+     only the straggler *count* in the spoken reply, which cost 5 to 7 seconds of
+     somebody standing in a dark room waiting to be told. */
+  /* Nothing to do falls through the same wording rather than returning early,
+     which is a correction: it used to answer a bare "Nothing was on in Master
+     Room" while the foot light was burning — so the same room said two different
+     things depending on whether that lamp happened to need switching on. */
+  const r = steps.length
+    ? await runSleep(scope, 'Good night, ' + where, { steps, verify: false })
+    : { sent: 0 };
 
-  /* Deliberately never ending on the word "off", and that is not a style choice.
-     SPEAK_WHOLE reads a sentence ending in on or off as a circuit being set and
-     inserts a verb, so "One light in Ashu Room is off" came back as "is is now
-     off" — caught by the review tool, which is what it is for. Putting the room
-     last sidesteps the whole family of rules rather than dodging one of them. */
-  const off = Math.max(0, steps.length - missed);
+  /* Never more than reached the hub. With the verify pass behind the reply there
+     is no reading to count against, so what is spoken is what was commanded —
+     and sendSteps reports how many of those it actually got out, so a partial
+     send cannot be read out as a whole room. */
+  const off = Math.min(offSteps.length, r.sent);
+  const lit = onSteps.length ? Math.min(onSteps.length, Math.max(0, r.sent - off)) : 0;
+
+  /* The night light's own words, for the one refusal below that names it. */
+  const nightWords = night.labels.map((l) => (/^the\b/i.test(l) ? l : 'the ' + l));
+
+  /* Just the name and a closing line.
+   *
+   * What was switched off and what was left running used to be read out here,
+   * and the user's call is that it should not be: good night is the last thing
+   * anybody says in a day, and a status report is not what they want back. None
+   * of it is lost — the reply still carries `off` and `night`, and the history
+   * log carries both — it is only no longer spoken.
+   *
+   * A refusal is the exception and keeps its sentence, because a room still lit
+   * answered with "sleep well" is the house being cheerful about not having done
+   * what it was asked. Those two branches carry no sign-off for the same reason.
+   *
+   * Deliberately never ending on the word "off": SPEAK_WHOLE reads that shape as
+   * a circuit being *set* and inserts a verb, which is how "One light in Ashu
+   * Room is off" once became "is is now off". A closing line ends every success,
+   * which keeps that whole family of rules away from this reply for good.
+   */
   let spoken;
-  if (off === 0) {
+  if (offSteps.length && off === 0) {
     spoken = 'I could not switch anything off in ' + where;
+  } else if (!offSteps.length && onSteps.length && !lit) {
+    spoken = 'I could not switch ' + andList(nightWords) + ' on in ' + where;
   } else {
-    spoken = 'Good night' + you + '. I have switched off '
-      + (off === 1 ? 'one light' : off + ' lights') + ' in ' + where;
+    spoken = 'Good night' + you + '. ' + sign;
   }
-  if (kinds.length) {
-    spoken += '. ' + kinds.join(' and ')
-      + (kinds.length > 1 ? ' are still running' : ' is still running');
-  }
-  if (missed > 0) {
-    spoken += '. ' + (missed === 1 ? 'One light is' : missed + ' lights are')
-      + ' still burning';
-  }
-  /* Last, so the reply ends warm whatever the facts were — but never on the
-     failure path, where a room is still lit and "sleep well" would be the house
-     being cheerful about not having done what it was asked. */
-  if (off > 0) spoken += '. ' + sign;
+  const failed = /^I could not/.test(spoken);
 
-  logEvent({ e: 'goodnight', who: key, room, total: steps.length, off, missed });
-  return { ok: missed === 0, room, total: steps.length, off, missed, spoken };
+  /* A night light named in config that this room has not got. It used to be said
+     out loud; with the reply cut back to a greeting it goes to the journal
+     instead, so a hand-edited typo is still discoverable without putting a
+     configuration fault into somebody's good night. The console refuses such a
+     name at the point of typing, so this is now the corner case of a file edited
+     by hand on the box. */
+  if (night.missing.length) {
+    console.warn('good night: ' + key + ' names ' + night.missing.join(', ')
+      + ', which ' + where + ' has not got');
+  }
+
+  logEvent({ e: 'goodnight', who: key, room, total: steps.length, off,
+    night: lit, missing: night.missing.length });
+  return { ok: !failed, room, total: steps.length, off, night: lit,
+    verifying: true, spoken };
 }
 
 /* One sentence in, one sentence out — and the only entry point for it, so the
@@ -10246,10 +10757,17 @@ function timerView(t) {
    Shared so that "sleep now" and a timer that has run down cannot drift apart:
    they are the same circuits, chosen the same way, and the fan and the AC keep
    running in both. */
-async function runSleep(scope, label) {
-  const steps = sleepSteps(scope);
-  console.log(`sleep ${label}: lights and screens off, ${steps.length} circuits`);
-  if (!steps.length) { pushSnapshot(true); return { total: 0, off: 0, missed: 0 }; }
+/* `opts.steps` overrides the circuits, and `opts.verify: false` answers on send.
+   Both exist for good night and nothing else: it puts a night light *on* as well
+   as the lights off, so its step list is not the one sleepSteps would build, and
+   nobody going to bed should stand in the dark for seven seconds waiting to be
+   told a count. A timer keeps the default on both counts — it fires unattended,
+   so there is nobody to keep waiting and the verified figure goes in the log. */
+async function runSleep(scope, label, opts) {
+  const steps = (opts && opts.steps) || sleepSteps(scope);
+  const verify = !(opts && opts.verify === false);
+  console.log(`sleep ${label}: ${steps.length} circuits`);
+  if (!steps.length) { pushSnapshot(true); return { total: 0, sent: 0, off: 0, missed: 0 }; }
 
   /* Through applyScene, which sends, re-reads, and resends whatever the hub did
      not take. Sending once was the bug: this fired five circuits at ASHU ROOM
@@ -10258,9 +10776,17 @@ async function runSleep(scope, label) {
      lamp is a cue you press again; a sleep timer that drops one leaves it
      burning all night with nobody awake to notice, so it is the last thing that
      should have been firing and forgetting. */
-  const r = await applyScene({ id: 'sleep:' + label, name: label, steps });
+  const r = await applyScene({ id: 'sleep:' + label, name: label, steps },
+    verify ? undefined : { verify: false });
   pushSnapshot(true);
-  return { total: steps.length, off: r.set, missed: r.missed };
+  /* Unverified there is no reading to count against, so `off` is what reached the
+     hub and `missed` is what did not get out of the door — not what the house
+     failed to do with it. applyScene logs the real figure when it lands. */
+  if (!verify) {
+    return { total: steps.length, sent: r.sent, off: r.sent,
+      missed: Math.max(0, steps.length - r.sent), verifying: true };
+  }
+  return { total: steps.length, sent: r.sent, off: r.set, missed: r.missed };
 }
 
 async function runTimer(id) {
@@ -10422,10 +10948,28 @@ app.delete('/api/timers/:id', (req, res) => {
    this file, so touching it up here is a use-before-initialisation. Memoised,
    so it is still compressed exactly once per process. */
 let shell = null;
-const theShell = () => shell || (shell = {
-  gz: zlib.gzipSync(HTML, { level: 9 }),
-  tag: '"' + require('crypto').createHash('sha1').update(HTML).digest('hex').slice(0, 16) + '"',
-});
+const theShell = () => shell || (shell = packPage(HTML));
+
+/* Gzipped once per process and tagged over its own bytes. Both pages are
+   constants built at startup, so there is nothing per-request to do. */
+function packPage(text) {
+  return {
+    body: text,
+    gz: zlib.gzipSync(text, { level: 9 }),
+    tag: '"' + require('crypto').createHash('sha1').update(text).digest('hex').slice(0, 16) + '"',
+  };
+}
+/* One place that serves a packed page, because the console was being sent
+   uncompressed — 114KB of it, on a house where the compression note in this file
+   says only res.json is wrapped. */
+function sendPage(req, res, page) {
+  res.type('html').set('Cache-Control', 'no-cache').set('ETag', page.tag);
+  if (req.headers['if-none-match'] === page.tag) return res.status(304).end();
+  if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+    return res.set('Content-Encoding', 'gzip').set('Vary', 'Accept-Encoding').send(page.gz);
+  }
+  return res.send(page.body);
+}
 
 /* The setup console.
  *
@@ -10437,395 +10981,2296 @@ const theShell = () => shell || (shell = {
  * No authentication, as agreed: this is a LAN dashboard on a box whose vendor
  * API has none either, and a login here would be a lock on a gate in a field.
  */
+/* ── the console ──────────────────────────────────────────────────────────
+ *
+ * /setup. Its own page rather than a screen inside the board, because the board
+ * is something you glance at and this is something you sit at once — and a
+ * settings screen inside the thing being configured is reachable by accident on
+ * a wall panel.
+ *
+ * It takes the dashboard's design language and the *opaque* half of it: this
+ * file's own rule is that sheets and popovers stay opaque because glass is for
+ * chrome you look past, and a console is nothing but panels you read and type
+ * into. So no photograph, no backdrop-filter and no lens anywhere on it — which
+ * also makes it the cheapest page here to render, and it is the one most likely
+ * to be opened on the doorbell tablet.
+ *
+ * Everything it draws comes from endpoints the board already had, so the two
+ * cannot come to disagree about what the house is. Everything it writes goes
+ * through POST /api/setup, which validates and names its refusals.
+ *
+ * No backtick anywhere inside, comments included: this is a template literal and
+ * a stray one stays syntactically valid and takes the page down at runtime.
+ * push.sh counts them, having watched it happen three times.
+ */
 const SETUP_HTML = /* html */ `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Setup · ${HOUSE_NAME}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#e6e0d5" id="tcolour">
+<title>Console · ${HOUSE_NAME}</title>
+<link rel="icon" href="/icon-180.png?v=${ASSET_V}">
+<link rel="preload" href="/fonts/hanken-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<style>${FONT_FACES}</style>
 <style>
-  :root { --ink:#14181d; --soft:#5b636d; --faint:#8b939d; --line:#dcdfe4;
-          --paper:#fff; --ground:#f4f5f7; --accent:#b4442f; --ok:#2b6b4f; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--ground); color:var(--ink); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; }
-  .wrap { max-width: 860px; margin:0 auto; padding: 28px 18px 90px; }
-  h1 { font-size:22px; margin:0 0 2px; }
-  .sub { color:var(--soft); font-size:13.5px; margin:0 0 26px; }
-  section { background:var(--paper); border:1px solid var(--line); border-radius:12px;
-            padding:18px; margin-bottom:16px; }
-  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--soft);
-       margin:0 0 4px; font-weight:600; }
-  .why { color:var(--soft); font-size:13px; margin:0 0 14px; }
-  label { display:block; font-size:12.5px; color:var(--soft); margin:10px 0 3px; }
-  input[type=text], input[type=number], select {
-    font:15px/1.4 inherit; padding:8px 10px; border:1px solid var(--line);
-    border-radius:8px; background:var(--paper); color:var(--ink); width:100%; max-width:340px; }
-  button { font:14px/1 inherit; padding:9px 14px; border-radius:8px; cursor:pointer;
-           border:1px solid var(--line); background:var(--paper); color:var(--ink); }
-  button.go { background:var(--ink); color:#fff; border-color:var(--ink); }
-  button:disabled { opacity:.5; cursor:default; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; }
-  table { width:100%; border-collapse:collapse; font-size:13.5px; }
-  th { text-align:left; font-weight:600; color:var(--soft); font-size:11.5px;
-       text-transform:uppercase; letter-spacing:.06em; padding:6px 8px; border-bottom:1px solid var(--line); }
-  td { padding:5px 8px; border-bottom:1px solid #eef0f2; vertical-align:middle; }
-  td select { max-width:130px; padding:4px 6px; font-size:13px; }
-  .id { font-family:ui-monospace,monospace; color:var(--faint); font-size:12px; }
-  .guess { color:var(--faint); font-size:12px; }
-  .rm { font-family:ui-monospace,monospace; font-size:11px; letter-spacing:.06em;
-        text-transform:uppercase; color:var(--soft); background:var(--ground);
-        padding:2px 7px; border-radius:5px; display:inline-block; }
-  .note { margin-top:12px; font-size:13px; padding:9px 11px; border-radius:8px; display:none; }
+  /* ── the console ────────────────────────────────────────────────────────
+     The dashboard's own design language, applied to a page made entirely of
+     panels you read and type into — so it takes the *opaque* half of that
+     language, not the glass. This file's rule is that sheets and popovers stay
+     opaque because glass is for chrome you look past; a console is nothing but
+     things you look at, so there is no photograph, no backdrop-filter and no
+     lens anywhere on this page. It is also the cheapest thing to render, which
+     matters if it is ever opened on the doorbell tablet.
+
+     Everything else is the board's: the paper palette and its dark counterpart
+     swapped on the hub's clock, the mono upper-case pill for a heading, the
+     specular lip along the top of a pane, coral for the one number that matters,
+     and the 60ms-down/240-back press that is the whole difference between a page
+     and a thing. */
+  :root {
+    --ink:#2b2622; --soft:#6b635a; --faint:#9a9187;
+    --line:rgba(43,38,34,.10); --line-up:rgba(43,38,34,.20);
+    --panel:#fdfaf5; --panel-2:#f6efe3; --field:#ffffff; --ground:#e8e2d7;
+    --accent:#e0574a; --warm:#f2a233; --cool:#7fb2e0; --neutral:#9fb0bd;
+    --ok:#2b6b4f; --bad:#b4442f;
+    /* Light catching the top edge of a pane. Hard-coded white on purpose and
+       re-chosen for dark below, because a value picked as a fraction of white
+       cannot be carried into the dark palette by swapping a token — this file
+       records that lesson three times over. */
+    --lip:rgba(255,255,255,.55);
+    --sans:'Hanken Grotesk',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,monospace;
+    --display:'Instrument Serif',Georgia,'Times New Roman',serif;
+    --r:14px;
+  }
+  html.dark {
+    --ink:#ecebe8; --soft:#9ba1a9; --faint:#7d848e;
+    --line:rgba(255,255,255,.10); --line-up:rgba(255,255,255,.22);
+    --panel:#191c21; --panel-2:#13161a; --field:#0d1014; --ground:#0f1216;
+    --accent:#ff6f61; --ok:#5fbf92; --bad:#ff8a7a;
+    --lip:rgba(255,255,255,.07);
+  }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; }
+  body {
+    background:var(--ground); color:var(--ink);
+    font:15px/1.55 var(--sans);
+    -webkit-font-smoothing:antialiased;
+    /* A console is a board of switches too: a pinch is always an accident. */
+    touch-action:manipulation;
+    padding-bottom:40px;
+  }
+
+  /* ── the masthead ─────────────────────────────────────────────────────── */
+  .top {
+    position:sticky; top:0; z-index:20; background:var(--ground);
+    border-bottom:1px solid var(--line);
+    padding:14px 20px 0;
+  }
+  .top-in { max-width:1180px; margin:0 auto; display:flex; align-items:baseline;
+            gap:14px; flex-wrap:wrap; }
+  .mast { font:400 27px/1.1 var(--display); letter-spacing:-.01em; }
+  .mast i { font-style:italic; color:var(--accent); }
+  .where { font:500 10.5px/1 var(--mono); letter-spacing:.13em; text-transform:uppercase;
+           color:var(--faint); }
+  .top-end { margin-left:auto; display:flex; align-items:center; gap:8px; }
+
+  /* The hub, said rather than drawn as a bare dot: a colour alone does not tell
+     you whether the box is unreachable or merely slow. */
+  .link { display:inline-flex; align-items:center; gap:7px;
+          font:500 10.5px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase;
+          color:var(--soft); background:var(--panel); border:1px solid var(--line);
+          border-radius:99px; padding:7px 11px 7px 9px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--neutral); flex:0 0 auto; }
+  .dot.good { background:var(--ok); }
+  .dot.bad  { background:var(--accent); animation:breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+
+  /* ── the rail ─────────────────────────────────────────────────────────── */
+  .rail { max-width:1180px; margin:12px auto 0; display:flex; gap:6px;
+          overflow-x:auto; padding-bottom:12px; scrollbar-width:none; }
+  .rail::-webkit-scrollbar { display:none; }
+  .tab {
+    font:500 12px/1 var(--sans); letter-spacing:.01em; white-space:nowrap;
+    color:var(--soft); background:transparent; border:1px solid transparent;
+    border-radius:99px; padding:9px 13px; cursor:pointer;
+    transition:transform .24s cubic-bezier(.2,.8,.3,1), background .18s, color .18s, border-color .18s;
+  }
+  .tab:hover { color:var(--ink); background:var(--panel-2); }
+  .tab:active { transform:scale(.96); transition-duration:.06s; }
+  /* The chosen one gets the bright edge. Lifted from the board, where exactly one
+     row is highlighted and the rest have none. */
+  .tab.on { color:var(--ink); background:var(--panel); border-color:var(--line-up);
+            box-shadow:inset 0 1px 0 var(--lip); }
+  .tab b { font-weight:500; color:var(--accent); margin-left:5px; }
+
+  /* ── panels ───────────────────────────────────────────────────────────── */
+  .wrap { max-width:1180px; margin:0 auto; padding:18px 20px 0; }
+  .panel {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+    padding:20px; margin-bottom:16px;
+    box-shadow:inset 0 1px 0 var(--lip), 0 1px 2px rgba(0,0,0,.04),
+               0 10px 28px -16px rgba(0,0,0,.14);
+  }
+  .head { font:500 10.5px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase;
+          color:var(--soft); background:var(--panel-2); border:1px solid var(--line);
+          border-radius:8px; padding:7px 10px; display:inline-block; margin:0 0 12px; }
+  .why { color:var(--soft); font-size:13.5px; margin:0 0 16px; max-width:74ch; }
+  .why b { color:var(--ink); font-weight:500; }
+  .why code { font:400 12.5px/1.4 var(--mono); background:var(--panel-2);
+              border:1px solid var(--line); border-radius:5px; padding:1px 5px; }
+
+  /* ── fields ───────────────────────────────────────────────────────────── */
+  .fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px 14px; }
+  label { display:block; font:500 10.5px/1 var(--mono); letter-spacing:.09em;
+          text-transform:uppercase; color:var(--faint); margin:0 0 6px; }
+  input[type=text], input[type=number], input[type=password], select, textarea {
+    -webkit-appearance:none; appearance:none;
+    /* 16px, because under it iOS zooms the page on focus — which this project has
+       now had to write down four times. */
+    font:400 16px/1.4 var(--sans); color:var(--ink); background:var(--field);
+    border:1px solid var(--line-up); border-radius:9px; padding:9px 11px;
+    width:100%; box-shadow:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
+  }
+  input:disabled, select:disabled { color:var(--faint); background:var(--panel-2); }
+  textarea { min-height:64px; resize:vertical; font-family:var(--mono); font-size:13px; }
+  select { background-image:none; cursor:pointer; }
+  .mono { font-family:var(--mono); font-size:13.5px; letter-spacing:.01em; }
+
+  /* ── buttons ──────────────────────────────────────────────────────────── */
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:16px; }
+  .row.tight { margin-top:10px; }
+  .spacer { flex:1 1 auto; }
+  button {
+    font:500 13.5px/1 var(--sans); color:var(--ink); background:var(--panel-2);
+    border:1px solid var(--line-up); border-radius:10px; padding:10px 15px; cursor:pointer;
+    /* Down in 60ms and back in 240. The asymmetry is the whole trick —
+       symmetrical motion reads as an animation, asymmetrical reads as weight. */
+    transition:transform .24s cubic-bezier(.2,.8,.3,1), background .18s, border-color .18s, opacity .18s;
+  }
+  button:active { transform:scale(.97); transition-duration:.06s; }
+  button:hover { border-color:var(--ink); }
+  button.go { background:var(--ink); color:var(--panel); border-color:var(--ink); }
+  html.dark button.go { color:#12151a; }
+  button.warn { color:var(--accent); border-color:color-mix(in oklab, var(--accent) 45%, var(--line-up)); }
+  button.warn:hover { background:color-mix(in oklab, var(--accent) 12%, transparent);
+                      border-color:var(--accent); }
+  button.small { font-size:12px; padding:7px 11px; border-radius:8px; }
+  button:disabled { opacity:.45; cursor:default; transform:none; }
+  button:disabled:hover { border-color:var(--line-up); }
+
+  /* ── notes ────────────────────────────────────────────────────────────── */
+  .note { margin-top:14px; font-size:13.5px; padding:11px 13px; border-radius:10px;
+          display:none; border:1px solid var(--line); background:var(--panel-2); }
   .note.on { display:block; }
-  .note.good { background:#eaf5ee; color:var(--ok); }
-  .note.bad  { background:#fdeceb; color:var(--accent); }
-  .grp { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
-  .grp h3 { margin:0 0 8px; font-size:14px; }
-  .ticks { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:4px 12px; }
-  .tick { display:flex; align-items:center; gap:7px; font-size:13.5px; }
-  .tick input { width:auto; }
-  .warn { color:var(--accent); }
-  .scr { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:8px; }
-  .scr .mac { font-family:ui-monospace,monospace; font-size:12.5px; }
-  .flex { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
-  .flex > div { flex:1 1 150px; }
-</style></head><body>
-<div class="wrap">
-  <h1>Setup</h1>
-  <p class="sub">Everything this house has to be told that cannot be read off the hub.
-     Groups and circuit kinds take effect immediately; a name, an address or a
-     screen needs a restart, and will say so.</p>
-  <p class="sub"><a href="/">&larr; The board</a> &nbsp; <a href="/do">The /do API</a> &nbsp;
-     <a href="/api/health">Health</a></p>
+  .note.good { color:var(--ok); border-color:color-mix(in oklab, var(--ok) 35%, var(--line)); }
+  .note.bad  { color:var(--bad); border-color:color-mix(in oklab, var(--accent) 40%, var(--line)); }
+  .note.busy { color:var(--soft); }
+  .note b { font-weight:500; }
 
-  <section>
-    <h2>This house</h2>
-    <p class="why">The name on the masthead and under the home-screen icon.</p>
-    <div class="flex">
-      <div><label for="hname">Name</label><input id="hname" type="text"></div>
-      <div><label for="hshort">Short name, for the icon</label><input id="hshort" type="text"></div>
+  /* A caution that is always true, rather than the answer to a press. Shaped like
+     the board's left-on advisory: an amber edge and a warm ground. */
+  .flag { margin:0 0 14px; font-size:13px; padding:11px 13px; border-radius:10px;
+          color:var(--ink); background:color-mix(in oklab, var(--warm) 13%, var(--panel-2));
+          border:1px solid color-mix(in oklab, var(--warm) 45%, var(--line)); }
+  .flag b { font-weight:500; }
+  .flag .k { display:block; font:500 10px/1 var(--mono); letter-spacing:.12em;
+             text-transform:uppercase; color:color-mix(in oklab, var(--warm) 62%, var(--ink));
+             margin-bottom:5px; }
+
+  /* ── tables ───────────────────────────────────────────────────────────── */
+  .scroll { overflow-x:auto; margin:0 -4px; padding:0 4px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; font:500 10px/1 var(--mono); letter-spacing:.1em;
+       text-transform:uppercase; color:var(--faint); padding:0 9px 8px;
+       border-bottom:1px solid var(--line-up); white-space:nowrap; }
+  td { padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tr:last-child td { border-bottom:none; }
+  td input, td select { padding:6px 9px; font-size:14px; }
+  td.num { text-align:right; font-family:var(--mono); font-size:13px; }
+  .id { font:400 12px/1 var(--mono); color:var(--faint); }
+  .rm { font:500 10px/1 var(--mono); letter-spacing:.09em; text-transform:uppercase;
+        color:var(--soft); background:var(--panel-2); border:1px solid var(--line);
+        padding:4px 7px; border-radius:6px; display:inline-block; white-space:nowrap; }
+  .was { color:var(--faint); font-size:12.5px; }
+  .kindtag { font:500 10px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase;
+             color:var(--soft); }
+
+  /* ── cards, for the things there are several of ───────────────────────── */
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:12px; }
+  .card { background:var(--panel-2); border:1px solid var(--line); border-radius:12px;
+          padding:14px; box-shadow:inset 0 1px 0 var(--lip); }
+  .card h3 { margin:0 0 3px; font:500 15px/1.3 var(--sans); }
+  .card .sub { color:var(--faint); font-size:12.5px; margin:0 0 12px; }
+  /* Two up where there is room. One column made a port number a 660px field. */
+  .card .fields { grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:10px 12px; }
+  .card.wide { grid-column:1 / -1; }
+
+  /* ── ticks ────────────────────────────────────────────────────────────── */
+  .ticks { display:grid; grid-template-columns:repeat(auto-fill,minmax(178px,1fr)); gap:2px 14px; }
+  .tick { display:flex; align-items:center; gap:9px; font-size:13.5px; cursor:pointer;
+          padding:6px 8px; border-radius:8px; user-select:none;
+          transition:background .16s; }
+  .tick:hover { background:var(--panel); }
+  .tick input { -webkit-appearance:none; appearance:none; width:17px; height:17px;
+                flex:0 0 auto; margin:0; border:1.5px solid var(--line-up);
+                border-radius:5px; background:var(--field); cursor:pointer;
+                position:relative; transition:background .14s, border-color .14s; }
+  .tick input:checked { background:var(--ink); border-color:var(--ink); }
+  /* Drawn rather than relying on a glyph font, and in the panel's own colour so
+     it cannot end up ink on ink — the way --base once did. */
+  .tick input:checked::after {
+    content:''; position:absolute; left:4.5px; top:1.5px; width:5px; height:9px;
+    border:2px solid var(--panel); border-top:0; border-left:0;
+    transform:rotate(42deg);
+  }
+  html.dark .tick input:checked::after { border-color:#12151a; }
+  .tick .k { color:var(--faint); font:500 10px/1 var(--mono); letter-spacing:.07em;
+             text-transform:uppercase; margin-left:auto; }
+
+  /* A switch, for the handful of things that are simply on or off. */
+  .sw { display:flex; align-items:center; gap:12px; padding:11px 0;
+        border-bottom:1px solid var(--line); }
+  .sw:last-child { border-bottom:none; }
+  .sw .txt { flex:1 1 auto; }
+  .sw .txt b { display:block; font-weight:500; font-size:14px; }
+  .sw .txt span { color:var(--soft); font-size:12.5px; }
+  .toggle { -webkit-appearance:none; appearance:none; width:44px; height:26px; margin:0;
+            flex:0 0 auto; border-radius:99px; background:var(--line-up); cursor:pointer;
+            position:relative; transition:background .2s; border:none; }
+  .toggle::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px;
+                   border-radius:50%; background:var(--panel);
+                   box-shadow:0 1px 3px rgba(0,0,0,.25);
+                   transition:transform .24s cubic-bezier(.2,.8,.3,1); }
+  .toggle:checked { background:var(--ok); }
+  .toggle:checked::after { transform:translateX(18px); }
+
+  /* ── figures, for diagnostics ─────────────────────────────────────────── */
+  .figs { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .fig { background:var(--panel-2); border:1px solid var(--line); border-radius:11px;
+         padding:12px 13px; box-shadow:inset 0 1px 0 var(--lip); }
+  .fig .n { font:400 25px/1.05 var(--display); letter-spacing:-.01em; }
+  .fig .n.hot { color:var(--accent); }
+  .fig .l { font:500 9.5px/1.3 var(--mono); letter-spacing:.1em; text-transform:uppercase;
+            color:var(--faint); margin-top:5px; }
+
+  /* ── a list of things with an action each ─────────────────────────────── */
+  .list { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .item { display:flex; align-items:center; gap:12px; padding:12px 14px;
+          border-bottom:1px solid var(--line); background:var(--panel-2); }
+  .item:last-child { border-bottom:none; }
+  .item .txt { flex:1 1 auto; min-width:0; }
+  .item .txt b { display:block; font-weight:500; font-size:14px;
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .item .txt span { color:var(--soft); font-size:12.5px; }
+  .item .acts { display:flex; gap:6px; flex:0 0 auto; }
+  /* A cue's own light, borrowed from the board's .tile-fill rather than defined
+     again here: a cue and a circuit must glow from one definition or the two
+     drift apart between the themes. */
+  .swatch { width:34px; height:34px; border-radius:9px; flex:0 0 auto;
+            border:1px solid var(--line-up); box-shadow:inset 0 1px 0 var(--lip); }
+
+  .empty { color:var(--faint); font-size:13.5px; padding:20px 4px; text-align:center; }
+  .sect { margin:24px 0 0; padding-top:20px; border-top:1px solid var(--line); }
+  .sect:first-of-type { margin-top:0; padding-top:0; border-top:none; }
+  .sect h4 { margin:0 0 4px; font:500 14px/1.3 var(--sans); }
+  .sect .why { margin-bottom:14px; }
+  .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
+  .filters input, .filters select { max-width:220px; }
+
+  @media (max-width:700px) {
+    .top { padding:10px 14px 0; }
+    .wrap { padding:14px 14px 0; }
+    .panel { padding:16px 14px; border-radius:12px; }
+    .mast { font-size:23px; }
+    .fields { grid-template-columns:1fr; }
+    .cards { grid-template-columns:1fr; }
+    /* The masthead took three rows before the rail — name, clock, buttons. The
+       clock joins the buttons, which is a whole row back for the panel itself. */
+    .top-in { gap:7px 9px; }
+    .mast { flex:1 1 100%; }
+    .where { order:2; flex:0 0 auto; font-size:9.5px; }
+    .top-end { order:3; margin-left:0; flex:1 1 auto; justify-content:flex-end; gap:6px; }
+    .top-end button { padding:7px 10px; font-size:12px; }
+    .link { padding:6px 9px 6px 8px; font-size:9.5px; }
+    .rail { margin-top:9px; padding-bottom:9px; }
+  }
+</style></head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="mast">${HOUSE_NAME} <i>console</i></div>
+    <div class="where" id="wclock"></div>
+    <div class="top-end">
+      <span class="link" id="hublink"><i class="dot" id="hubdot"></i><span id="hubword">reading</span></span>
+      <button class="small" id="theme" title="Follows the hub's clock unless you say otherwise">Theme</button>
+      <button class="small" id="reload">Refresh</button>
+      <a href="/"><button class="small">The board</button></a>
     </div>
-    <div class="row"><button class="go" id="savehouse">Save</button></div>
-    <div class="note" id="n-house"></div>
-  </section>
+  </div>
+  <nav class="rail" id="rail"></nav>
+</header>
 
-  <section>
-    <h2>The hub</h2>
-    <p class="why">Where the controller is. Everything about the protocol is fixed;
-       only the address changes between houses.</p>
-    <div class="flex">
-      <div><label for="hip">Address</label><input id="hip" type="text"></div>
-      <div><label for="hport">Port</label><input id="hport" type="text"></div>
-      <div><label for="wport">This dashboard's port</label><input id="wport" type="number"></div>
+<div class="wrap" id="body">
+
+<!-- ── the house ──────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="house">
+  <span class="head">This house</span>
+  <p class="why">The name on the board and the box the lights are on. Everything
+  here needs a <b>restart</b> to take effect: the page is built once at startup
+  and the hub socket is already open.</p>
+  <div class="flag" id="overrides" hidden>
+    <span class="k">an environment variable is winning</span>
+    <p style="margin:0" id="overrideswhat"></p>
+  </div>
+  <div class="fields">
+    <div><label for="hname">Name</label><input id="hname" type="text" maxlength="60"></div>
+    <div><label for="hshort">Short name, for the icon</label><input id="hshort" type="text" maxlength="60"></div>
+  </div>
+  <div class="fields" style="margin-top:12px">
+    <div><label for="hip">Hub address</label><input id="hip" type="text" class="mono"></div>
+    <div><label for="hport">Hub port</label><input id="hport" type="text" class="mono"></div>
+    <div><label for="wport">This dashboard's port</label><input id="wport" type="number" class="mono"></div>
+  </div>
+  <div class="row"><button class="go" id="savehouse">Save</button><span class="spacer"></span>
+    <span class="was" id="hubwas"></span></div>
+  <div class="note" id="n-house"></div>
+</section>
+
+<!-- ── rooms ─────────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="rooms">
+  <span class="head">Room names</span>
+  <p class="why">What the hub calls a room, and what you would rather call it.
+  Renaming migrates the groups and the screens filed under it in the same write,
+  so a rename cannot orphan a ceiling group. <b>Live at once.</b></p>
+  <div class="scroll"><table id="roomnames"><thead><tr>
+    <th>The hub calls it</th><th>Shown as</th><th>Circuits</th>
+  </tr></thead><tbody></tbody></table></div>
+  <div class="row"><button class="go" id="saverooms">Save room names</button></div>
+  <div class="note" id="n-rooms"></div>
+
+  <div class="sect">
+    <h4>A second name a room answers to</h4>
+    <p class="why">For the names a family actually says. It is a way <b>in</b>
+    only — every reply, the board, the guide and the log keep the hub's own name,
+    so one room is never two names in the record. A word that is already how you
+    address a room is refused, because that would make the room ambiguous and
+    break every command to it.</p>
+    <div id="aliases"></div>
+    <div class="row"><button class="small" id="addalias">Add a name</button>
+      <span class="spacer"></span><button class="go" id="savealiases">Save names</button></div>
+    <div class="note" id="n-aliases"></div>
+  </div>
+</section>
+
+<!-- ── circuits ──────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="circuits">
+  <span class="head">What each circuit is</span>
+  <p class="why">Two things guess a circuit's kind and both are worth correcting.
+  A fan is found by the hub's own <code>isFan</code> flag or the word FAN in its
+  name — and on this hub <b>all four real fans report false</b>, so the name is
+  doing the work. And an <code>app_type</code> this code has never seen falls
+  through to <b>light</b>, so a geyser would be drawn as a lamp. <b>Live at
+  once.</b></p>
+  <div class="filters">
+    <input id="cfind" type="text" placeholder="Find a circuit">
+    <select id="croom"><option value="">Every room</option></select>
+    <label class="tick" style="margin:0"><input type="checkbox" id="cguess"> Only the guesses</label>
+  </div>
+  <div class="scroll"><table id="circuits"><thead><tr>
+    <th>Room</th><th>Name</th><th>Wiring</th><th>Guessed</th><th>Kind</th>
+  </tr></thead><tbody></tbody></table></div>
+  <div class="empty" id="cnone" hidden>Nothing matches that.</div>
+  <div class="row"><button class="go" id="savekinds">Save kinds and names</button></div>
+  <div class="note" id="n-kinds"></div>
+</section>
+
+<!-- ── groups ────────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="groups">
+  <span class="head">Ceiling groups</span>
+  <p class="why">A run of identical fittings around one ceiling, driven as one
+  tile. <b>Declared, never guessed</b> — it used to be a regex on the device name,
+  which is exactly the kind of thing that works in one house and no other. Two
+  circuits at least: a group of one is just the circuit. The group also answers to
+  <b>direct lights</b>, and the lights outside it to <b>indirect lights</b>.
+  <b>Live at once.</b></p>
+  <div id="groups"></div>
+  <div class="row"><button class="go" id="savegroups">Save groups</button></div>
+  <div class="note" id="n-groups"></div>
+</section>
+
+<!-- ── screens ───────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="screens">
+  <span class="head">Televisions</span>
+  <p class="why">LG sets, driven directly rather than through the hub. The
+  <b>MAC is the identity</b>, not the address: a lease moves, and a set changing
+  between Wi-Fi and Ethernet changes which MAC answers — which also orphans its
+  pairing. A <code>d0:cd:bf</code> prefix is the wired interface, and that is the
+  one whose power-on is reliable. <b>Needs a restart.</b></p>
+  <div class="row tight"><button id="scan">Look for sets on the network</button>
+    <span class="was" id="scanstate"></span></div>
+  <div id="found"></div>
+  <div id="screens" style="margin-top:14px"></div>
+  <div class="row"><button class="small" id="addtv">Add a set</button>
+    <span class="spacer"></span><button class="go" id="savetvs">Save televisions</button></div>
+  <div class="note" id="n-tvs"></div>
+</section>
+
+<!-- ── the cinema stack ──────────────────────────────────────────────── -->
+<section class="panel" data-panel="cinema">
+  <span class="head">Sound, player and cinema</span>
+  <p class="why">The three things that could only be reached by editing
+  <code>config.json</code> over SSH. All three <b>need a restart</b>: their links
+  are built once, at startup.</p>
+
+  <div class="flag">
+    <span class="k">why the receiver's address is the field that matters</span>
+    <p style="margin:0">It is a DHCP lease and it has already moved twice. The
+    symptom is not an error — it is a perfectly healthy dashboard with a dead
+    Sound card, an empty source list and <code>No route to host</code> from the
+    box. <b>Find it</b> sweeps for port 23; on this house exactly one host
+    answers, and looking for a Denon MAC prefix does not work because this unit's
+    <code>00:06:78</code> is Fujitsu-registered.</p>
+  </div>
+
+  <div class="sect">
+    <h4>Receivers</h4>
+    <div class="row tight"><button id="findavr">Find it on the network</button>
+      <span class="was" id="findstate"></span></div>
+    <div id="avrfound"></div>
+    <div id="receivers" style="margin-top:14px"></div>
+    <div class="row"><button class="small" id="addavr">Add a receiver</button>
+      <span class="spacer"></span><button class="go" id="saveavrs">Save receivers</button></div>
+    <div class="note" id="n-avrs"></div>
+  </div>
+
+  <div class="sect">
+    <h4>Media players</h4>
+    <p class="why">An Android TV box. The <b>MAC is the identity</b> — the pairing
+    certificate is filed under it, and losing that costs a walk to the screen to
+    read six hex characters off it. The apps are <b>declared</b>, because the box
+    has no list to ask for: four channels were exhausted proving that. A link
+    needs a <b>host and at least one path segment</b> — a bare domain opens
+    nothing, which is how two installed apps were once reported as missing.</p>
+    <div id="medias"></div>
+    <div class="row"><button class="small" id="addmedia">Add a player</button>
+      <span class="spacer"></span><button class="go" id="savemedias">Save players</button></div>
+    <div class="note" id="n-medias"></div>
+  </div>
+
+  <div class="sect">
+    <h4>Cinemas</h4>
+    <p class="why">Which screen and which sound belong to one room, so they draw
+    as one card and one key. <b>Declared rather than guessed</b>, for the same
+    reason the ceiling groups are: inferring it from two devices sharing a room
+    would be wrong the first time a house has a television and a soundbar in the
+    same place. The input is the one the player is plugged into — the source names
+    are the owner's own, read off the receiver.</p>
+    <div id="cinemas"></div>
+    <div class="row"><button class="small" id="addcinema">Add a cinema</button>
+      <span class="spacer"></span><button class="go" id="savecinemas">Save cinemas</button></div>
+    <div class="note" id="n-cinemas"></div>
+  </div>
+</section>
+
+<!-- ── bedtime ───────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="bedtime">
+  <span class="head">Good night</span>
+  <p class="why">Saying <b>good night</b> puts the speaker's own room to bed:
+  lights and screens off, the fan and the air conditioner left running. The key is
+  the name the phone sends. Two names can share a room, as a couple does. An
+  unrecognised speaker is told who <i>is</i> known and nothing is switched off,
+  because a guest phone must not be able to darken a room somebody is sitting in.
+  <b>Live at once.</b></p>
+  <div class="flag">
+    <span class="k">a night light comes on, it is not merely spared</span>
+    <p style="margin:0">"Keep it on" is the literal reading and the useless one: a
+    foot light is off most evenings, so an exemption alone would do nothing on
+    exactly the nights it is wanted. Named here, it is switched <b>on</b> as the
+    room goes dark, and never off. <b>Cancel</b> puts it back out.</p>
+  </div>
+  <div id="goodnight"></div>
+  <div class="row"><button class="small" id="addwho">Add a person</button>
+    <span class="spacer"></span><button class="go" id="savegn">Save good nights</button></div>
+  <div class="note" id="n-gn"></div>
+</section>
+
+<!-- ── automations ───────────────────────────────────────────────────── -->
+<section class="panel" data-panel="auto">
+  <span class="head">What the house does on its own</span>
+  <p class="why">Three deliberately timid things. All three are <b>live at
+  once</b> and stored in <code>settings.json</code>.</p>
+  <div id="autoswitches"></div>
+  <div class="sect">
+    <h4>Left on for too long</h4>
+    <p class="why">It <b>never switches anything off</b> — the house must not kill
+    a room somebody is quietly sitting in. Hours, from half an hour to a day. An
+    air conditioner's advisory can only catch one switched on <i>through the
+    hub</i>; one started by its own remote is invisible, because infrared is
+    one-way.</p>
+    <div class="fields" id="nudgehours"></div>
+  </div>
+  <div class="row"><button class="go" id="savesettings">Save</button></div>
+  <div class="note" id="n-settings"></div>
+  <div class="sect">
+    <h4>Running timers</h4>
+    <p class="why">Sleep timers and an air conditioner's auto-off. These survive a
+    restart, and a moment that passed while the process was down is dropped past a
+    five-minute grace rather than fired into a house that has moved on.</p>
+    <div id="timers"></div>
+  </div>
+</section>
+
+<!-- ── cues ──────────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="cues">
+  <span class="head">Cues</span>
+  <p class="why">A cue's <b>id is its address and never changes</b> — renaming
+  touches only the name, so a shortcut built months ago keeps firing. The card is
+  drawn in the light the cue actually makes. <b>Live at once.</b></p>
+  <div class="row tight"><button class="small" id="addcue">Create a cue</button>
+    <span class="spacer"></span><button class="small warn" id="undocue">Undo the last cue</button></div>
+  <div id="cuelist" style="margin-top:14px"></div>
+  <div class="note" id="n-cues"></div>
+  <div class="sect" id="cueedit" hidden>
+    <h4 id="cuetitle">Cue</h4>
+    <p class="why">A step is a circuit and what to do with it. A screen, a
+    receiver or a media player in a cue is <b>only applied if it is off when the
+    cue fires</b> — a set somebody is watching belongs to whoever is watching it,
+    and off is deliberately not guarded, because a bedtime cue that cannot switch
+    the television off is not a bedtime cue.</p>
+    <div class="fields">
+      <div><label for="cuename">Name</label><input id="cuename" type="text" maxlength="40"></div>
+      <div><label>Address</label><input id="cueid" type="text" class="mono" disabled></div>
     </div>
-    <div class="row"><button class="go" id="savehub">Save</button><span id="hubstate" class="guess"></span></div>
-    <div class="note" id="n-hub"></div>
-  </section>
+    <div id="cuesteps" style="margin-top:16px"></div>
+    <div class="row"><button class="small" id="cueadd">Add circuits</button>
+      <span class="spacer"></span>
+      <button id="cuecancel">Close</button>
+      <button class="go" id="cuesave">Save cue</button></div>
+    <div class="note" id="n-cue"></div>
+  </div>
+</section>
 
-  <section>
-    <h2>Room names</h2>
-    <p class="why">The hub's own names, and what this dashboard should call them.
-       Renaming a room also moves its group and its screens, and changes its
-       <span class="id">/do</span> address. Blank keeps the hub's name.</p>
-    <div class="row"><button class="go" id="saverooms">Save room names</button></div>
-    <div class="note" id="n-rooms"></div>
-    <table id="roomnames"><thead><tr>
-      <th>On the hub</th><th>Call it</th><th>Circuits</th>
-    </tr></thead><tbody></tbody></table>
-  </section>
-
-  <section>
-    <h2>What each circuit is</h2>
-    <p class="why">Two things are guesses. A fan is found by the word FAN in its name,
-       because this hub's own flag is unreliable — so a fan called something else
-       reads as a light. And an <span class="id">app_type</span> this dashboard has
-       never seen falls through to a light, which would give a geyser a lamp's glow.
-       Set anything the guess got wrong.</p>
-    <div class="row"><button class="go" id="savekinds">Save kinds</button></div>
-    <div class="note" id="n-kinds"></div>
-    <table id="circuits"><thead><tr>
-      <th>Room</th><th>On the hub</th><th>Call it</th><th>Type</th><th>Guessed</th><th>Treat as</th>
-    </tr></thead><tbody></tbody></table>
-  </section>
-
-  <section>
-    <h2>Groups</h2>
-    <p class="why">A run of identical fittings around one ceiling, driven as one tile.
-       Nothing is detected automatically: which fittings belong together is
-       something you know, and a guess would be wrong quietly. Two or more, or it
-       is just the circuit. One per room.</p>
-    <div id="groups"></div>
-    <div class="row"><button class="go" id="savegroups">Save groups</button></div>
-    <div class="note" id="n-groups"></div>
-  </section>
-
-  <section>
-    <h2>Screens</h2>
-    <p class="why">LG sets, driven directly rather than through the hub. Which set is
-       in which room cannot be worked out from the network — the MACs come in
-       batches and a sleeping set will not answer. Switch one on, scan, and see
-       which address appears.</p>
-    <div class="row"><button id="scan">Scan the network</button><span id="scanstate" class="guess"></span></div>
-    <div id="screens"></div>
-    <div class="row"><button class="go" id="savetvs">Save screens</button></div>
-    <div class="note" id="n-tvs"></div>
-  </section>
-
-  <section>
-    <h2>Maintenance</h2>
-    <p class="why">Re-read the hub after the installer fits or removes anything: a
-       record the dashboard has never seen is ignored on every ordinary read, so a
-       new light stays invisible until this is run.</p>
-    <div class="row">
-      <button id="rediscover">Re-read the hub</button>
-      <button id="restart">Restart the dashboard</button>
+<!-- ── schedules ─────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="sched">
+  <span class="head">Schedules</span>
+  <p class="why">A time, some days, and either a cue or a list of circuits. Open
+  and close replace on and off when <b>every</b> circuit chosen is a curtain; a
+  screen is scheduled on its own, because its extras belong to one set and cannot
+  be read across a list. <b>Live at once.</b></p>
+  <div class="row tight"><button class="small" id="addsched">Create a schedule</button></div>
+  <div id="schedlist" style="margin-top:14px"></div>
+  <div class="note" id="n-sched"></div>
+  <div class="sect" id="schededit" hidden>
+    <h4 id="schedtitle">Schedule</h4>
+    <div class="fields">
+      <div><label for="sname">Name</label><input id="sname" type="text" maxlength="40"></div>
+      <div><label for="stime">Time</label><input id="stime" type="text" class="mono" placeholder="07:30" maxlength="5"></div>
+      <div><label for="skind">What it runs</label><select id="skind">
+        <option value="scene">A cue</option><option value="device">Circuits</option>
+      </select></div>
     </div>
-    <div class="note" id="n-maint"></div>
-  </section>
+    <div id="schedwhat" style="margin-top:14px"></div>
+    <div style="margin-top:14px"><label>Days</label><div class="ticks" id="sdays"></div></div>
+    <p class="why" id="schedsay" style="margin:14px 0 0"></p>
+    <div class="row"><span class="spacer"></span>
+      <button id="schedcancel">Close</button>
+      <button class="go" id="schedsave">Save schedule</button></div>
+    <div class="note" id="n-schededit"></div>
+  </div>
+</section>
+
+<!-- ── backdrops ─────────────────────────────────────────────────────── -->
+<section class="panel" data-panel="shots">
+  <span class="head">Backdrop</span>
+  <p class="why">The photograph the board is glass over. Each one <b>dims
+  itself</b> — the page measures the bright end of the picture rather than its
+  mean, because a dark photograph with a small bright sky was being lifted exactly
+  where the header sits. Choosing one repaints every open browser over the live
+  channel, with no restart.</p>
+  <div id="shots"></div>
+  <div class="note" id="n-shots"></div>
+</section>
+
+<!-- ── diagnostics ───────────────────────────────────────────────────── -->
+<section class="panel" data-panel="diag">
+  <span class="head">How it is doing</span>
+  <p class="why">Read without touching the hub, which is why it is cheap enough to
+  poll. <b>A link says nothing about a screen being on</b>: a socket to a set that
+  has powered off stays open from this end until a write fails, so read
+  <i>answering</i> as the last thing we heard rather than as a reading.</p>
+  <div class="figs" id="figs"></div>
+  <div class="sect">
+    <h4>The screens and the sound</h4>
+    <div id="links"></div>
+  </div>
+  <div class="sect">
+    <h4>Voice</h4>
+    <p class="why">How the house was told, and how much of it was resolved here
+    for nothing. A short English command never leaves the box; Hinglish and every
+    question go to the model.</p>
+    <div class="figs" id="saidfigs"></div>
+  </div>
+</section>
+
+<!-- ── maintenance ───────────────────────────────────────────────────── -->
+<section class="panel" data-panel="maint">
+  <span class="head">Maintenance</span>
+  <p class="why">The four things that are done by hand, in the order they are
+  usually needed.</p>
+
+  <div class="list">
+    <div class="item"><div class="txt"><b>Ask the modules where they are</b>
+      <span>Broadcasts a status request and names every circuit whose value moved.
+      Only two of the four modules answer — the dimmer carrying every ceiling lamp
+      does not, so this covers the fans, switches and curtain relays.</span></div>
+      <div class="acts"><button id="poll">Poll</button></div></div>
+    <div class="item"><div class="txt"><b>Re-read the hub's device list</b>
+      <span>Needed after the installer fits anything. A record the map does not
+      already hold is ignored on every ordinary read, so a new light is invisible
+      however many times the hub is asked. Writes the file; needs a restart.</span></div>
+      <div class="acts"><button id="rediscover">Re-read</button></div></div>
+    <div class="item"><div class="txt"><b>The family's guide</b>
+      <span>Every circuit in every room with what each can actually do, built from
+      the running house so it cannot go stale.</span></div>
+      <div class="acts"><a href="/guide" target="_blank"><button>Open</button></a></div></div>
+    <div class="item"><div class="txt"><b>Restart the dashboard</b>
+      <span>Asks systemd properly first, and only falls back to exiting non-zero,
+      which is the one exit an <code>on-failure</code> unit will bring back.</span></div>
+      <div class="acts"><button class="warn" id="restart">Restart</button></div></div>
+  </div>
+  <div class="note" id="n-maint"></div>
+</section>
+
 </div>
 <script>
-var S = null;
+(function () {
+'use strict';
+
+/* ── the console ────────────────────────────────────────────────────────────
+ *
+ * One page, a rail of panels, and one save per panel. Everything it draws comes
+ * from endpoints that already existed for the board — /api/setup, /api/devices,
+ * /api/automations, /api/health, /api/scenes, /api/schedules, /api/backdrops —
+ * so the console cannot come to disagree with the board about what the house is.
+ *
+ * DOM nodes rather than innerHTML wherever a value comes from the hub. Device
+ * names are free text the installer typed and a room name reaches this page
+ * unescaped; building nodes means there is nothing to escape and nothing to get
+ * wrong. Static markup is in the document above.
+ *
+ * No backticks and no regex literals anywhere below: this whole page is a
+ * template literal in server.js, so a stray backtick stays syntactically valid
+ * and takes the page down at runtime instead, and a backslash in a regex is
+ * eaten by the literal before JavaScript ever sees it.
+ */
+
+var TABS = [
+  ['house', 'House'], ['rooms', 'Rooms'], ['circuits', 'Circuits'],
+  ['groups', 'Groups'], ['screens', 'Televisions'], ['cinema', 'Cinema'],
+  ['bedtime', 'Good night'], ['auto', 'Automations'], ['cues', 'Cues'],
+  ['sched', 'Schedules'], ['shots', 'Backdrop'], ['diag', 'Health'],
+  ['maint', 'Maintenance']
+];
+var DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+var S = null;        // /api/setup
+var A = null;        // /api/automations
+var HL = null;       // /api/health
+var DEV = [];        // /api/devices
+var CUES = [];       // /api/scenes  (steps and all)
+var SCHEDS = [];
+var SHOTS = null;
+var D = {};          // working copies, so adding a row needs no save first
+var tab = 'house';
+var themePref = null;
+var cueOpen = null;  // the cue being edited, or a draft
+var schedOpen = null;
+
+/* ── small helpers ──────────────────────────────────────────────────────── */
+
 function el(id) { return document.getElementById(id); }
-function note(id, msg, bad) {
-  var n = el(id);
-  n.textContent = msg;
-  n.className = 'note on ' + (bad ? 'bad' : 'good');
-}
-function post(path, body) {
-  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                       body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); });
-}
 
-function load() {
-  return fetch('/api/setup').then(function (r) { return r.json(); }).then(function (d) {
-    S = d;
-    el('hname').value = d.house_name || '';
-    el('hshort').value = d.house_short || '';
-    el('hip').value = d.hub_ip || '';
-    el('hport').value = d.hub_port || '';
-    el('wport').value = d.port || 3000;
-    el('hubstate').textContent = d.hub_ok ? 'answering' : 'not answering';
-    /* Said, not adopted: an environment variable beats the file, so a test
-       instance run on another port must not have that port written back here. */
-    if (d.overridden.length) {
-      note('n-hub', 'Running with ' + d.overridden.join(', ') +
-        ' set in the environment, which wins over this file. In force now: ' +
-        d.effective.hub_ip + ':' + d.effective.hub_port + ' on port ' + d.effective.port +
-        '. The fields below are what is saved.', false);
-    }
-    drawRoomNames();
-    drawCircuits();
-    drawGroups();
-    drawScreens(null);
-  });
-}
-
-function drawCircuits() {
-  var body = el('circuits').querySelector('tbody');
-  body.innerHTML = '';
-  S.circuits.forEach(function (c) {
-    var tr = document.createElement('tr');
-    var sel = '<select data-id="' + c.record_id + '"><option value="">' +
-      'as guessed (' + c.guessed + ')</option>';
-    S.kind_names.forEach(function (k) {
-      sel += '<option value="' + k + '"' + (c.kind === k ? ' selected' : '') + '>' + k + '</option>';
+function n(tag, attrs, kids) {
+  var e = document.createElement(tag);
+  if (attrs) {
+    Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v == null || v === false) return;
+      if (k === 'class') e.className = v;
+      else if (k === 'text') e.textContent = v;
+      else if (k === 'html') e.innerHTML = v;
+      else if (k.slice(0, 2) === 'on') e.addEventListener(k.slice(2), v);
+      else if (v === true) e.setAttribute(k, '');
+      else e.setAttribute(k, v);
     });
-    sel += '</select>';
-    tr.innerHTML =
-      '<td><span class="rm">' + c.room + '</span></td>' +
-      '<td>' + c.hub_name + ' <span class="id">#' + c.record_id + '</span></td>' +
-      '<td><input class="nm" data-id="' + c.record_id + '" type="text" maxlength="40" value="' +
-        (c.name === c.hub_name ? '' : c.name.replace(/"/g, '&quot;')) +
-        '" placeholder="' + c.hub_name.replace(/"/g, '&quot;') + '"></td>' +
-      '<td class="id">' + c.app_type + ' / ' + c.device_type +
-        (c.is_dimmable ? ' · dim' : '') + (c.is_tunable ? ' · tune' : '') + '</td>' +
-      '<td>' + c.guessed + '<br><span class="guess' +
-        (c.guess_reason.indexOf('unknown') !== -1 || c.guess_reason.indexOf('FAN') !== -1 ? ' warn' : '') +
-        '">' + c.guess_reason + '</span></td>' +
-      '<td>' + sel + '</td>';
-    body.appendChild(tr);
+  }
+  (kids || []).forEach(function (c) {
+    if (c == null || c === false) return;
+    e.appendChild(typeof c === 'object' ? c : document.createTextNode(String(c)));
+  });
+  return e;
+}
+function fill(host, kids) {
+  host.textContent = '';
+  (kids || []).forEach(function (c) { if (c) host.appendChild(c); });
+  return host;
+}
+/* Cards in a grid, never as full-width blocks. Without the wrapper each card is
+   its own block and a port number gets a 660px field, which reads as a mistake
+   rather than as a form. */
+function cards(host, kids) {
+  if (!kids.length || kids[0].className === 'empty') return fill(host, kids);
+  return fill(host, [n('div', { class: 'cards' }, kids)]);
+}
+function field(label, input) { return n('div', null, [n('label', { text: label }), input]); }
+function inp(attrs) {
+  var a = { type: 'text' };
+  Object.keys(attrs || {}).forEach(function (k) { a[k] = attrs[k]; });
+  return n('input', a);
+}
+/* A select built from [value, label] pairs. A blank label adds an empty first
+   option, which is how a cinema says it has no receiver.
+   No backtick in this comment, and none anywhere below: this page is a
+   template literal in server.js, and one here has taken the page down three
+   times. push.sh counts them for exactly this reason. */
+function sel(pairs, value, onchange, blank) {
+  var s = n('select', onchange ? { onchange: onchange } : null);
+  if (blank != null) s.appendChild(n('option', { value: '', text: blank }));
+  (pairs || []).forEach(function (p) {
+    var o = n('option', { value: p[0], text: p[1] });
+    if (String(p[0]) === String(value)) o.setAttribute('selected', '');
+    s.appendChild(o);
+  });
+  s.value = value == null ? '' : String(value);
+  return s;
+}
+function tick(label, checked, onchange, tail) {
+  var box = n('input', { type: 'checkbox', onchange: onchange });
+  box.checked = !!checked;
+  return n('label', { class: 'tick' }, [box, label, tail ? n('span', { class: 'k', text: tail }) : null]);
+}
+function toggle(checked, onchange) {
+  var t = n('input', { type: 'checkbox', class: 'toggle', onchange: onchange });
+  t.checked = !!checked;
+  return t;
+}
+function sw(title, why, control) {
+  return n('div', { class: 'sw' }, [
+    n('div', { class: 'txt' }, [n('b', { text: title }), n('span', { text: why })]),
+    control
+  ]);
+}
+function fig(value, label, hot) {
+  return n('div', { class: 'fig' }, [
+    n('div', { class: hot ? 'n hot' : 'n', text: value }),
+    n('div', { class: 'l', text: label })
+  ]);
+}
+function note(id, text, kind) {
+  var e = el(id);
+  if (!e) return;
+  e.textContent = text || '';
+  e.className = 'note' + (text ? ' on' : '') + (kind ? ' ' + kind : '');
+}
+function busy(id, text) { note(id, text, 'busy'); }
+/* The same derivation server-side slug() makes, because a night light is stored
+   as the name somebody typed ("foot light") and resolved through slug() — so
+   comparing the stored string against a circuit's slug called every working night
+   light missing. */
+function slugify(v) {
+  return String(v == null ? '' : v).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+function titleCase(s) {
+  return String(s || '').toLowerCase().replace(/(^|[\\s-])([a-z])/g, function (m) {
+    return m.toUpperCase();
   });
 }
 
-function drawRoomNames() {
-  var body = el('roomnames').querySelector('tbody');
-  body.innerHTML = '';
+function getJSON(url) {
+  return fetch(url).then(function (r) { return r.json(); });
+}
+function send(method, url, body) {
+  return fetch(url, {
+    method: method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body == null ? undefined : JSON.stringify(body)
+  }).then(function (r) {
+    return r.json().then(function (j) { j._status = r.status; return j; });
+  });
+}
+function post(url, body) { return send('POST', url, body); }
+
+/* Every config save goes through here, so the reply is reported the same way
+   everywhere and the page always redraws from what the server actually stored
+   rather than from what the form thought it sent. */
+function saveConfig(noteId, payload, btn) {
+  if (btn) btn.disabled = true;
+  busy(noteId, 'Saving…');
+  return post('/api/setup', payload).then(function (r) {
+    if (btn) btn.disabled = false;
+    if (!r.ok) { note(noteId, r.error || 'That was refused.', 'bad'); return r; }
+    note(noteId, r.note || 'Saved.', 'good');
+    return load().then(function () { return r; });
+  }, function (e) {
+    if (btn) btn.disabled = false;
+    note(noteId, 'Could not reach the dashboard: ' + e.message, 'bad');
+  });
+}
+
+/* ── the rail ───────────────────────────────────────────────────────────── */
+
+function drawRail() {
+  fill(el('rail'), TABS.map(function (t) {
+    var count = tabCount(t[0]);
+    return n('button', {
+      class: 'tab' + (t[0] === tab ? ' on' : ''),
+      onclick: function () { go(t[0]); }
+    }, [t[1], count ? n('b', { text: count }) : null]);
+  }));
+}
+/* A number on a tab only where it is the answer to a question somebody has —
+   how many cues are there, is anything scheduled — never a count of rows in a
+   table nobody is counting. */
+function tabCount(name) {
+  if (name === 'cues') return CUES.length || '';
+  if (name === 'sched') return SCHEDS.length || '';
+  if (name === 'screens') return (S && S.televisions.length) || '';
+  if (name === 'auto') return (A && A.timers.length) || '';
+  return '';
+}
+/* Prefixed, because a bare #circuits is also the id of the circuits *table* and
+   the browser jumps to an element before the script runs — which presented as a
+   panel opening half way down itself, with the masthead floating over a table. */
+function panelHash(name) { return 'p-' + name; }
+function hashPanel() {
+  var h = location.hash.slice(1);
+  return h.indexOf('p-') === 0 ? h.slice(2) : '';
+}
+function go(name) {
+  tab = name;
+  if (hashPanel() !== name) history.replaceState(null, '', '#' + panelHash(name));
+  var panels = document.querySelectorAll('[data-panel]');
+  for (var i = 0; i < panels.length; i++) {
+    panels[i].hidden = panels[i].getAttribute('data-panel') !== name;
+  }
+  drawRail();
+  window.scrollTo(0, 0);
+}
+
+/* ── theme ──────────────────────────────────────────────────────────────── */
+
+/* The hub's hour decides, not the browser's — a phone in another timezone must
+   not decide whether it is evening in this house. Only a person's choice is
+   stored: an hour is recomputed for free, and a stored verdict about what time
+   it is is wrong within the hour. */
+function applyTheme() {
+  var dark = themePref === 'on' ? true
+    : themePref === 'off' ? false
+    : !!(A && A.clock && A.clock.night);
+  document.documentElement.classList.toggle('dark', dark);
+  el('tcolour').setAttribute('content', dark ? '#0f1216' : '#e8e2d7');
+  el('theme').textContent = themePref === 'on' ? 'Dark' : themePref === 'off' ? 'Light' : 'Auto';
+}
+
+/* ── house ──────────────────────────────────────────────────────────────── */
+
+function drawHouse() {
+  el('hname').value = S.house_name;
+  el('hshort').value = S.house_short;
+  el('hip').value = S.hub_ip;
+  el('hport').value = S.hub_port;
+  el('wport').value = S.port;
+  el('hubwas').textContent = 'The hub is at ' + S.effective.hub_ip + ':' + S.effective.hub_port
+    + ', and this is port ' + S.effective.port + '.';
+  /* Said rather than silently adopted. The fields show what is *configured*; an
+     environment variable wins over the file, and a page showing the effective
+     value would write that override into config.json the next time somebody
+     pressed Save — which for a test instance means writing 3111 into the
+     house's own config. */
+  el('overrides').hidden = !S.overridden.length;
+  if (S.overridden.length) {
+    el('overrideswhat').textContent = S.overridden.join(', ')
+      + (S.overridden.length > 1 ? ' are' : ' is')
+      + ' set in the environment, so the value below is not what is running.'
+      + ' Saving writes the file and changes nothing until the override goes.';
+  }
+}
+
+/* ── rooms and aliases ──────────────────────────────────────────────────── */
+
+function hubRooms() {
   var seen = {};
+  var out = [];
   S.circuits.forEach(function (c) {
     if (seen[c.hub_room]) { seen[c.hub_room].n++; return; }
     seen[c.hub_room] = { hub: c.hub_room, shown: c.room, n: 1 };
+    out.push(seen[c.hub_room]);
   });
-  Object.keys(seen).sort().forEach(function (k) {
-    var r = seen[k];
-    var tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td><span class="rm">' + r.hub + '</span></td>' +
-      '<td><input class="rnm" data-hub="' + r.hub.replace(/"/g, '&quot;') +
-        '" type="text" maxlength="30" value="' +
-        (r.shown === r.hub ? '' : r.shown.replace(/"/g, '&quot;')) +
-        '" placeholder="' + r.hub.replace(/"/g, '&quot;') + '"></td>' +
-      '<td class="id">' + r.n + '</td>';
-    body.appendChild(tr);
-  });
+  return out;
 }
+
+function drawRooms() {
+  var body = el('roomnames').querySelector('tbody');
+  fill(body, hubRooms().map(function (r) {
+    return n('tr', null, [
+      n('td', null, [n('span', { class: 'rm', text: r.hub })]),
+      n('td', null, [inp({ 'data-room': r.hub, maxlength: 30, value: r.shown })]),
+      n('td', { class: 'num', text: String(r.n) })
+    ]);
+  }));
+
+  fill(el('aliases'), D.aliases.length ? D.aliases.map(function (a, i) {
+    return n('div', { class: 'item' }, [
+      n('div', { class: 'txt' }, [
+        inp({ value: a.said, placeholder: 'kanu room', maxlength: 30,
+          oninput: function (e) { a.said = e.target.value; } })
+      ]),
+      n('div', { class: 'txt' }, [
+        sel(roomPairs(), a.room, function (e) { a.room = e.target.value; })
+      ]),
+      n('div', { class: 'acts' }, [
+        n('button', { class: 'small warn', text: 'Remove',
+          onclick: function () { D.aliases.splice(i, 1); drawRooms(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty', text: 'No second names. Every room answers to its own.' })]);
+}
+function roomPairs() {
+  return hubRooms().map(function (r) { return [r.shown, titleCase(r.shown)]; });
+}
+
+/* ── circuits ───────────────────────────────────────────────────────────── */
+
+function drawCircuits() {
+  var roomSel = el('croom');
+  if (roomSel.options.length <= 1) {
+    hubRooms().forEach(function (r) {
+      roomSel.appendChild(n('option', { value: r.shown, text: titleCase(r.shown) }));
+    });
+  }
+  var find = el('cfind').value.trim().toLowerCase();
+  var room = roomSel.value;
+  var onlyGuess = el('cguess').checked;
+
+  var rows = S.circuits.filter(function (c) {
+    if (room && c.room !== room) return false;
+    if (onlyGuess && c.kind) return false;
+    if (!find) return true;
+    return (c.name + ' ' + c.hub_name + ' ' + c.room + ' ' + c.record_id).toLowerCase().indexOf(find) >= 0;
+  });
+
+  var body = el('circuits').querySelector('tbody');
+  fill(body, rows.map(function (c) {
+    var wiring = c.app_type + ' / ' + c.device_type
+      + (c.is_tunable ? ' · tunable' : c.is_dimmable ? ' · dimmable' : '');
+    return n('tr', null, [
+      n('td', null, [n('span', { class: 'rm', text: c.room })]),
+      n('td', null, [
+        inp({ 'data-name': c.record_id, maxlength: 40, value: c.name }),
+        c.name !== c.hub_name
+          ? n('div', { class: 'was', text: 'the hub calls it ' + c.hub_name }) : null
+      ]),
+      n('td', null, [n('span', { class: 'id', text: wiring }),
+        n('div', { class: 'was', text: '#' + c.record_id })]),
+      n('td', null, [n('span', { class: 'kindtag', text: c.guessed }),
+        n('div', { class: 'was', text: c.guess_reason })]),
+      n('td', null, [sel(S.kind_names.map(function (k) { return [k, k]; }),
+        c.kind || '', null, 'keep the guess')])
+    ]);
+  }));
+  // The kind select needs the record id, and sel() does not take arbitrary attrs.
+  var sels = body.querySelectorAll('select');
+  for (var i = 0; i < rows.length; i++) sels[i].setAttribute('data-kind', rows[i].record_id);
+  el('cnone').hidden = rows.length > 0;
+}
+
+/* ── groups ─────────────────────────────────────────────────────────────── */
 
 function drawGroups() {
-  var host = el('groups');
-  host.innerHTML = '';
-  S.rooms.forEach(function (room) {
-    var mine = S.groups.filter(function (g) { return g.room === room; })[0];
-    var here = S.circuits.filter(function (c) { return c.room === room; });
-    var box = document.createElement('div');
-    box.className = 'grp';
-    box.dataset.room = room;
-    var ticks = here.map(function (c) {
-      var on = mine && mine.record_ids.indexOf(c.record_id) !== -1;
-      return '<label class="tick"><input type="checkbox" data-id="' + c.record_id + '"' +
-        (on ? ' checked' : '') + '> ' + c.name + ' <span class="id">#' + c.record_id + '</span></label>';
-    }).join('');
-    box.innerHTML = '<h3>' + room + '</h3>' +
-      '<label>What the tile is called</label>' +
-      '<input type="text" class="glabel" value="' + ((mine && mine.label) || 'All COBs') + '">' +
-      '<label>Circuits in it</label><div class="ticks">' + ticks + '</div>';
-    host.appendChild(box);
+  fill(el('groups'), hubRooms().map(function (r) {
+    var here = S.circuits.filter(function (c) { return c.room === r.shown; });
+    var g = D.groups.filter(function (x) { return x.room === r.shown; })[0]
+      || { room: r.shown, label: 'All COBs', record_ids: [] };
+    if (D.groups.indexOf(g) < 0) D.groups.push(g);
+    var chosen = {};
+    g.record_ids.forEach(function (id) { chosen[id] = true; });
+    return n('div', { class: 'card wide' }, [
+      n('h3', { text: titleCase(r.shown) }),
+      n('div', { class: 'fields', style: 'grid-template-columns:minmax(160px,240px);margin-bottom:10px' }, [
+        field('Name of the group', inp({ value: g.label, maxlength: 30,
+          oninput: function (e) { g.label = e.target.value; } }))
+      ]),
+      n('div', { class: 'ticks' }, here.map(function (c) {
+        return tick(c.name, chosen[c.record_id], function (e) {
+          if (e.target.checked) g.record_ids.push(c.record_id);
+          else g.record_ids = g.record_ids.filter(function (x) { return x !== c.record_id; });
+          updateGroupCount(g);
+        }, null);
+      })),
+      n('div', { class: 'was', style: 'margin-top:8px', 'data-count': r.shown,
+        text: groupWord(g) })
+    ]);
+  }));
+}
+function groupWord(g) {
+  return g.record_ids.length === 0 ? 'No group in this room.'
+    : g.record_ids.length === 1 ? 'One circuit — a group of one is just the circuit, so this is dropped.'
+    : g.record_ids.length + ' circuits, addressed as ' + slugOf(g.label) + '.';
+}
+function updateGroupCount(g) {
+  var e = el('groups').querySelector('[data-count="' + g.room + '"]');
+  if (e) e.textContent = groupWord(g);
+}
+/* The same derivation applyConfig() makes, so the address shown here is the one
+   /do will actually answer to. */
+function slugOf(label) {
+  return String(label || 'all').replace(/^all\\s+/i, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+/* ── televisions ────────────────────────────────────────────────────────── */
+
+function drawScreens() {
+  cards(el('screens'), D.tvs.length ? D.tvs.map(function (t, i) {
+    var wired = t.mac.indexOf('d0:cd:bf') === 0;
+    return n('div', { class: 'card' }, [
+      n('h3', { text: titleCase(t.room || 'A set') }),
+      n('p', { class: 'sub', text: (t.paired ? 'Paired. ' : 'Not paired yet — the first connection puts a prompt on the screen. ')
+        + (wired ? 'Wired, so switching it on is reliable.' : 'Wi-Fi, so switching it on is a coin toss.') }),
+      n('div', { class: 'fields' }, [
+        field('Name', inp({ value: t.name, maxlength: 20,
+          oninput: function (e) { t.name = e.target.value; } })),
+        field('Room', sel(roomPairs(), t.room, function (e) { t.room = e.target.value; })),
+        field('MAC', inp({ value: t.mac, class: 'mono', placeholder: 'aa:bb:cc:dd:ee:ff',
+          oninput: function (e) { t.mac = e.target.value.trim().toLowerCase(); } })),
+        field('Address it answers to', inp({ value: t.id, class: 'mono', maxlength: 30,
+          oninput: function (e) { t.id = e.target.value; } }))
+      ]),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: 'small warn', text: 'Remove',
+          onclick: function () { D.tvs.splice(i, 1); drawScreens(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty', text: 'No televisions. Scan the network to find them.' })]);
+}
+
+/* ── receivers, players, cinemas ────────────────────────────────────────── */
+
+function drawReceivers() {
+  cards(el('receivers'), D.avrs.length ? D.avrs.map(function (a, i) {
+    return n('div', { class: 'card' }, [
+      n('h3', { text: a.name || 'Receiver' }),
+      n('p', { class: 'sub', text: a.online ? 'Answering at ' + a.host + '.'
+        : 'Not answering at ' + a.host + '. If it has moved, find it below.' }),
+      n('div', { class: 'fields' }, [
+        field('Name', inp({ value: a.name, maxlength: 20,
+          oninput: function (e) { a.name = e.target.value; } })),
+        field('Room', sel(roomPairs(), a.room, function (e) { a.room = e.target.value; })),
+        field('Address', inp({ value: a.host, class: 'mono',
+          oninput: function (e) { a.host = e.target.value.trim(); } })),
+        field('Port', inp({ value: a.port, class: 'mono', type: 'number',
+          oninput: function (e) { a.port = e.target.value; } })),
+        field('Loudest it may go', inp({ value: a.volume_max, type: 'number', class: 'mono',
+          oninput: function (e) { a.volume_max = e.target.value; } })),
+        field('Address it answers to', inp({ value: a.id, class: 'mono', maxlength: 30,
+          oninput: function (e) { a.id = e.target.value; } }))
+      ]),
+      n('p', { class: 'sub', style: 'margin:10px 0 0',
+        text: 'The unit reports a maximum of 98 and 98 is deafening. A slider that reaches it is one slipped thumb from damaged speakers.' }),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: 'small warn', text: 'Remove',
+          onclick: function () { D.avrs.splice(i, 1); drawReceivers(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty', text: 'No receiver.' })]);
+}
+
+function drawMedias() {
+  cards(el('medias'), D.medias.length ? D.medias.map(function (m, i) {
+    return n('div', { class: 'card wide' }, [
+      n('h3', { text: m.name || 'Media player' }),
+      n('p', { class: 'sub', text: (m.paired ? 'Paired. ' : 'Not paired — pair it below, with somebody at the screen. ')
+        + (m.online ? 'Answering at ' + m.host + '.' : 'Not answering at ' + m.host + '.') }),
+      n('div', { class: 'fields' }, [
+        field('Name', inp({ value: m.name, maxlength: 20,
+          oninput: function (e) { m.name = e.target.value; } })),
+        field('Room', sel(roomPairs(), m.room, function (e) { m.room = e.target.value; })),
+        field('Address', inp({ value: m.host, class: 'mono',
+          oninput: function (e) { m.host = e.target.value.trim(); } })),
+        field('MAC', inp({ value: m.mac, class: 'mono',
+          oninput: function (e) { m.mac = e.target.value.trim().toLowerCase(); } })),
+        field('Address it answers to', inp({ value: m.id, class: 'mono', maxlength: 30,
+          oninput: function (e) { m.id = e.target.value; } }))
+      ]),
+      n('div', { style: 'margin-top:14px' }, [
+        n('label', { text: 'App tiles' }),
+        n('div', { class: 'list' }, (m.apps.length ? m.apps.map(function (app, j) {
+          return n('div', { class: 'item' }, [
+            n('div', { class: 'txt' }, [inp({ value: app.name, maxlength: 24,
+              oninput: function (e) { app.name = e.target.value; } })]),
+            n('div', { class: 'txt', style: 'flex:2 1 auto' }, [
+              inp({ value: app.link, class: 'mono', placeholder: 'netflix:// or https://app.host/path',
+                oninput: function (e) { app.link = e.target.value.trim(); } })
+            ]),
+            n('div', { class: 'acts' }, [n('button', { class: 'small warn', text: 'Remove',
+              onclick: function () { m.apps.splice(j, 1); drawMedias(); } })])
+          ]);
+        }) : [n('div', { class: 'empty', text: 'No tiles. Any real content link still works in the Play field on the board.' })]))
+      ]),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: 'small', text: 'Add a tile',
+          onclick: function () { m.apps.push({ name: '', link: '' }); drawMedias(); } }),
+        n('button', { class: 'small', text: m.paired ? 'Pair again' : 'Pair with the screen',
+          onclick: function () { pairMedia(m.id); } }),
+        n('span', { class: 'spacer' }),
+        n('button', { class: 'small warn', text: 'Remove',
+          onclick: function () { D.medias.splice(i, 1); drawMedias(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty', text: 'No media player.' })]);
+}
+
+function drawCinemas() {
+  cards(el('cinemas'), D.cinemas.length ? D.cinemas.map(function (c, i) {
+    var sources = (S.avr_sources[c.avr] || []).map(function (s) {
+      return [s.code, s.name + ' (' + s.code + ')'];
+    });
+    return n('div', { class: 'card wide' }, [
+      n('h3', { text: c.name || 'Cinema' }),
+      n('p', { class: 'sub', text: 'Its members do not also appear on their own — a cinema draws as one card.' }),
+      n('div', { class: 'fields' }, [
+        field('Name', inp({ value: c.name, maxlength: 20,
+          oninput: function (e) { c.name = e.target.value; } })),
+        field('Room', sel(roomPairs(), c.room, function (e) { c.room = e.target.value; })),
+        field('Projector', sel(S.projectors.map(function (p) {
+          return [p.record_id, p.name + ' · ' + titleCase(p.room)];
+        }), c.projector == null ? '' : c.projector, function (e) {
+          c.projector = e.target.value === '' ? null : Number(e.target.value);
+        }, 'none')),
+        field('Receiver', sel(D.avrs.map(function (a) { return [a.id, a.name + ' · ' + a.id]; }),
+          c.avr, function (e) { c.avr = e.target.value; drawCinemas(); }, 'none')),
+        field('Media player', sel(D.medias.map(function (m) { return [m.id, m.name + ' · ' + m.id]; }),
+          c.media, function (e) { c.media = e.target.value; }, 'none')),
+        /* A select where the unit has answered once and a plain field where it
+           has not — the codes are discovered from the receiver, never a built-in
+           table, because on this unit GAME is called PS5 and no table could
+           know that. */
+        field('The player is plugged into', sources.length
+          ? sel(sources, c.media_input, function (e) { c.media_input = e.target.value; }, 'none')
+          : inp({ value: c.media_input, class: 'mono', placeholder: 'MPLAY',
+            oninput: function (e) { c.media_input = e.target.value.toUpperCase(); } })),
+        field('Address it answers to', inp({ value: c.id, class: 'mono', maxlength: 30,
+          oninput: function (e) { c.id = e.target.value; } }))
+      ]),
+      sources.length ? null : n('p', { class: 'sub', style: 'margin:10px 0 0',
+        text: 'The receiver has not answered yet, so its own source names are unknown. Type the code, or come back when it is on.' }),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: 'small warn', text: 'Remove',
+          onclick: function () { D.cinemas.splice(i, 1); drawCinemas(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty', text: 'No cinema declared.' })]);
+}
+
+function pairMedia(id) {
+  var code = window.prompt('Six characters are on the screen now. Type them here.\\n\\n'
+    + 'Leave this blank and press OK to make the code appear first.');
+  if (code === null) return;
+  busy('n-medias', code ? 'Pairing…' : 'Asking the box to show a code…');
+  post('/api/media/' + encodeURIComponent(id) + '/pair', code ? { code: code } : {})
+    .then(function (r) {
+      if (!r.ok) return note('n-medias', r.error || 'That was refused.', 'bad');
+      note('n-medias', r.note || (code ? 'Paired.' : 'A code should be on the screen. Press Pair again and type it.'), 'good');
+      if (code) load();
+    }, function (e) { note('n-medias', e.message, 'bad'); });
+}
+
+/* ── good night ─────────────────────────────────────────────────────────── */
+
+function drawGoodnight() {
+  cards(el('goodnight'), D.gn.length ? D.gn.map(function (g, i) {
+    var circuits = (S.room_circuits[g.room] || []);
+    var chosen = g.night_light.map(slugify);
+    var unused = circuits.filter(function (c) { return chosen.indexOf(c.slug) < 0; });
+    return n('div', { class: 'card' }, [
+      n('h3', { text: g.who ? titleCase(g.who) : 'Somebody' }),
+      n('p', { class: 'sub', text: 'The phone sends this name. Case does not matter.' }),
+      n('div', { class: 'fields' }, [
+        field('Name the phone sends', inp({ value: g.who, maxlength: 20, class: 'mono',
+          oninput: function (e) { g.who = e.target.value.trim().toLowerCase(); } })),
+        field('Room to put to bed', sel(roomPairs(), g.room, function (e) {
+          g.room = e.target.value;
+          /* A night light belongs to a room. Moving the person moves it out from
+             under the names, so they are dropped rather than left pointing at a
+             circuit in a room this person no longer sleeps in — which the save
+             would refuse anyway, and refuse confusingly. */
+          g.night_light = [];
+          drawGoodnight();
+        }))
+      ]),
+      n('div', { style: 'margin-top:14px' }, [
+        n('label', { text: 'Night lights — switched on, never off' }),
+        g.night_light.length
+          ? n('div', { class: 'list' }, g.night_light.map(function (name, j) {
+            var known = circuits.filter(function (c) { return c.slug === slugify(name); })[0];
+            return n('div', { class: 'item' }, [
+              n('div', { class: 'txt' }, [
+                n('b', { text: known ? known.label : name }),
+                n('span', { text: known ? 'in ' + titleCase(g.room)
+                  : 'this room has no circuit called that — the save will refuse it' })
+              ]),
+              n('div', { class: 'acts' }, [n('button', { class: 'small warn', text: 'Remove',
+                onclick: function () { g.night_light.splice(j, 1); drawGoodnight(); } })])
+            ]);
+          }))
+          : n('div', { class: 'empty', text: 'None. The room goes fully dark.' }),
+        unused.length ? n('div', { class: 'row tight' }, [
+          sel(unused.map(function (c) { return [c.slug, c.label]; }), '', function (e) {
+            if (!e.target.value) return;
+            g.night_light.push(e.target.value);
+            drawGoodnight();
+          }, 'Add a circuit…')
+        ]) : null
+      ]),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: 'small warn', text: 'Remove this person',
+          onclick: function () { D.gn.splice(i, 1); drawGoodnight(); } })
+      ])
+    ]);
+  }) : [n('div', { class: 'empty',
+    text: 'Nobody is set up, so good night says so rather than guessing at a room.' })]);
+}
+
+/* ── automations ────────────────────────────────────────────────────────── */
+
+function drawAuto() {
+  var st = A.settings;
+  fill(el('autoswitches'), [
+    sw('Colour follows the hour',
+      'Applied only as a tunable lamp comes on, before the brightness, so it can never'
+      + ' fight a colour set by hand. Right now it would set ' + A.colour_now + '.',
+      toggle(st.circadian.on, function (e) { st.circadian.on = e.target.checked; })),
+    sw('Say when something has been left on',
+      'It never switches anything off. The house must not kill a room somebody is quietly sitting in.',
+      toggle(st.nudges.on, function (e) { st.nudges.on = e.target.checked; })),
+    sw('And put it on the televisions that are on',
+      'A message is the one thing that can be said to somebody mid-programme without taking the room away.',
+      toggle(st.nudges.toast, function (e) { st.nudges.toast = e.target.checked; }))
+  ]);
+
+  fill(el('nudgehours'), [
+    ['ac_hours', 'Air conditioner'], ['fan_hours', 'Fan'], ['light_hours', 'Light']
+  ].map(function (p) {
+    return field(p[1] + ', hours', inp({ type: 'number', step: '0.5', min: '0.5', max: '24',
+      class: 'mono', value: st.nudges[p[0]],
+      oninput: function (e) { st.nudges[p[0]] = e.target.value; } }));
+  }));
+
+  fill(el('timers'), A.timers.length ? [n('div', { class: 'list' }, A.timers.map(function (t) {
+    var left = Math.round(t.seconds_left / 60);
+    return n('div', { class: 'item' }, [
+      n('div', { class: 'txt' }, [
+        n('b', { text: (t.kind === 'ac' ? 'Air conditioner off' : 'Sleep') + ' · ' + titleCase(t.label) }),
+        n('span', { text: (left <= 1 ? 'less than a minute' : left + ' minutes') + ' from now'
+          + (t.minutes ? ', set for ' + t.minutes + ' minutes' : '') })
+      ]),
+      n('div', { class: 'acts' }, [n('button', { class: 'small warn', text: 'Cancel',
+        onclick: function () { killTimer(t.id); } })])
+    ]);
+  }))] : [n('div', { class: 'empty', text: 'Nothing is counting down.' })]);
+}
+function killTimer(id) {
+  send('DELETE', '/api/timers/' + encodeURIComponent(id)).then(function (r) {
+    note('n-settings', r.ok ? 'Cancelled.' : (r.error || 'That was refused.'), r.ok ? 'good' : 'bad');
+    load();
   });
 }
 
-function drawScreens(found) {
-  var host = el('screens');
-  host.innerHTML = '';
-  // Whatever is already configured, plus anything the scan turned up that is not.
-  var rows = S.televisions.map(function (t) {
-    return { mac: t.mac, room: t.room, id: t.id, name: t.name, paired: t.paired, wake: t.wake, known: true };
+/* ── cues ───────────────────────────────────────────────────────────────── */
+
+/* The average light a cue makes, which is what the board draws a cue card in. It
+   is the fastest way to find the one you want in a library that is mostly
+   variations on each other. */
+function cueLight(cue) {
+  var lit = cue.steps.filter(function (s) { return s.on !== false && typeof s.record_id === 'number'; });
+  if (!lit.length) return 'var(--panel)';
+  var lv = 0, tu = 0, tn = 0;
+  lit.forEach(function (s) {
+    lv += s.level == null ? 100 : s.level;
+    if (s.tune != null) { tu += s.tune; tn++; }
   });
-  (found || []).forEach(function (f) {
-    (f.macs || []).forEach(function (mac) {
-      mac = String(mac).toLowerCase();
-      if (rows.some(function (r) { return r.mac === mac; })) return;
-      rows.push({ mac: mac, room: '', id: '', name: 'TV', ip: f.ip, label: f.name || f.model,
-        wake: /^d0:cd:bf/.test(mac) ? 'wired, reliable' : 'wi-fi, unreliable', known: false });
-    });
+  var level = Math.round(lv / lit.length);
+  var warmth = tn ? Math.round(tu / tn) : 55;
+  var mix = Math.max(8, Math.min(90, Math.round(level * 0.85 + 10)));
+  return 'color-mix(in oklab, ' + (warmth > 38 ? 'var(--warm)' : 'var(--cool)')
+    + ' ' + mix + '%, var(--panel-2))';
+}
+
+function drawCues() {
+  fill(el('cuelist'), CUES.length ? [n('div', { class: 'list' }, CUES.map(function (c) {
+    return n('div', { class: 'item' }, [
+      n('div', { class: 'swatch', style: 'background:' + cueLight(c) }),
+      n('div', { class: 'txt' }, [
+        n('b', { text: c.name }),
+        n('span', { text: c.devices + (c.devices === 1 ? ' circuit' : ' circuits')
+          + (c.note ? ' · ' + c.note : '') + ' · ' + c.id })
+      ]),
+      n('div', { class: 'acts' }, [
+        n('button', { class: 'small', text: 'Fire', onclick: function () { fireCue(c.id); } }),
+        n('button', { class: 'small', text: 'Edit', onclick: function () { openCue(c); } }),
+        n('button', { class: 'small warn', text: 'Delete', onclick: function () { delCue(c); } })
+      ])
+    ]);
+  }))] : [n('div', { class: 'empty', text: 'No cues yet.' })]);
+}
+function fireCue(id) {
+  busy('n-cues', 'Firing…');
+  post('/api/scenes/' + encodeURIComponent(id) + '/apply', {}).then(function (r) {
+    note('n-cues', r.ok === false ? (r.error || 'That was refused.')
+      : (r.spoken || 'Fired.'), r.ok === false ? 'bad' : 'good');
   });
-  if (!rows.length) {
-    host.innerHTML = '<p class="why">None configured, and none found. A set that is ' +
-      'fully off is invisible to everything — switch one on and scan again.</p>';
+}
+function delCue(c) {
+  if (!window.confirm('Delete ' + c.name + '? Any shortcut pointing at ' + c.id + ' stops working.')) return;
+  send('DELETE', '/api/scenes/' + encodeURIComponent(c.id)).then(function (r) {
+    note('n-cues', r.ok ? 'Deleted ' + c.name + '.' : (r.error || 'That was refused.'), r.ok ? 'good' : 'bad');
+    if (cueOpen && cueOpen.id === c.id) closeCue();
+    load();
+  });
+}
+function openCue(c) {
+  cueOpen = c ? { id: c.id, name: c.name, steps: JSON.parse(JSON.stringify(c.steps)) }
+    : { id: null, name: '', steps: [] };
+  el('cueedit').hidden = false;
+  el('cuetitle').textContent = c ? c.name : 'A new cue';
+  el('cuename').value = cueOpen.name;
+  el('cueid').value = cueOpen.id || 'set when you save it';
+  note('n-cue', '');
+  drawCueSteps();
+  el('cueedit').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function closeCue() { cueOpen = null; el('cueedit').hidden = true; }
+
+/* What a step can be told, which depends entirely on what it is pointed at. A
+   circuit takes a level and a colour only where it is wired for them; a screen,
+   a receiver and a player take their own fields and none of the others'. */
+function stepRow(st, i) {
+  var kids = [];
+  var link = linkFor(st.record_id);
+  var dev = typeof st.record_id === 'number' ? circuitById(st.record_id) : null;
+
+  kids.push(n('div', { class: 'txt' }, [
+    n('b', { text: link ? link.name + ' · ' + titleCase(link.room)
+      : dev ? dev.name + ' · ' + titleCase(dev.room) : String(st.record_id) }),
+    n('span', { text: link ? link.what
+      : dev ? (dev.is_tunable ? 'tunable light' : dev.is_dimmable ? 'dimmable light' : dev.guessed)
+      : 'this circuit is no longer in the house' })
+  ]));
+
+  /* A media player has no on and off worth offering: its only power control is a
+     toggle, and a cue firing a toggle does the opposite of what it says whenever
+     the box is already awake. */
+  if (!link || link.kind !== 'media') {
+    kids.push(sel(onOffWords(dev), st.on === false ? 'off' : 'on', function (e) {
+      st.on = e.target.value === 'on';
+      drawCueSteps();
+    }));
+  }
+
+  if (st.on !== false) {
+    if (dev && dev.is_dimmable) {
+      kids.push(numField('Level', st.level == null ? '' : st.level, function (v) {
+        st.level = v === '' ? null : Number(v);
+      }));
+    }
+    if (dev && dev.is_tunable) {
+      kids.push(numField('Warmth', st.tune == null ? '' : st.tune, function (v) {
+        st.tune = v === '' ? null : Number(v);
+      }));
+    }
+    if (link && link.kind === 'tv') {
+      kids.push(field('App', sel(link.apps, st.tv_app || '', function (e) {
+        st.tv_app = e.target.value || null;
+      }, 'whatever it opens on')));
+      kids.push(field('A video', inp({ value: st.youtube || '', class: 'mono',
+        placeholder: 'a YouTube link', oninput: function (e) { st.youtube = e.target.value || null; } })));
+      kids.push(numField('Volume', st.volume == null ? '' : st.volume, function (v) {
+        st.volume = v === '' ? null : Number(v);
+      }));
+    }
+    if (link && link.kind === 'avr') {
+      kids.push(field('Source', sel(link.sources, st.input || '', function (e) {
+        st.input = e.target.value || null;
+      }, 'leave it')));
+      kids.push(field('Sound mode', sel(link.modes, st.mode || '', function (e) {
+        st.mode = e.target.value || null;
+      }, 'leave it')));
+      kids.push(numField('Volume', st.volume == null ? '' : st.volume, function (v) {
+        st.volume = v === '' ? null : Number(v);
+      }));
+    }
+    if (link && link.kind === 'media') {
+      kids.push(field('Open', sel(link.apps, st.app || '', function (e) {
+        st.app = e.target.value || null;
+      }, 'just wake it')));
+    }
+  }
+
+  kids.push(n('div', { class: 'acts' }, [
+    n('button', { class: 'small warn', text: 'Remove', onclick: function () {
+      cueOpen.steps.splice(i, 1); drawCueSteps();
+    } })
+  ]));
+  return n('div', { class: 'item', style: 'flex-wrap:wrap' }, kids);
+}
+function numField(label, value, onset) {
+  return field(label, inp({ type: 'number', min: '0', max: '100', class: 'mono',
+    value: value, style: 'max-width:92px',
+    oninput: function (e) { onset(e.target.value); } }));
+}
+function onOffWords(dev) {
+  return dev && dev.app_type === 'C'
+    ? [['on', 'Open'], ['off', 'Close']]
+    : [['on', 'On'], ['off', 'Off']];
+}
+function circuitById(id) {
+  return S.circuits.filter(function (c) { return c.record_id === id; })[0] || null;
+}
+/* A screen, a receiver or a player, with the vocabulary each one takes. Read off
+   /api/devices rather than restated here, so a source this house calls PS5 is
+   offered by that name. */
+function linkFor(id) {
+  if (typeof id !== 'string') return null;
+  var d = DEV.filter(function (x) { return x.record_id === id; })[0];
+  if (!d) return null;
+  if (d.is_tv) {
+    return { kind: 'tv', name: d.name, room: d.room, what: 'a television',
+      apps: (d.tv_apps || []).map(function (a) { return [a.id, a.title]; }) };
+  }
+  if (d.is_avr) {
+    return { kind: 'avr', name: d.name, room: d.room, what: 'a receiver',
+      sources: (d.avr_sources || []).map(function (s) { return [s.code, s.name]; }),
+      modes: (d.avr_modes || []).map(function (m) { return [m.cmd, m.label]; }) };
+  }
+  if (d.is_media) {
+    return { kind: 'media', name: d.name, room: d.room, what: 'a media player',
+      apps: (d.media_apps || []).map(function (a) { return [a.link, a.name]; }) };
+  }
+  return null;
+}
+
+function drawCueSteps() {
+  fill(el('cuesteps'), cueOpen.steps.length
+    ? [n('div', { class: 'list' }, cueOpen.steps.map(stepRow))]
+    : [n('div', { class: 'empty', text: 'No circuits yet. A cue needs at least one.' })]);
+}
+
+/* Adding circuits is a checklist, the same shape the board's cue editor uses and
+   for the same reason: adding eight lights must not be eight round trips, and a
+   tick that cannot be unticked is the one thing a tick promises. */
+function cueAdd() {
+  var host = el('cuesteps');
+  var chosen = {};
+  cueOpen.steps.forEach(function (s) { chosen[String(s.record_id)] = true; });
+  var rows = [];
+  hubRooms().forEach(function (r) {
+    rows.push(n('div', { class: 'head', style: 'margin:14px 0 8px', text: titleCase(r.shown) }));
+    rows.push(n('div', { class: 'ticks' }, S.circuits.filter(function (c) {
+      return c.room === r.shown;
+    }).map(function (c) {
+      return tick(c.name, chosen[String(c.record_id)], function (e) {
+        toggleStep(c.record_id, e.target.checked);
+      }, null);
+    })));
+  });
+  var links = DEV.filter(function (d) { return d.is_tv || d.is_avr || d.is_media; });
+  if (links.length) {
+    rows.push(n('div', { class: 'head', style: 'margin:14px 0 8px', text: 'Screens and sound' }));
+    rows.push(n('div', { class: 'ticks' }, links.map(function (d) {
+      return tick(d.name + ' · ' + titleCase(d.room), chosen[d.record_id], function (e) {
+        toggleStep(d.record_id, e.target.checked);
+      }, null);
+    })));
+  }
+  rows.push(n('div', { class: 'row' }, [n('button', { class: 'go', text: 'Done', onclick: drawCueSteps })]));
+  fill(host, rows);
+}
+function toggleStep(id, want) {
+  if (want) {
+    /* On by default, because a cue is a list of things to light and most lamps
+       are off when you sit down to build one. */
+    if (!cueOpen.steps.some(function (s) { return String(s.record_id) === String(id); })) {
+      cueOpen.steps.push({ record_id: id, on: true });
+    }
+  } else {
+    cueOpen.steps = cueOpen.steps.filter(function (s) { return String(s.record_id) !== String(id); });
+  }
+}
+
+function saveCue() {
+  var name = el('cuename').value.trim();
+  if (!name) return note('n-cue', 'A cue needs a name.', 'bad');
+  if (!cueOpen.steps.length) return note('n-cue', 'A cue needs at least one circuit.', 'bad');
+  busy('n-cue', 'Saving…');
+  var body = { name: name, steps: cueOpen.steps };
+  var p = cueOpen.id
+    ? send('PATCH', '/api/scenes/' + encodeURIComponent(cueOpen.id), body)
+    : post('/api/scenes', body);
+  p.then(function (r) {
+    if (!r.ok) return note('n-cue', r.error || 'That was refused.', 'bad');
+    note('n-cue', 'Saved.', 'good');
+    closeCue();
+    load();
+  });
+}
+
+/* ── schedules ──────────────────────────────────────────────────────────── */
+
+function drawScheds() {
+  fill(el('schedlist'), SCHEDS.length ? [n('div', { class: 'list' }, SCHEDS.map(function (s) {
+    return n('div', { class: 'item' }, [
+      n('div', { class: 'txt' }, [
+        n('b', { text: (s.name || s.says || 'A schedule') }),
+        n('span', { text: (s.name ? s.says + ' · ' : '')
+          + (s.target_missing ? 'what it points at is gone — it will not run' : 'ready')
+          + (s.last_error ? ' · last time: ' + s.last_error : '') })
+      ]),
+      n('div', { class: 'acts' }, [
+        n('button', { class: 'small', text: 'Run now', onclick: function () { runSched(s.id); } }),
+        n('button', { class: 'small', text: 'Edit', onclick: function () { openSched(s); } }),
+        n('button', { class: 'small warn', text: 'Delete', onclick: function () { delSched(s); } })
+      ])
+    ]);
+  }))] : [n('div', { class: 'empty', text: 'Nothing is scheduled.' })]);
+}
+function runSched(id) {
+  busy('n-sched', 'Running…');
+  post('/api/schedules/' + encodeURIComponent(id) + '/run', {}).then(function (r) {
+    note('n-sched', r.ok === false ? (r.error || 'That was refused.') : 'Ran it.', r.ok === false ? 'bad' : 'good');
+  });
+}
+function delSched(s) {
+  if (!window.confirm('Delete this schedule?')) return;
+  send('DELETE', '/api/schedules/' + encodeURIComponent(s.id)).then(function (r) {
+    note('n-sched', r.ok ? 'Deleted.' : (r.error || 'That was refused.'), r.ok ? 'good' : 'bad');
+    if (schedOpen && schedOpen.id === s.id) closeSched();
+    load();
+  });
+}
+function openSched(s) {
+  schedOpen = s ? JSON.parse(JSON.stringify(s))
+    : { id: null, name: '', at: '07:30', days: [1, 2, 3, 4, 5],
+        target: { kind: 'device', record_ids: [] }, action: 'on', level: null, tune: null };
+  el('schededit').hidden = false;
+  el('schedtitle').textContent = s ? (s.name || 'A schedule') : 'A new schedule';
+  el('sname').value = schedOpen.name || '';
+  el('stime').value = schedOpen.at;
+  el('skind').value = schedOpen.target.kind === 'cue' ? 'scene' : 'device';
+  note('n-schededit', '');
+  drawSchedWhat();
+  drawSchedDays();
+  el('schededit').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function closeSched() { schedOpen = null; el('schededit').hidden = true; }
+
+function schedIds() {
+  var t = schedOpen.target;
+  return t.record_ids || (t.record_id != null ? [t.record_id] : []);
+}
+function drawSchedWhat() {
+  var kind = el('skind').value;
+  var host = el('schedwhat');
+  if (kind === 'scene') {
+    if (schedOpen.target.kind !== 'cue') schedOpen.target = { kind: 'cue', id: (CUES[0] || {}).id || '' };
+    fill(host, [n('div', { class: 'fields' }, [
+      field('Which cue', sel(CUES.map(function (c) { return [c.id, c.name]; }),
+        schedOpen.target.id, function (e) { schedOpen.target.id = e.target.value; schedSay(); }))
+    ])]);
+    schedSay();
     return;
   }
-  rows.forEach(function (r) {
-    var opts = '<option value="">choose a room</option>' + S.rooms.map(function (rm) {
-      return '<option value="' + rm + '"' + (r.room === rm ? ' selected' : '') + '>' + rm + '</option>';
-    }).join('');
-    var box = document.createElement('div');
-    box.className = 'scr';
-    box.dataset.mac = r.mac;
-    box.innerHTML =
-      '<div><span class="mac">' + r.mac + '</span> · <span class="guess">' + r.wake +
-        (r.ip ? ' · seen at ' + r.ip : '') + (r.label ? ' · ' + r.label : '') +
-        (r.known ? (r.paired ? ' · paired' : ' · <span class="warn">not paired</span>') : ' · new') +
-        '</span></div>' +
-      '<div class="flex" style="margin-top:8px">' +
-        '<div><label>Room</label><select class="srm">' + opts + '</select></div>' +
-        '<div><label>Name on the tile</label><input type="text" class="snm" value="' + (r.name || 'TV') + '"></div>' +
-        '<div><label>Address it answers to</label><input type="text" class="sid" value="' + (r.id || '') +
-          '" placeholder="tv-living"></div>' +
-      '</div>';
-    host.appendChild(box);
+  if (schedOpen.target.kind !== 'device') schedOpen.target = { kind: 'device', record_ids: [] };
+
+  /* The picker and the options are two containers, not one. A tick used to redraw
+     the whole panel, which with eighty-eight circuits threw the list you were
+     reading back to the top — and made the checkbox you had just clicked a
+     different node, which is the detached-target trap this project already
+     records for the sleep panel. Only the counts and the options move now. */
+  var pick = n('div', { id: 'schedpick' });
+  var opts = n('div', { id: 'schedopts' });
+  fill(host, [pick, opts]);
+  drawSchedPick();
+  drawSchedOpts();
+  schedSay();
+}
+
+function schedPicked() {
+  return schedIds().map(function (i) {
+    return typeof i === 'string' ? linkFor(i) : circuitById(Number(i));
+  }).filter(Boolean);
+}
+
+function drawSchedPick() {
+  var ids = schedIds().map(String);
+  var chosen = {};
+  ids.forEach(function (i) { chosen[i] = true; });
+  var rows = [];
+  hubRooms().forEach(function (r) {
+    var here = S.circuits.filter(function (c) { return c.room === r.shown; });
+    rows.push(n('div', { class: 'head', style: 'margin:14px 0 8px',
+      'data-room-count': r.shown, text: roomCountWord(r, here, chosen) }));
+    rows.push(n('div', { class: 'ticks' }, here.map(function (c) {
+      return tick(c.name, chosen[String(c.record_id)], function (e) {
+        pickSched(c.record_id, e.target.checked);
+      }, null);
+    })));
+  });
+  var links = DEV.filter(function (d) { return d.is_tv; });
+  if (links.length) {
+    rows.push(n('div', { class: 'head', style: 'margin:14px 0 8px', text: 'Televisions' }));
+    rows.push(n('div', { class: 'ticks' }, links.map(function (d) {
+      return tick(d.name + ' \u00b7 ' + titleCase(d.room), chosen[d.record_id], function (e) {
+        pickSched(d.record_id, e.target.checked);
+      }, null);
+    })));
+    rows.push(n('p', { class: 'why', style: 'margin:10px 0 0',
+      text: 'A screen is scheduled on its own: its extras belong to one set and cannot'
+        + ' be read across a list, so choosing one replaces the selection.' }));
+  }
+  fill(el('schedpick'), rows);
+}
+/* The count has to live outside the scrolling list, or the answer to "have I got
+   them all" is visible only while you happen to be looking at the right row. */
+function roomCountWord(r, here, chosen) {
+  var count = here.filter(function (c) { return chosen[String(c.record_id)]; }).length;
+  return titleCase(r.shown) + (count ? ' \u2014 ' + count + ' of ' + here.length + ' chosen' : '');
+}
+function updateSchedCounts() {
+  var ids = schedIds().map(String);
+  var chosen = {};
+  ids.forEach(function (i) { chosen[i] = true; });
+  hubRooms().forEach(function (r) {
+    var head = el('schedpick').querySelector('[data-room-count="' + r.shown + '"]');
+    if (!head) return;
+    head.textContent = roomCountWord(r, S.circuits.filter(function (c) {
+      return c.room === r.shown;
+    }), chosen);
   });
 }
 
-el('savehouse').onclick = function () {
-  post('/api/setup', { house_name: el('hname').value, house_short: el('hshort').value })
-    .then(function (r) { note('n-house', r.ok ? r.note : r.error, !r.ok); });
-};
-el('savehub').onclick = function () {
-  post('/api/setup', { hub_ip: el('hip').value, hub_port: el('hport').value, port: Number(el('wport').value) })
-    .then(function (r) { note('n-hub', r.ok ? r.note : r.error, !r.ok); });
-};
-el('saverooms').onclick = function () {
-  var names = {};
-  Array.prototype.forEach.call(el('roomnames').querySelectorAll('input.rnm'), function (inp) {
-    if (inp.value.trim()) names[inp.dataset.hub] = inp.value.trim();
-  });
-  post('/api/setup', { room_names: names }).then(function (r) {
-    note('n-rooms', r.ok ? r.note : r.error, !r.ok);
-    if (r.ok) load();
-  });
-};
+function drawSchedOpts() {
+  var picked = schedPicked();
+  /* Open and close replace on and off only when EVERY circuit chosen is a
+     curtain. Mixed with a lamp the pair is on/off, and each curtain still closes
+     on off — which is what the runner does per circuit anyway. */
+  var allCurtains = picked.length > 0 && picked.every(function (c) { return c.app_type === 'C'; });
+  /* Offered when ANY chosen circuit can take them, and sized off the first that
+     actually can — keyed on the first circuit *chosen*, picking a plain switch
+     and then a dimmer would hide the slider the dimmer needs. */
+  var anyDim = picked.some(function (c) { return c.is_dimmable; });
+  var anyTune = picked.some(function (c) { return c.is_tunable; });
+  if (allCurtains && schedOpen.action === 'on') schedOpen.action = 'open';
+  if (!allCurtains && (schedOpen.action === 'open' || schedOpen.action === 'close')) {
+    schedOpen.action = schedOpen.action === 'open' ? 'on' : 'off';
+  }
+  var isOn = schedOpen.action === 'on' || schedOpen.action === 'open';
 
-el('savekinds').onclick = function () {
-  var kinds = {};
-  Array.prototype.forEach.call(el('circuits').querySelectorAll('select'), function (sel) {
-    if (sel.value) kinds[sel.dataset.id] = sel.value;
-  });
-  var names = {};
-  Array.prototype.forEach.call(el('circuits').querySelectorAll('input.nm'), function (inp) {
-    if (inp.value.trim()) names[inp.dataset.id] = inp.value.trim();
-  });
-  post('/api/setup', { kinds: kinds, device_names: names }).then(function (r) {
-    note('n-kinds', r.ok ? r.note : r.error, !r.ok);
-    if (r.ok) load();
-    if (r.ok) load();
-  });
-};
-el('savegroups').onclick = function () {
-  /* Every room, every time. The server replaces the whole list, so sending only
-     the room being edited would silently delete the others. */
-  var groups = [];
-  Array.prototype.forEach.call(el('groups').querySelectorAll('.grp'), function (box) {
-    var ids = [];
-    Array.prototype.forEach.call(box.querySelectorAll('input[type=checkbox]'), function (cb) {
-      if (cb.checked) ids.push(Number(cb.dataset.id));
-    });
-    if (ids.length > 1) {
-      groups.push({ room: box.dataset.room, label: box.querySelector('.glabel').value, record_ids: ids });
+  fill(el('schedopts'), [n('div', { class: 'fields', style: 'margin-top:16px' }, [
+    field('What it does', sel(allCurtains ? [['open', 'Open'], ['close', 'Close']]
+      : [['on', 'Switch on'], ['off', 'Switch off']],
+      schedOpen.action, function (e) {
+        schedOpen.action = e.target.value;
+        drawSchedOpts();
+        schedSay();
+      })),
+    anyDim && isOn
+      ? field('Level', inp({ type: 'number', min: '0', max: '100', class: 'mono',
+        value: schedOpen.level == null ? '' : schedOpen.level,
+        oninput: function (e) { schedOpen.level = e.target.value === '' ? null : Number(e.target.value); } }))
+      : null,
+    anyTune && isOn
+      ? field('Warmth', inp({ type: 'number', min: '0', max: '100', class: 'mono',
+        value: schedOpen.tune == null ? '' : schedOpen.tune,
+        oninput: function (e) { schedOpen.tune = e.target.value === '' ? null : Number(e.target.value); } }))
+      : null,
+    isOn
+      ? field('And off again after, minutes', inp({ type: 'number', min: '1', max: '1440', class: 'mono',
+        value: schedOpen.off_after == null ? '' : schedOpen.off_after,
+        oninput: function (e) { schedOpen.off_after = e.target.value === '' ? null : Number(e.target.value); } }))
+      : null
+  ].filter(Boolean))]);
+}
+
+function pickSched(id, want) {
+  var isScreen = typeof id === 'string';
+  var ids = schedIds().map(function (x) { return typeof x === 'string' ? x : Number(x); });
+  var had = ids.length;
+  if (want) {
+    /* A screen replaces the selection rather than joining it, and it is said out
+       loud — a count dropping from three to one with nothing accounting for it is
+       worse than the rule itself. */
+    if (isScreen) ids = [id];
+    else {
+      ids = ids.filter(function (x) { return typeof x !== 'string'; });
+      if (ids.indexOf(id) < 0) ids.push(id);
     }
+  } else {
+    ids = ids.filter(function (x) { return String(x) !== String(id); });
+  }
+  var replaced = want && (isScreen ? had > 1 : ids.length < had + 1);
+  schedOpen.target = { kind: 'device', record_ids: ids };
+  /* Only a screen changes which ticks are drawn, so only a screen costs a full
+     redraw. Everything else updates the counts and the options in place. */
+  if (replaced) {
+    drawSchedPick();
+    note('n-schededit', isScreen
+      ? 'A screen is scheduled on its own, so the rest of the selection was dropped.'
+      : 'A screen was already chosen, so it was replaced.', 'busy');
+  } else {
+    updateSchedCounts();
+  }
+  drawSchedOpts();
+  schedSay();
+}
+
+function drawSchedDays() {
+  fill(el('sdays'), DAYS.map(function (d, i) {
+    return tick(d, schedOpen.days.indexOf(i) >= 0, function (e) {
+      if (e.target.checked) schedOpen.days.push(i);
+      else schedOpen.days = schedOpen.days.filter(function (x) { return x !== i; });
+      schedSay();
+    }, null);
+  }));
+}
+function schedSay() {
+  var d = schedOpen.days.slice().sort();
+  var when = d.length === 7 ? 'every day'
+    : d.length === 0 ? 'never, because no day is chosen'
+    : d.join(',') === '1,2,3,4,5' ? 'on weekdays'
+    : d.join(',') === '0,6' ? 'at weekends'
+    : 'on ' + d.map(function (i) { return DAYS[i]; }).join(', ');
+  var what;
+  if (schedOpen.target.kind === 'cue') {
+    var c = CUES.filter(function (x) { return x.id === schedOpen.target.id; })[0];
+    what = 'run ' + (c ? c.name : 'a cue');
+  } else {
+    var count = schedIds().length;
+    what = count ? schedOpen.action + ' ' + count + (count === 1 ? ' circuit' : ' circuits')
+      : 'nothing, because no circuit is chosen';
+  }
+  el('schedsay').textContent = 'At ' + (el('stime').value || '??:??') + ', ' + what + '. '
+    + when.charAt(0).toUpperCase() + when.slice(1) + '.';
+}
+function saveSched() {
+  busy('n-schededit', 'Saving…');
+  var body = {
+    name: el('sname').value.trim(), at: el('stime').value.trim(),
+    days: schedOpen.days, target: schedOpen.target, action: schedOpen.action,
+    level: schedOpen.level, tune: schedOpen.tune,
+    off_after: schedOpen.off_after == null ? null : schedOpen.off_after
+  };
+  var p = schedOpen.id
+    ? send('PATCH', '/api/schedules/' + encodeURIComponent(schedOpen.id), body)
+    : post('/api/schedules', body);
+  p.then(function (r) {
+    if (!r.ok) return note('n-schededit', r.error || 'That was refused.', 'bad');
+    note('n-schededit', 'Saved.', 'good');
+    closeSched();
+    load();
   });
-  post('/api/setup', { groups: groups }).then(function (r) {
-    note('n-groups', r.ok ? r.note : r.error, !r.ok);
-    if (r.ok) load();
+}
+
+/* ── backdrops ──────────────────────────────────────────────────────────── */
+
+function drawShots() {
+  var kids = [n('div', { class: 'cards' }, SHOTS.items.map(function (s) {
+    var on = SHOTS.current === s.file;
+    return n('div', { class: 'card' }, [
+      n('div', { style: 'height:110px;border-radius:9px;border:1px solid var(--line);'
+        + 'background:center/cover no-repeat url(/backdrops/'
+        + encodeURIComponent(s.file) + ')' }),
+      n('h3', { style: 'margin-top:10px', text: s.file }),
+      n('p', { class: 'sub', text: s.kb + ' KB' + (on ? ' · showing now' : '') }),
+      n('div', { class: 'row tight' }, [
+        n('button', { class: on ? 'small' : 'small go', text: on ? 'Showing' : 'Show this',
+          disabled: on, onclick: function () { chooseShot(s.file); } }),
+        n('button', { class: 'small warn', text: 'Delete',
+          onclick: function () { delShot(s.file); } })
+      ])
+    ]);
+  }))];
+  if (SHOTS.has_original) {
+    kids.push(n('p', { class: 'why', style: 'margin-top:14px',
+      text: 'There is also the original background.jpg, which is what shows when none of these is chosen.' }));
+    kids.push(n('div', { class: 'row tight' }, [
+      n('button', { class: 'small', text: 'Show the original',
+        onclick: function () { chooseShot(''); } })
+    ]));
+  }
+  kids.push(n('div', { class: 'sect' }, [
+    n('h4', { text: 'Add one' }),
+    n('p', { class: 'why', text: 'Resized and re-encoded here in the browser before it is sent — the box has no image libraries, and a 4MB phone photograph would otherwise be pushed to every device that opens the board.' }),
+    n('div', { class: 'row tight' }, [n('input', { type: 'file', accept: 'image/jpeg,image/png',
+      id: 'shotfile', onchange: uploadShot })])
+  ]));
+  fill(el('shots'), kids);
+}
+function chooseShot(file) {
+  post('/api/backdrops/choose', { file: file }).then(function (r) {
+    note('n-shots', r.ok === false ? (r.error || 'That was refused.') : 'Changed, on every open browser.',
+      r.ok === false ? 'bad' : 'good');
+    load();
   });
-};
-el('savetvs').onclick = function () {
-  var tvs = [], bad = null;
-  Array.prototype.forEach.call(el('screens').querySelectorAll('.scr'), function (box) {
-    var room = box.querySelector('.srm').value;
-    if (!room) return;                       // not mapped yet: simply not configured
-    var id = box.querySelector('.sid').value.trim() ||
-      'tv-' + room.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    if (tvs.some(function (t) { return t.id === id; })) bad = 'two screens cannot share the address ' + id;
-    tvs.push({ mac: box.dataset.mac, room: room, name: box.querySelector('.snm').value, id: id });
+}
+function delShot(file) {
+  if (!window.confirm('Delete ' + file + '?')) return;
+  send('DELETE', '/api/backdrops/' + encodeURIComponent(file)).then(function (r) {
+    note('n-shots', r.ok === false ? (r.error || 'That was refused.') : 'Deleted.', r.ok === false ? 'bad' : 'good');
+    load();
   });
-  if (bad) return note('n-tvs', bad, true);
-  post('/api/setup', { televisions: tvs }).then(function (r) {
-    note('n-tvs', r.ok ? r.note : r.error, !r.ok);
-    if (r.ok) load();
+}
+/* 3200px and quality .93, matching the library's own encoding. An earlier
+   2600/.82 was visibly worse than everything it sat beside in the picker — the
+   board is glass over this picture, so its artefacts are magnified. */
+function uploadShot(e) {
+  var f = e.target.files && e.target.files[0];
+  if (!f) return;
+  busy('n-shots', 'Resizing…');
+  var img = new Image();
+  var url = URL.createObjectURL(f);
+  img.onload = function () {
+    var scale = Math.min(1, 3200 / Math.max(img.width, img.height));
+    var cv = document.createElement('canvas');
+    cv.width = Math.round(img.width * scale);
+    cv.height = Math.round(img.height * scale);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    URL.revokeObjectURL(url);
+    cv.toBlob(function (blob) {
+      busy('n-shots', 'Sending ' + Math.round(blob.size / 1024) + ' KB…');
+      fetch('/api/backdrops/upload?name=' + encodeURIComponent(f.name.replace(/\\.[^.]+$/, '') + '.jpg'), {
+        method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob
+      }).then(function (r) { return r.json(); }).then(function (r) {
+        note('n-shots', r.ok === false ? (r.error || 'That was refused.') : 'Added.',
+          r.ok === false ? 'bad' : 'good');
+        load();
+      });
+    }, 'image/jpeg', 0.93);
+  };
+  img.onerror = function () { note('n-shots', 'That file did not decode as an image.', 'bad'); };
+  img.src = url;
+}
+
+/* ── health ─────────────────────────────────────────────────────────────── */
+
+function drawDiag() {
+  var h = HL;
+  var hub = h.hub || {};
+  var age = hub.last_read_age_s;
+  fill(el('figs'), [
+    fig(h.ok === false ? 'no' : 'yes', 'healthy', h.ok === false),
+    fig(age == null ? '—' : age + 's', 'since the last read', age != null && age > 60),
+    // A fraction on the wire, a percentage on the page.
+    fig(hub.success_rate == null ? '—' : Math.round(hub.success_rate * 100) + '%', 'reads that landed'),
+    fig(hub.consecutive_failures == null ? '—' : String(hub.consecutive_failures),
+      'failures in a row', hub.consecutive_failures > 0),
+    fig(h.commands ? String(h.commands.sent) : '—', 'commands sent'),
+    fig(h.commands ? String(h.commands.failed) : '—', 'commands failed', h.commands && h.commands.failed > 0),
+    fig(h.cues_fired != null ? String(h.cues_fired) : '—', 'cues fired'),
+    fig(h.clients != null ? String(h.clients) : '—', 'browsers watching'),
+    fig(h.uptime_s != null ? upWord(h.uptime_s) : '—', 'uptime'),
+    fig(h.memory_mb != null ? h.memory_mb + ' MB' : '—', 'memory'),
+    fig(h.devices != null ? String(h.devices) : '—', 'circuits'),
+    fig(hub.last_error ? 'yes' : 'no', 'last read failed', !!hub.last_error)
+  ]);
+
+  /* The name comes from the config rather than from here: /api/health reports a
+     link by its id and its room, which is right for a watchdog and thin for a
+     person reading it. And "answering" is deliberately not "on" — a socket to a
+     set that has powered off stays open from this end until a write fails. */
+  var named = {};
+  (S.televisions || []).forEach(function (t) { named[t.id] = t.name; });
+  var links = (h.tvs || []).map(function (t) {
+    return n('div', { class: 'item' }, [
+      n('div', { class: 'txt' }, [
+        n('b', { text: (named[t.id] || t.id) + (t.room ? ' · ' + titleCase(t.room) : '') }),
+        n('span', { text: (t.connected ? 'answering' : 'not answering')
+          + (t.on ? ', and says it is on' : ', and reads as off')
+          + (t.address ? ' · ' + t.address : ' · no address yet')
+          + (t.fails ? ' · ' + t.fails + (t.fails === 1 ? ' failure in a row' : ' failures in a row') : '') })
+      ])
+    ]);
   });
-};
-el('scan').onclick = function () {
-  el('scan').disabled = true;
-  el('scanstate').textContent = 'listening for about six seconds…';
-  post('/api/setup/scan').then(function (r) {
-    el('scan').disabled = false;
-    el('scanstate').textContent = r.ok ? (r.screens.length + ' answered') : r.error;
-    if (r.ok) drawScreens(r.screens);
+  fill(el('links'), links.length ? [n('div', { class: 'list' }, links)]
+    : [n('div', { class: 'empty', text: 'No screens are configured.' })]);
+
+  var said = h.said || {};
+  var total = (said.grammar || 0) + (said.model || 0) + (said.cancel || 0) + (said.goodnight || 0);
+  var free = total ? Math.round(((said.grammar || 0) + (said.cancel || 0) + (said.goodnight || 0)) * 100 / total) : null;
+  fill(el('saidfigs'), [
+    fig(String(total), 'things said'),
+    fig(free == null ? '—' : free + '%', 'resolved here, free'),
+    fig(String(said.model || 0), 'went to the model'),
+    fig(String(said.heard || 0), 'spoken aloud'),
+    fig(String(said.cached || 0), 'answered from memory'),
+    fig(String(said.none || 0), 'not understood', (said.none || 0) > 0)
+  ]);
+}
+function upWord(s) {
+  if (s < 3600) return Math.round(s / 60) + 'm';
+  if (s < 86400) return Math.round(s / 3600) + 'h';
+  return Math.round(s / 86400) + 'd';
+}
+
+/* ── saves ──────────────────────────────────────────────────────────────── */
+
+function saveRooms(btn) {
+  var names = {};
+  var boxes = el('roomnames').querySelectorAll('[data-room]');
+  for (var i = 0; i < boxes.length; i++) {
+    names[boxes[i].getAttribute('data-room')] = boxes[i].value.trim();
+  }
+  saveConfig('n-rooms', { room_names: names }, btn);
+}
+function saveAliases(btn) {
+  var map = {};
+  D.aliases.forEach(function (a) { if (a.said && a.room) map[a.said] = a.room; });
+  saveConfig('n-aliases', { room_aliases: map }, btn);
+}
+function saveKinds(btn) {
+  var kinds = {};
+  var names = {};
+  var host = el('circuits');
+  var ks = host.querySelectorAll('[data-kind]');
+  for (var i = 0; i < ks.length; i++) {
+    if (ks[i].value) kinds[ks[i].getAttribute('data-kind')] = ks[i].value;
+  }
+  /* Only the rows on screen carry a control, so the ones a filter is hiding have
+     to be carried over from what is already stored — otherwise searching for one
+     circuit and pressing Save would clear every kind in the house. */
+  S.circuits.forEach(function (c) {
+    if (c.kind && kinds[String(c.record_id)] === undefined) kinds[String(c.record_id)] = c.kind;
   });
-};
-el('rediscover').onclick = function () {
-  post('/api/setup/rediscover').then(function (r) {
-    note('n-maint', r.ok
-      ? (r.note + ' ' + r.devices + ' devices' +
-         (r.added.length ? ', added ' + r.added.join(', ') : '') +
-         (r.removed.length ? ', removed ' + r.removed.join(', ') : ', nothing changed'))
-      : r.error, !r.ok);
+  var ns = host.querySelectorAll('[data-name]');
+  for (var j = 0; j < ns.length; j++) {
+    names[ns[j].getAttribute('data-name')] = ns[j].value.trim();
+  }
+  Object.keys(S.device_names).forEach(function (id) {
+    if (names[id] === undefined) names[id] = S.device_names[id];
   });
-};
-el('restart').onclick = function () {
-  post('/api/setup/restart').then(function (r) {
-    note('n-maint', r.note, false);
-    setTimeout(function () { location.reload(); }, 4000);
+  saveConfig('n-kinds', { kinds: kinds, device_names: names }, btn);
+}
+function saveGroups(btn) {
+  saveConfig('n-groups', { groups: D.groups.filter(function (g) { return g.record_ids.length > 1; }) }, btn);
+}
+function saveTvs(btn) { saveConfig('n-tvs', { televisions: D.tvs }, btn); }
+function saveAvrs(btn) { saveConfig('n-avrs', { receivers: D.avrs }, btn); }
+function saveMedias(btn) { saveConfig('n-medias', { media_players: D.medias }, btn); }
+function saveCinemas(btn) { saveConfig('n-cinemas', { cinemas: D.cinemas }, btn); }
+function saveGn(btn) {
+  var map = {};
+  var clash = null;
+  D.gn.forEach(function (g) {
+    if (!g.who || !g.room) return;
+    if (map[g.who]) clash = g.who;
+    map[g.who] = g.night_light.length ? { room: g.room, night_light: g.night_light } : g.room;
   });
-};
-load();
-</script></body></html>`;
+  if (clash) return note('n-gn', 'Two people are both called ' + clash + '.', 'bad');
+  saveConfig('n-gn', { goodnight: map }, btn);
+}
+function saveSettings(btn) {
+  btn.disabled = true;
+  busy('n-settings', 'Saving…');
+  post('/api/settings', A.settings).then(function (r) {
+    btn.disabled = false;
+    note('n-settings', r.ok ? 'Saved, and live now.' : (r.error || 'That was refused.'), r.ok ? 'good' : 'bad');
+    load();
+  });
+}
+
+/* ── the network actions ────────────────────────────────────────────────── */
+
+function scanTvs(btn) {
+  btn.disabled = true;
+  el('scanstate').textContent = 'Listening for about six seconds…';
+  post('/api/setup/scan', {}).then(function (r) {
+    btn.disabled = false;
+    el('scanstate').textContent = '';
+    if (!r.ok) return note('n-tvs', r.error || 'The scan failed.', 'bad');
+    var known = {};
+    D.tvs.forEach(function (t) { known[t.mac] = true; });
+    fill(el('found'), r.screens.length ? [n('div', { class: 'list' }, r.screens.map(function (s) {
+      var mac = String(s.mac || '').toLowerCase();
+      return n('div', { class: 'item' }, [
+        n('div', { class: 'txt' }, [
+          n('b', { text: s.name || s.model || 'A set' }),
+          n('span', { text: (s.ip || '') + (mac ? ' · ' + mac : ' · no MAC — switch it on and scan again')
+            + (mac && known[mac] ? ' · already listed' : '') })
+        ]),
+        n('div', { class: 'acts' }, [mac && !known[mac]
+          ? n('button', { class: 'small', text: 'Add it', onclick: function () {
+            D.tvs.push({ id: 'tv-' + (D.tvs.length + 1), name: 'TV', room: hubRooms()[0].shown,
+              mac: mac, paired: false });
+            drawScreens();
+            note('n-tvs', 'Added. Set its room — which set is in which room can only be'
+              + ' settled by somebody watching one come on — then save.', 'good');
+          } }) : null])
+      ]);
+    }))] : [n('div', { class: 'empty', text: 'Nothing answered. A cold set is invisible to everything, so check the house is not simply dark.' })]);
+  }, function (e) { btn.disabled = false; el('scanstate').textContent = ''; note('n-tvs', e.message, 'bad'); });
+}
+
+function findAvr(btn) {
+  btn.disabled = true;
+  el('findstate').textContent = 'Sweeping 254 addresses — about ten seconds…';
+  post('/api/setup/find-avr', {}).then(function (r) {
+    btn.disabled = false;
+    el('findstate').textContent = '';
+    if (!r.ok) return note('n-avrs', r.error || 'The sweep failed.', 'bad');
+    fill(el('avrfound'), r.hosts.length ? [n('div', { class: 'list' }, r.hosts.map(function (h) {
+      return n('div', { class: 'item' }, [
+        n('div', { class: 'txt' }, [n('b', { text: h.host }),
+          n('span', { text: h.configured ? 'this is the one already set' : 'answering on port ' + r.port })]),
+        n('div', { class: 'acts' }, [h.configured ? null
+          : n('button', { class: 'small', text: 'Use this', onclick: function () {
+            if (!D.avrs.length) {
+              D.avrs.push({ id: 'avr-1', name: 'AVR', room: hubRooms()[0].shown,
+                host: h.host, port: 23, volume_max: 70 });
+            } else { D.avrs[0].host = h.host; }
+            drawReceivers();
+            note('n-avrs', 'Set. Save it, then restart.', 'good');
+          } })])
+      ]);
+    }))] : [n('div', { class: 'empty', text: r.note })]);
+    if (r.hosts.length) note('n-avrs', r.note, 'good');
+  }, function (e) { btn.disabled = false; el('findstate').textContent = ''; note('n-avrs', e.message, 'bad'); });
+}
+
+function doPoll(btn) {
+  btn.disabled = true;
+  busy('n-maint', 'Asking the modules…');
+  post('/api/poll', {}).then(function (r) {
+    btn.disabled = false;
+    if (r.ok === false) return note('n-maint', r.error || 'That failed.', 'bad');
+    var moved = r.changed || r.moved || [];
+    note('n-maint', moved.length
+      ? 'The hub had ' + moved.length + ' of these wrong: ' + moved.map(function (c) {
+        return c.name || c.record_id;
+      }).join(', ')
+      : 'Everything the modules reported already matched what the hub believed.', 'good');
+    load();
+  });
+}
+function doRediscover(btn) {
+  btn.disabled = true;
+  busy('n-maint', 'Reading the hub…');
+  post('/api/setup/rediscover', {}).then(function (r) {
+    btn.disabled = false;
+    if (!r.ok) return note('n-maint', r.error || 'That failed.', 'bad');
+    note('n-maint', r.devices + ' devices. '
+      + (r.added.length ? 'New: ' + r.added.join(', ') + '. ' : '')
+      + (r.removed.length ? 'Gone: ' + r.removed.join(', ') + '. ' : '')
+      + (!r.added.length && !r.removed.length ? 'Nothing has changed. ' : '')
+      + r.note, 'good');
+  });
+}
+function doRestart(btn) {
+  if (!window.confirm('Restart the dashboard? The board goes away for a few seconds.')) return;
+  btn.disabled = true;
+  busy('n-maint', 'Restarting…');
+  post('/api/setup/restart', {}).then(function (r) {
+    note('n-maint', r.note || 'Restarting.', 'good');
+    setTimeout(function () { location.reload(); }, 6000);
+  }, function () {
+    note('n-maint', 'It stopped answering, which is what a restart looks like. Reloading shortly.', 'good');
+    setTimeout(function () { location.reload(); }, 6000);
+  });
+}
+
+/* ── load and wire ──────────────────────────────────────────────────────── */
+
+function load() {
+  return Promise.all([
+    getJSON('/api/setup'), getJSON('/api/automations'), getJSON('/api/health'),
+    getJSON('/api/devices'), getJSON('/api/scenes'), getJSON('/api/schedules'),
+    getJSON('/api/backdrops')
+  ]).then(function (r) {
+    S = r[0]; A = r[1]; HL = r[2];
+    DEV = r[3].devices || [];
+    CUES = r[4].scenes || [];
+    SCHEDS = r[5].schedules || [];
+    SHOTS = r[6];
+
+    /* Working copies, deep, so a half-made edit is never a half-made save and
+       adding a row does not need one first. */
+    D.aliases = Object.keys(S.room_aliases).map(function (k) {
+      return { said: k, room: S.room_aliases[k] };
+    });
+    D.groups = JSON.parse(JSON.stringify(S.groups)).map(function (g) {
+      return { room: g.room, label: g.label, record_ids: g.record_ids.slice() };
+    });
+    D.tvs = JSON.parse(JSON.stringify(S.televisions));
+    D.avrs = JSON.parse(JSON.stringify(S.receivers));
+    D.medias = JSON.parse(JSON.stringify(S.media_players));
+    D.cinemas = JSON.parse(JSON.stringify(S.cinemas));
+    D.gn = Object.keys(S.goodnight).map(function (who) {
+      return { who: who, room: S.goodnight[who].room,
+        night_light: S.goodnight[who].night_light.slice() };
+    });
+
+    applyTheme();
+    drawHub();
+    drawRail();
+    drawHouse(); drawRooms(); drawCircuits(); drawGroups(); drawScreens();
+    drawReceivers(); drawMedias(); drawCinemas(); drawGoodnight(); drawAuto();
+    drawCues(); drawScheds(); drawShots(); drawDiag();
+  });
+}
+
+function drawHub() {
+  var ok = HL.ok !== false && S.hub_ok;
+  var dot = el('hubdot');
+  dot.className = 'dot ' + (ok ? 'good' : 'bad');
+  var age = HL.hub && HL.hub.age_ms != null ? Math.round(HL.hub.age_ms / 1000) : null;
+  el('hubword').textContent = ok
+    ? 'hub ok' + (age != null ? ' · ' + age + 's' : '')
+    : 'hub not answering';
+  var c = A.clock;
+  el('wclock').textContent = c
+    ? 'the hub says ' + pad(Math.floor(c.minutes / 60)) + ':' + pad(c.minutes % 60)
+      + (c.night ? ' · evening' : '')
+    : '';
+}
+function pad(v) { return (v < 10 ? '0' : '') + v; }
+
+function wire() {
+  el('theme').addEventListener('click', function () {
+    themePref = themePref === null ? 'on' : themePref === 'on' ? 'off' : null;
+    if (themePref === null) localStorage.removeItem('neo-console-theme');
+    else { try { localStorage.setItem('neo-console-theme', themePref); } catch (e) {} }
+    applyTheme();
+  });
+  el('reload').addEventListener('click', function () { load(); });
+
+  el('savehouse').addEventListener('click', function (e) {
+    saveConfig('n-house', {
+      house_name: el('hname').value, house_short: el('hshort').value,
+      hub_ip: el('hip').value, hub_port: el('hport').value, port: Number(el('wport').value)
+    }, e.target);
+  });
+  el('saverooms').addEventListener('click', function (e) { saveRooms(e.target); });
+  el('addalias').addEventListener('click', function () {
+    D.aliases.push({ said: '', room: hubRooms()[0].shown }); drawRooms();
+  });
+  el('savealiases').addEventListener('click', function (e) { saveAliases(e.target); });
+
+  ['cfind', 'croom', 'cguess'].forEach(function (id) {
+    el(id).addEventListener('input', drawCircuits);
+    el(id).addEventListener('change', drawCircuits);
+  });
+  el('savekinds').addEventListener('click', function (e) { saveKinds(e.target); });
+  el('savegroups').addEventListener('click', function (e) { saveGroups(e.target); });
+
+  el('scan').addEventListener('click', function (e) { scanTvs(e.target); });
+  el('addtv').addEventListener('click', function () {
+    D.tvs.push({ id: 'tv-' + (D.tvs.length + 1), name: 'TV', room: hubRooms()[0].shown, mac: '' });
+    drawScreens();
+  });
+  el('savetvs').addEventListener('click', function (e) { saveTvs(e.target); });
+
+  el('findavr').addEventListener('click', function (e) { findAvr(e.target); });
+  el('addavr').addEventListener('click', function () {
+    D.avrs.push({ id: 'avr-' + (D.avrs.length + 1), name: 'AVR',
+      room: hubRooms()[0].shown, host: '', port: 23, volume_max: 70 });
+    drawReceivers();
+  });
+  el('saveavrs').addEventListener('click', function (e) { saveAvrs(e.target); });
+  el('addmedia').addEventListener('click', function () {
+    D.medias.push({ id: 'media-' + (D.medias.length + 1), name: 'Media player',
+      room: hubRooms()[0].shown, host: '', mac: '', apps: [] });
+    drawMedias();
+  });
+  el('savemedias').addEventListener('click', function (e) { saveMedias(e.target); });
+  el('addcinema').addEventListener('click', function () {
+    D.cinemas.push({ id: 'cinema-' + (D.cinemas.length + 1), name: 'Cinema',
+      room: hubRooms()[0].shown, projector: null, avr: '', media: '', media_input: '' });
+    drawCinemas();
+  });
+  el('savecinemas').addEventListener('click', function (e) { saveCinemas(e.target); });
+
+  el('addwho').addEventListener('click', function () {
+    D.gn.push({ who: '', room: hubRooms()[0].shown, night_light: [] }); drawGoodnight();
+  });
+  el('savegn').addEventListener('click', function (e) { saveGn(e.target); });
+  el('savesettings').addEventListener('click', function (e) { saveSettings(e.target); });
+
+  el('addcue').addEventListener('click', function () { openCue(null); });
+  el('cueadd').addEventListener('click', cueAdd);
+  el('cuecancel').addEventListener('click', closeCue);
+  el('cuesave').addEventListener('click', saveCue);
+  el('undocue').addEventListener('click', function () {
+    post('/api/scenes/undo', {}).then(function (r) {
+      note('n-cues', r.ok === false ? (r.error || 'There is nothing to undo.')
+        : (r.spoken || 'Put back.'), r.ok === false ? 'bad' : 'good');
+      load();
+    });
+  });
+
+  el('addsched').addEventListener('click', function () { openSched(null); });
+  el('skind').addEventListener('change', drawSchedWhat);
+  el('stime').addEventListener('input', schedSay);
+  el('schedcancel').addEventListener('click', closeSched);
+  el('schedsave').addEventListener('click', saveSched);
+
+  el('poll').addEventListener('click', function (e) { doPoll(e.target); });
+  el('rediscover').addEventListener('click', function (e) { doRediscover(e.target); });
+  el('restart').addEventListener('click', function (e) { doRestart(e.target); });
+
+  window.addEventListener('hashchange', function () {
+    var want = hashPanel();
+    if (want && want !== tab) go(want);
+  });
+}
+
+/* ?dark=1/0/auto reaches a wall panel with no console of its own, the same way
+   the board's does. Only a person's choice is stored. */
+(function boot() {
+  var q = location.search;
+  if (q.indexOf('dark=1') >= 0) themePref = 'on';
+  else if (q.indexOf('dark=0') >= 0) themePref = 'off';
+  else if (q.indexOf('dark=auto') >= 0) themePref = null;
+  else { try { themePref = localStorage.getItem('neo-console-theme') || null; } catch (e) {} }
+
+  var start = hashPanel();
+  wire();
+  go(TABS.some(function (t) { return t[0] === start; }) ? start : 'house');
+  applyTheme();
+  load().catch(function (e) {
+    document.getElementById('body').insertBefore(
+      n('div', { class: 'panel' }, [
+        n('span', { class: 'head', text: 'Nothing to show' }),
+        n('p', { class: 'why', text: 'Could not read the dashboard: ' + e.message })
+      ]), document.getElementById('body').firstChild);
+  });
+  /* Once a minute, which is what carries the board across seven in the evening
+     while nothing else in the house moves. */
+  setInterval(function () {
+    getJSON('/api/automations').then(function (a) { A = a; applyTheme(); drawHub(); }, function () {});
+  }, 60000);
+})();
+
+})();
+</script>
+</body></html>
+`;
 
 /* ==================================================== the monthly report
  *
@@ -12027,19 +14472,14 @@ app.get('/report/:room', (req, res) => {
   res.redirect(302, '/report?month=' + encodeURIComponent(ym) + '#' + roomSlug(room));
 });
 
+let consolePage = null;
+const theConsole = () => consolePage || (consolePage = packPage(SETUP_HTML));
+
 app.get('/setup', (req, res) => {
-  res.type('html').set('Cache-Control', 'no-cache').send(SETUP_HTML);
+  return sendPage(req, res, theConsole());
 });
 
-app.get('/', (req, res) => {
-  const page = theShell();
-  res.type('html').set('Cache-Control', 'no-cache').set('ETag', page.tag);
-  if (req.headers['if-none-match'] === page.tag) return res.status(304).end();
-  if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
-    return res.set('Content-Encoding', 'gzip').set('Vary', 'Accept-Encoding').send(page.gz);
-  }
-  res.send(HTML);
-});
+app.get('/', (req, res) => sendPage(req, res, theShell()));
 
 app.listen(PORT, () => {
   console.log(`${HOUSE_NAME}  ->  http://localhost:${PORT}`);
@@ -12122,56 +14562,7 @@ const HTML = /* html */ `<!doctype html>
 <link rel="preload" href="/fonts/hanken-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <style>
-  @font-face {
-    font-family: 'Hanken Grotesk'; font-style: normal; font-weight: 400 500; font-display: swap;
-    src: url('/fonts/hanken-grotesk-latin.woff2') format('woff2');
-    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-  }
-  @font-face {
-    font-family: 'Hanken Grotesk'; font-style: normal; font-weight: 400 500; font-display: swap;
-    src: url('/fonts/hanken-grotesk-latin-ext.woff2') format('woff2');
-    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-  }
-  @font-face {
-    font-family: 'Instrument Serif'; font-style: normal; font-weight: 400; font-display: swap;
-    src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2');
-    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-  }
-  @font-face {
-    font-family: 'Instrument Serif'; font-style: normal; font-weight: 400; font-display: swap;
-    src: url('/fonts/instrument-serif-400-latin-ext.woff2') format('woff2');
-    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-  }
-  @font-face {
-    font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; font-display: swap;
-    src: url('/fonts/instrument-serif-400-italic-latin.woff2') format('woff2');
-    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-  }
-  @font-face {
-    font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; font-display: swap;
-    src: url('/fonts/instrument-serif-400-italic-latin-ext.woff2') format('woff2');
-    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-  }
-  @font-face {
-    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap;
-    src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
-    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-  }
-  @font-face {
-    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap;
-    src: url('/fonts/ibm-plex-mono-400-latin-ext.woff2') format('woff2');
-    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-  }
-  @font-face {
-    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap;
-    src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
-    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-  }
-  @font-face {
-    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap;
-    src: url('/fonts/ibm-plex-mono-500-latin-ext.woff2') format('woff2');
-    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-  }
+${FONT_FACES}
 </style>
 <style>
   :root {
@@ -13577,6 +15968,182 @@ const HTML = /* html */ `<!doctype html>
      limestone said nothing at all, and which picture is showing is not
      something a label should depend on — so it carries its own contrast, in
      the same paper as the panes it names. */
+  /* ── the cinema plate ──────────────────────────────────────────────────
+   *
+   * The one section of this house that keeps its own palette. A cinema is a dark
+   * room, so this stays dark at four in the afternoon and under either theme —
+   * the same argument the app icon already settled, that there has to be a dark
+   * for the light to be light against. Every token below is scoped here, so
+   * nothing leaks into the board around it and the theme swap cannot reach in.
+   *
+   * The colour of light is unchanged: --cool is what a screen glows in this
+   * house, and borrowing it here means the plate and the room board agree about
+   * what a screen is rather than this section inventing an accent of its own. */
+  .cineplate {
+    --cine-room:  #06070a;
+    --cine-pane:  #12161e;
+    --cine-edge:  rgba(255,255,255,.09);
+    --cine-rim:   rgba(255,255,255,.16);
+    --cine-ink:   #eaeef4;
+    --cine-soft:  #929cab;
+    --cine-faint: #5c6572;
+    --cine-beam:  #7fb2e0;
+
+    position: relative; overflow: hidden;
+    background: var(--cine-room);
+    border: 1px solid var(--cine-edge);
+    border-radius: 20px;
+    /* This padding is the control, not the frame. The card inside is the only
+       thing here that takes a press, so a thumb on its way down the board meets
+       inert plate on every side of it — which is what stops a scroll ending in
+       an open panel, without making anybody hold anything. */
+    padding: clamp(20px, 2.4vw, 32px);
+    margin-bottom: 4px;
+  }
+  /* The beam. A projector throws one, the panel's stage already does, and
+     carrying it onto the board is what makes the two read as one place rather
+     than a card and a dialog that happen to share a name. Only when something is
+     actually running — a dark cinema throws nothing. */
+  .cineplate::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background:
+      radial-gradient(120% 70% at 50% 0%,
+        color-mix(in oklab, var(--cine-beam) 16%, transparent) 0%,
+        color-mix(in oklab, var(--cine-beam) 5%, transparent) 45%,
+        transparent 78%);
+    transition: opacity .7s ease;
+  }
+  .cineplate:has(.tile.cinema.on)::after { opacity: 1; }
+
+  /* The heading, and the brief for it was that a heading should look like one.
+     It was 10px of faint mono in a pill, the same as every other category; it is
+     14px of near-white at wide tracking with a hairline running out to the edge,
+     which is the film-leader idiom and reads as a title card rather than a tag.
+     Deliberately not the display serif: that is reserved for the one line on the
+     panel that actually talks, and two serif statements would fight. */
+  .cine-head {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; gap: 14px;
+    margin: 0 0 clamp(16px, 1.8vw, 24px);
+    font-family: var(--mono); font-size: 14px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--cine-ink);
+  }
+  .cine-head::after {
+    content: ''; flex: 1; height: 1px; min-width: 20px;
+    background: linear-gradient(90deg, var(--cine-rim), transparent);
+  }
+  /* The card is held off the plate's edges on purpose — see the padding note
+     above. It is also capped, so on a wide board the dead space grows at the
+     sides rather than the screen stretching to a letterbox nobody can aim at. */
+  .cine-stagebox { position: relative; z-index: 1; display: grid; }
+  .cineplate .tile.cinema {
+    grid-column: 1 / -1; width: 100%; max-width: 680px; margin: 0 auto;
+    /* Sized by what it says, not by the board's tile grid. Every other card here
+       is one of a row and has to match its neighbours; this one is alone on its
+       plate, and holding it to --tile-h clipped the third machine off the bottom
+       at 375px the moment the three readings wrapped to two lines. */
+    height: auto; min-height: 0;
+    background: var(--cine-pane);
+    border-color: var(--cine-edge);
+    --ink: var(--cine-ink); --soft: var(--cine-soft); --faint: var(--cine-faint);
+    box-shadow: none;
+  }
+  /* A lit card is a screen, so the light comes OUT of it and the pane stays
+     dark. Inherited, it took the board's lamp fill — a gradient whose stops were
+     chosen against cream — and flooded the whole face with bright blue, which
+     dropped the three machine labels to roughly 2:1 and made the one card in the
+     house you read from a distance the hardest to read. This is the rule the
+     dark theme already states for every other pane, applied here.
+
+     The fill element is reused rather than hidden, so there is one glow and not
+     a pane plus a bloom with a seam where they meet. */
+  .cineplate .tile.cinema .tile-fill {
+    background: radial-gradient(92% 130% at 20% 38%,
+      color-mix(in oklab, var(--cine-beam) 26%, transparent) 0%,
+      color-mix(in oklab, var(--cine-beam) 7%, transparent) 46%,
+      transparent 76%);
+    opacity: var(--lit, 0); transition: opacity .6s ease;
+  }
+  .cineplate .tile.cinema.on {
+    border-color: color-mix(in oklab, var(--cine-beam) 30%, var(--cine-edge));
+    /* Lifted together rather than one at a time: everything inside reads off
+       these, so a lit card brightens as a whole and nothing is left behind. */
+    --cine-soft: #c6cedb; --cine-faint: #8b98aa;
+  }
+  /* The specular lip is a fraction of white chosen against paper. On this plate
+     it is a drawn line around a dark card, which is the third time this file has
+     recorded that trap — so it is stated here rather than inherited. */
+  .cineplate .tile.cinema::before { display: none; }
+
+  /* The card's own face. Its body is the stage: an eyebrow, the thing that is
+     playing, then the three machines. Top-aligned, because .tile-body is
+     flex-end for a lamp whose strips live at the foot and this card has none —
+     bottom-aligned it left a third of the screen empty above the type. */
+  .cineplate .tile.cinema .tile-body {
+    /* Out of the absolute box the board gives a tile face, so the card grows to
+       fit it. Relative rather than static: a static box has no z-index and the
+       face would fall under the glow — the trap this file records three times
+       over for .tile-body. */
+    position: relative; inset: auto;
+    justify-content: flex-start; gap: 0;
+    padding: clamp(20px, 2.2vw, 28px) clamp(20px, 2.2vw, 28px) clamp(18px, 2vw, 24px);
+  }
+  .cine-eyebrow {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--cine-faint);
+  }
+  /* The one line on this card that talks, in the face this house reserves for
+     talking — the same idiom as the panel's stage and the board's hero, so a
+     cinema says what it is showing in the voice the rest of the house uses for
+     saying rather than reporting. */
+  .cine-title {
+    margin-top: 4px;
+    font-family: var(--display); font-size: clamp(30px, 3.4vw, 42px); line-height: 1.02;
+    letter-spacing: -.015em; color: var(--cine-ink);
+  }
+  .tile.cinema.on .cine-title { color: #fff; }
+  /* The three machines. A row where there is width for one and a stack where
+     there is not — each is a label and a reading, and they must not run
+     together into a sentence, because two of them are readings and one is a
+     belief. */
+  /* Three classes, because the board's own .tile.cinema .cineread carries three
+     and is declared later — out-specified rather than fought with !important. */
+  .cineplate .tile.cinema .cineread {
+    display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px 28px;
+    margin-top: clamp(16px, 2vw, 26px);
+    padding-top: 14px; border-top: 1px solid var(--cine-edge);
+  }
+  .cineplate .cinehalf { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .cineplate .cinehalf i {
+    font-style: normal; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--cine-faint);
+  }
+  .cineplate .cinehalf b {
+    font-weight: 500; font-size: 12.5px; letter-spacing: .01em; color: var(--cine-soft);
+  }
+  .tile.cinema.on .cinehalf b { color: var(--cine-ink); }
+  /* The key, in the plate's palette rather than the board's — it was drawing a
+     near-black rim on a near-black card and could not be seen at all.
+     Its hit area is grown to 44px with a pseudo-element while the dot itself
+     stays small: a 20px target is under every guideline there is, and this is
+     the one control on the plate that switches the room. */
+  .cineplate .tile.cinema .ring {
+    --tint: var(--cine-beam);
+    width: 22px; height: 22px; top: 16px; right: 16px;
+    border-color: var(--cine-rim);
+  }
+  .cineplate .tile.cinema .ring::before {
+    content: ''; position: absolute; inset: -11px; border-radius: 50%;
+  }
+  .cineplate .tile.cinema .ring:hover { border-color: var(--cine-beam); }
+  .cineplate .tile.cinema .ring:focus-visible {
+    outline: 2px solid var(--cine-beam); outline-offset: 3px;
+  }
+  /* The card reserves the corner the key sits in, so a long title cannot run
+     underneath it — the same trick a room card's name uses for its all-off. */
+  .cineplate .cine-eyebrow, .cineplate .cine-title { padding-right: 46px; }
+
   .cat-head, .group-label {
     width: max-content; max-width: 100%; margin: 0 0 9px; padding: 5px 11px;
     border-radius: 9px; font-family: var(--mono); font-size: 10px;
@@ -14900,6 +17467,145 @@ const HTML = /* html */ `<!doctype html>
      A disclosure rather than a deleted block: this is a real remote and the
      day the picture goes soft somebody needs it. It just must not be the
      tallest thing on a panel about watching a film. */
+  /* ── the cinema panel, always dark ────────────────────────────────────
+   *
+   * Every control in here — the keys, the strip, the field, the disclosures —
+   * is already drawn from tokens, so the panel goes dark by restating the
+   * tokens rather than by rewriting a single control. That is the same move
+   * .dark body makes for the whole house, scoped to one dialog, and it is why
+   * this is a palette rather than a second design.
+   *
+   * It matches the board's plate deliberately: open the cinema and you are in
+   * the same dark room the card came from, rather than a cream sheet that
+   * happens to be about a cinema. */
+  .cinesheet {
+    --cine-beam:  #7fb2e0;
+    --sheet:      #0a0c11;
+    --paper:      #12161e;
+    --paper-2:    #12161e;
+    --paper-solid:#12161e;
+    --paper-2-solid:#12161e;
+    --field:      #080a0e;
+    --ink:        #eaeef4;
+    --soft:       #c0c9d6;
+    --faint:      #7e8899;
+    --line:       rgba(255,255,255,.09);
+    --line-up:    rgba(255,255,255,.15);
+    --edge:       rgba(255,255,255,.09);
+    --edge-up:    var(--cine-beam);
+    --rim:        rgba(255,255,255,.12);
+    color: var(--ink);
+  }
+  /* A dark sheet needs its own separation from the scrim behind it: the paper
+     shadow is a warm brown that does nothing against near-black. */
+  .scrim .sheet.cinesheet {
+    border-color: rgba(255,255,255,.10);
+    box-shadow: 0 50px 100px -30px rgba(0,0,0,.85);
+  }
+  .cinesheet .sheet-head { border-bottom-color: rgba(255,255,255,.08); }
+
+  /* The block headings, and the brief for these was that a heading should look
+     like one. They were 10px of faint mono, the smallest type on the panel and
+     the same size as a caption — so Watch, Player, Sound and Screen read as
+     labels attached to the controls rather than as the names of four machines.
+     14px, near-white, wide-tracked, with a hairline running out to the edge:
+     the same treatment the plate's own heading takes, so the board and the
+     panel name things the same way. */
+  .cinesheet .tvlegend {
+    display: flex; align-items: center; gap: 12px;
+    margin: 4px 0 2px;
+    font-family: var(--mono); font-size: 14px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--ink);
+  }
+  /* A short leader rather than a full-width divider. Stretched across the
+     panel it faded to nothing within a few pixels and read as absent; held to a
+     fixed length it is a mark beside the word, which is what a title card does
+     and what a heading here needs. */
+  .cinesheet .tvlegend::after {
+    content: ''; flex: 0 0 auto; height: 1px;
+    width: clamp(44px, 9vw, 120px);
+    background: linear-gradient(90deg, rgba(255,255,255,.30), rgba(255,255,255,.02));
+  }
+  /* The small live reading that rides beside a heading — the running app, the
+     sound mode. It sits before the rule, so it must not be swallowed by it. */
+  .cinesheet .tvlegend em {
+    flex: 0 0 auto; order: 1; font-style: normal;
+    font-family: var(--sans); font-size: 12px; font-weight: 400;
+    letter-spacing: .01em; text-transform: none; color: var(--cine-beam);
+  }
+  .cinesheet .tvlegend::after { order: 2; }
+
+  /* The controls. Bigger targets, because this panel is used in the dark and
+     often standing up: every key clears 44px, which several did not. */
+  .cinesheet .tvkey {
+    min-height: 44px; padding: 12px 16px; font-size: 15px; border-radius: 13px;
+  }
+  .cinesheet .tvkey:hover {
+    background: #1a1f29; border-color: rgba(255,255,255,.24);
+  }
+  .cinesheet .tvkey:active { transform: scale(.97); }
+  .cinesheet .tvkey:focus-visible { outline: 2px solid var(--cine-beam); outline-offset: 2px; }
+  /* The one key that starts the film. It is the only filled control in here, so
+     it does not need a second colour to be found. */
+  .cinesheet .tvkey.go {
+    background: var(--cine-beam); border-color: var(--cine-beam); color: #06070a;
+    font-weight: 500;
+  }
+  .cinesheet .tvkey.go:hover { background: #94c1e9; border-color: #94c1e9; }
+  /* Chosen: the source that is playing, the mode it is in, the app that is
+     open, and — where the machine actually reports it — which side of a power
+     pair is true.
+     The board's idiom for this is an inverted key, ink on ink, which on a dark
+     panel becomes a white block: three of them turned the quietest surface in
+     the house into a chequerboard. Here a chosen key is *lit* instead, from the
+     same beam colour everything else in this section glows with. One idiom, and
+     it belongs to a room with the lights off.
+     The id selectors are matched because #avrsources and #avrmodes carry their
+     own, and an id beats any number of classes. */
+  .cinesheet .tvkey.on,
+  .cinesheet #avrsources .tvkey.on,
+  .cinesheet #avrmodes .tvkey.on {
+    background: color-mix(in oklab, var(--cine-beam) 22%, #12161e);
+    border-color: color-mix(in oklab, var(--cine-beam) 50%, transparent);
+    color: #fff; font-weight: 500;
+  }
+  .cinesheet .tvkey.on:hover {
+    background: color-mix(in oklab, var(--cine-beam) 30%, #12161e);
+    border-color: color-mix(in oklab, var(--cine-beam) 66%, transparent);
+  }
+  /* The foot. Its primary is the same inverted key, and the same problem. */
+  .cinesheet .sheet-btn {
+    min-height: 40px; background: rgba(255,255,255,.045);
+    border-color: rgba(255,255,255,.12); color: var(--soft);
+  }
+  .cinesheet .sheet-btn:hover { background: rgba(255,255,255,.09); color: var(--ink); }
+  .cinesheet .sheet-btn.go {
+    background: var(--cine-beam); border-color: var(--cine-beam); color: #06070a;
+  }
+  .cinesheet .sheet-btn.go:hover {
+    background: #96c3ea; border-color: #96c3ea; color: #06070a;
+  }
+  .cinesheet .sheet-btn:focus-visible { outline: 2px solid var(--cine-beam); }
+  /* The volume strip, in the treatment the dark theme already worked out and
+     measured. Inside this panel the house is usually still on the paper theme,
+     so the strip was drawing its paper fill — a solid slab of pale blue that
+     was the brightest thing on a dark panel and put its own label at about
+     1.76:1. The dim body plus a full-strength bar at the leading edge is the
+     answer this file already records: the label sits on the dim part and the
+     level is marked by the bar, which carries no text. */
+  .cinesheet .strip-fill {
+    background: color-mix(in srgb, var(--tint, var(--cine-beam)) 40%, transparent);
+    box-shadow: inset -2.5px 0 0 0 var(--tint, var(--cine-beam));
+  }
+  .cinesheet .strip { border-color: rgba(255,255,255,.12); }
+  .cinesheet .strip-label { color: var(--ink); }
+
+  .cinesheet .cinemore > summary {
+    min-height: 44px; display: flex; align-items: center; gap: 12px;
+    font-size: 12px; letter-spacing: .14em; color: var(--soft);
+  }
+  .cinesheet .cinemore > summary:hover { color: var(--ink); border-color: var(--cine-beam); }
+
   .cinemore { min-width: 0; }
   .cinemore > summary {
     cursor: pointer; list-style: none; padding: 11px 14px; border-radius: 12px;
@@ -17692,12 +20398,42 @@ function fillRoom(stack, room) {
   for (const c of cinemas.values()) for (const m of c.members) paired.add(String(m.record_id));
   const items = all.filter(d => !paired.has(String(d.record_id)));
 
+  /* The cinema leads the room, on its own dark plate.
+   *
+   * It used to ride with the screens, which put it fifth: in HOME THEATRE you
+   * scrolled past ten lamps, a curtain and an air conditioner to reach the one
+   * thing that room is for. A category is the wrong container for it anyway —
+   * the others group circuits *of a kind*, while this is three machines that
+   * only mean anything together.
+   *
+   * The plate is always dark, whatever the hour and whichever theme the house is
+   * in, because a cinema is a dark room. That is the same reasoning the app icon
+   * already committed to: there has to be a dark for the light to be light
+   * against. Everything inside it takes the cinema's own tokens.
+   *
+   * Its padding is load-bearing, not decoration. The card is the only thing in
+   * here that takes a press, and it sits well inside the plate, so a thumb
+   * travelling down the board has inert room on every side of it. */
+  for (const c of cinemas.values()) {
+    const plate = document.createElement('section');
+    plate.className = 'cat cineplate';
+    plate.style.setProperty('--span', String(BOARD_COLS));
+    const head = document.createElement('div');
+    head.className = 'cine-head';
+    head.textContent = 'Cinema';
+    plate.appendChild(head);
+    const box = document.createElement('div');
+    box.className = 'cine-stagebox';
+    box.appendChild(cinemaTile(c));
+    plate.appendChild(box);
+    stack.appendChild(plate);
+  }
+
   for (const kind of KIND_ORDER) {
     const group = items.filter(d => kindOf(d) === kind);
-    /* The cinema card rides with the screens, and has to be able to create that
-       category on its own: pair the only projector in the room with the only
-       receiver and there is nothing left to make the heading appear. */
-    const cines = kind === 'screen' ? [...cinemas.values()] : [];
+    // Drawn above, on its own plate. The Screens heading appears only if this
+    // room has a screen that is not part of a cinema.
+    const cines = [];
     if (!group.length && !cines.length) continue;
     // The COBs lead the lights, on one control — they are a ceiling, not five
     // switches. Their own tiles stay below it for the times one lamp is the point.
@@ -18066,12 +20802,21 @@ function cinemaTile(c) {
   const body = document.createElement('button');
   body.type = 'button';
   body.className = 'tile-body';
+  /* The card is a small stage, deliberately the same shape as the panel's: an
+     eyebrow, the one thing that is playing in the display face, then the three
+     machines underneath. It used to open with the cinema's own name, which the
+     plate heading above it already says — so the loudest line on the card was
+     the one word you did not need. What it says now is the answer to the only
+     question anybody asks from across the room. */
+  const lead = cineLead(screen, sound, player);
   body.innerHTML =
-    '<span class="headline"><span class="roomname"></span></span>' +
+    '<span class="cine-eyebrow"></span>' +
+    '<span class="cine-title"></span>' +
     '<span class="cineread"><span class="cinehalf screenhalf"></span>' +
     '<span class="cinehalf soundhalf"></span>' +
     '<span class="cinehalf playerhalf"></span></span>';
-  body.querySelector('.roomname').textContent = c.info.name.toUpperCase();
+  body.querySelector('.cine-eyebrow').textContent = lead.eyebrow;
+  body.querySelector('.cine-title').textContent = lead.title;
   body.onclick = () => openCinema(c);
   tile.appendChild(body);
 
@@ -18097,6 +20842,25 @@ function cinemaTile(c) {
   tile.appendChild(ring);
 
   return tile;
+}
+
+/* What is on in there, in one line, which is what anybody wants from the board.
+ *
+ * Ordered by what actually answers rather than by which machine feels most
+ * important: the box reports its own foreground app, the receiver reports its
+ * own source, and the projector can only say what was last sent to it. So a
+ * title is only claimed where something can genuinely say what it is, and the
+ * screen alone gets no title at all. */
+function cineLead(screen, sound, player) {
+  const playing = player && player.status && player.media_online && player.media_app_name;
+  if (playing) return { eyebrow: 'Now showing', title: player.media_app_name };
+  if (sound && sound.avr_online && sound.status) {
+    const src = (sound.avr_sources || []).find((x) => x.code === sound.avr_input);
+    return { eyebrow: 'Sound only', title: src ? src.name : (sound.avr_input || 'On') };
+  }
+  // The hub's belief, and the eyebrow says so rather than the title implying it.
+  if (screen && screen.status) return { eyebrow: 'Screen on', title: 'Nothing playing' };
+  return { eyebrow: 'Standing by', title: 'Nothing playing' };
 }
 
 /* The media player's own line, and it is a reading for the same reason the
@@ -18911,7 +21675,11 @@ function drawStage(sheet) {
     || d.media_app === 'com.airtel.tv';
   const live = !!(d && d.media_online && d.status && !idle);
 
-  let title = 'Cinema';
+  /* Not 'Cinema', which the eyebrow directly above it already says — the
+     title repeating its own heading was the loudest line on the panel carrying
+     the least. The board card says the same words for the same state, so the two
+     halves of this section agree about what is happening in there. */
+  let title = 'Nothing playing';
   if (live) title = d.media_app_name;
   else if (d && d.media_online && d.status) title = 'Ready';
   else if (d && !d.media_paired) title = 'Not paired';
@@ -19023,7 +21791,16 @@ function drawAvrHalf() {
     b.disabled = dead && !b.closest('#avrpower');
   }
   // Nothing at all reaches a receiver that is not answering, power included.
-  for (const b of el('#avrpower').querySelectorAll('button')) b.disabled = !a.avr_online;
+  /* Which of the pair is true, marked — because this machine reports its own
+     power. The projector's pair below is deliberately left unmarked for exactly
+     the opposite reason: it cannot answer, and lighting a key there would dress
+     a belief up as a reading on the one panel that is careful about the
+     difference. */
+  for (const b of el('#avrpower').querySelectorAll('button')) {
+    b.disabled = !a.avr_online;
+    b.classList.toggle('on',
+      a.avr_online && (b.dataset.avr === 'on' ? !!a.status : !a.status));
+  }
 
   // Shows what the unit is doing, not what the key will do — the same choice
   // the television's mute key makes.
@@ -19287,6 +22064,11 @@ function drawMediaHalf() {
   /* The power row is not keyed on the box's key list: it goes through
      setPower, which decides whether to send anything at all. */
   el('#mediapower').hidden = false;
+  // Marked, like the receiver's, because the box pushes its own awake state.
+  for (const b of el('#mediapower').querySelectorAll('button')) {
+    b.classList.toggle('on',
+      d.media_online && (b.dataset.mediapow === 'on' ? !!d.status : !d.status));
+  }
   /* A row whose every key has gone goes with them, or the panel grows an empty
      band — the same reservation trap as a tile's foot. */
   for (const row of block.querySelectorAll('.tvrow, .tvpad')) {

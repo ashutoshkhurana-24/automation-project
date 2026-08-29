@@ -170,16 +170,19 @@ const GROUPS = [
     'You have not said anything I can cancel',
     'That was too long ago to put back safely',
   ]],
+  /* The reply is the greeting and a closing line, and nothing else — what was
+     switched off and what was left running are in the record rather than in
+     somebody's ear. A refusal is the exception and carries no closing line. */
   ['Good night', [
-    'Good night, Bhai. I have switched off 8 lights in Master Room. the fan is still running. Rest well.',
-    'Good night, Ashu. I have switched off one light in Ashu Room. Sleep well.',
-    'Good night, Mum. I have switched off 5 lights in Harshit Room. the fan and the air conditioner are still running. Let the day go. Rest well.',
-    'Nothing was on in Ashu Room. Good night, Ashu. The room is yours now. Rest well.',
-    // A closing line has to follow bad news without sounding pleased about it.
-    'Good night, Bhai. I have switched off 9 lights in Master Room. 2 lights are still burning. Take a slow breath. Rest well.',
-    'Good night, Bhai. I have switched off 8 lights in Master Room. One light is still burning. Late one. Sleep in if you can.',
+    'Good night, Bhai. Rest well.',
+    'Good night, Ashu. Sleep well.',
+    'Good night, Mum. Let the day go. Rest well.',
+    'Good night, Dad. Late one. Sleep in if you can.',
     'I could not switch anything off in Master Room',
+    'I could not switch the foot light on in Master Room',
     'I do not know whose good night that is. I know mum, dad, ashu and bhai',
+    'Your good night names a room this house does not have',
+    'Nobody has a good night set up here yet',
     'the lights in Master Room are back as they were',
   ]],
   ['A reading, one thing', [
@@ -239,13 +242,13 @@ const GROUPS = [
   ]],
 ];
 
-/* Every closing line the house can draw, in the shortest reply that carries one.
-   Read bare they are fragments — "Rest well." has no verb the checker knows — so
-   they are shown as they will actually be said. */
+/* Every closing line the house can draw, in the reply that actually carries it.
+   Read bare they are fragments, so they are shown as they will be said — and
+   since the reply was cut back to a greeting and a line, that is now the whole
+   of it. */
 for (const band of ['early', 'night', 'late']) {
   GROUPS.push(['Good night, closing lines: ' + band,
-    GOODNIGHT_LINES[band].map(
-      (line) => 'Nothing was on in Ashu Room. Good night, Bhai. ' + line)]);
+    GOODNIGHT_LINES[band].map((line) => 'Good night, Bhai. ' + line)]);
 }
 
 /* iOS says these letter by letter, which is what anybody wants for them. Any
@@ -259,10 +262,15 @@ const NOT_A_SENTENCE = /^(?:On now:|Also on:|Done\b)/;
 
 /* Enough of a verb to carry a clause. The fragments this pass exists to fix all
    end in a bare state word — "Cob 1 in Ashu Room off" — with nothing before it. */
+/* The imperatives were added when the good night reply was cut back to a greeting
+   and a closing line: "Good night, Bhai. Rest well." had been carried by the verb
+   in the fact clause before it, and read as a caption once that went. They are
+   genuine verbs, so this is a gap in the list rather than a loosened rule. */
 const HAS_VERB = new RegExp('\\b(?:is|are|was|were|has|have|had|may|can|could'
   + "|can't|didn't|doesn't|don't|isn't|couldn't|wasn't"
   + '|refused|reached|sent|showing|playing|opening|closing|waking|stopped'
-  + '|know|find|open|close|stop|apply|change|catch|work|understand|does|do|take)\\b', 'i');
+  + '|know|find|open|close|stop|apply|change|catch|work|understand|does|do|take'
+  + '|rest|sleep|let|put|breathe|wait|needs|did|names)\\b', 'i');
 
 function faults(said) {
   const bad = [];

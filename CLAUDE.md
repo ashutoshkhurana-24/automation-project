@@ -1773,6 +1773,283 @@ about the past. The narrower one it did not yet carry: **a pre-check batched int
 the same command as the action is not a check at all.** Read, look at the answer,
 then decide.
 
+### A good night answers on send, and leaves one lamp burning (2026-08-29)
+
+*"is there a way to optimise the spoken output of goodnight? Also i want it in
+config, as for mum and dad roles i want to keep footlight on in goodnight"* &mdash;
+two asks, and the user chose **both shorter and faster** on the first.
+
+**The 7&ndash;10 seconds were the verify pass, and none of the safety is given up
+to lose them.** `runSleep` now takes `{ verify: false }` for good night alone, so
+`applyScene` sends, answers, and then re-reads and resends behind the reply. That
+verify-and-resend is the entire reason good night goes through a sleep rather than
+a cue &mdash; a lamp dropped at bedtime burns all night with nobody awake to see
+it &mdash; and it still runs and still logs. What is given up is only the straggler
+*count* in the spoken sentence, which is what cost somebody five to seven seconds
+standing in a dark room. Measured against a stand-in hub: **1.78s against 7&ndash;10s**,
+with `{"e":"verified","id":"sleep:Good night, Master Room","set":4,"missed":0}`
+landing in the log 4.7s after the reply had gone.
+
+A timer keeps the default on both counts, deliberately: it fires unattended, so
+there is nobody to keep waiting and the verified figure is the only record of what
+happened.
+
+**With no reading to count against, what is spoken is what was commanded** &mdash;
+and never more than reached the hub, because `sendSteps` reports how many of the
+commands it actually got out. `Math.min(offSteps.length, r.sent)` is the whole
+guard, and it is the difference between a reply that is a claim and one that is a
+boast.
+
+#### The night light is switched on, not merely spared
+
+**"Keep the foot light on" is the literal reading and it is the useless one.**
+MASTER ROOM's foot light (473) is off most evenings, so an exemption alone would
+have done nothing on exactly the nights it is wanted. It comes **on**, and
+`sendSteps` already sorts the off steps first, so the room goes dark and then the
+one lamp comes up rather than the other way about. Proven on the wire: three cobs
+to `false`, then `473 FOOT LIGHT := true`.
+
+**Declared, never guessed**, for the reason the ceiling groups are: which fitting
+somebody wants burning at night is knowledge about the room. `config.goodnight`
+takes either shape, read once at startup:
+
+```json
+"mum":  { "room": "MASTER ROOM", "night_light": "foot light" },
+"ashu": "ASHU ROOM"
+```
+
+The name is resolved through the **same `circuitsOf`/`pick`** the address grammar
+uses, so `"foot light"` means precisely what `/do/master/foot-light` means: a
+unique prefix is enough, and a name matching two circuits is refused rather than
+picked between. Resolved at bedtime rather than at startup, because the device map
+is what it resolves against and a vendor visit changes that underneath.
+
+**A name the room has not got is said out loud rather than swallowed**, because
+the alternative is a foot light that never comes on and nothing anywhere saying
+why. Both halves verified against a deliberately wrong config: a bad name alone
+still puts the room to bed and names what it could not find, and one good name
+beside a bad one lights the good one.
+
+**It rides the cancel snapshot**, so cancel puts the foot light back out if that is
+where it was. Verified: `473 := false` and the three cobs back to `true`.
+
+Two wording notes. The first of them **has since been reversed** &mdash; see the
+section below &mdash; and is kept because the reasoning was sound and the user's
+call overrode it, which is worth being able to tell apart from a bug:
+- The reply **named what is on** &mdash; *"The foot light, the fan and the air
+  conditioner are on"* &mdash; on the argument that a lamp which comes on when you
+  say good night and is not mentioned reads as the house having got it wrong.
+- It still **never ends on the word "off"**. `SPEAK_WHOLE` reads that shape as a
+  circuit being *set* and inserts a verb.
+
+**The family guide stopped naming this family in hard-coded HTML.** *"Mum and Dad
+put Master Room to bed, Ashu puts Ashu Room"* was typed into `guidePage` &mdash; true
+on the day it was written, and it would have gone to a second house still naming
+these four. `goodnightGuideWho()` builds it from the config, grouped by room
+because two names sharing one is the ordinary case, and `goodnightGuideNight()`
+adds the night-light sentence or nothing at all.
+
+**A stand-in hub is how all of this was tested at 02:15**, which is the only
+honest way to test a bedtime feature in an occupied house. Forty lines in the
+scratchpad: a WebSocket server that pushes `data/devices.json` as its
+`site_config` after 1.5s, files the `device_status` it is handed, and prints every
+command. It is **as credulous as the real box on purpose**, so a test against it
+proves what our code sent and nothing about hardware &mdash; which is exactly what a
+step-planning change needs. Worth rebuilding rather than reaching for the house.
+
+**Not verified against the real hub, and the reason is the hour.** Everything above
+is the stand-in plus the two review tools. And **`deploy/push.sh` copies `server.js`
+alone**, so the hub's own `config.json` still holds the old bare-string shape:
+mum and dad get their room put to bed exactly as before and **no foot light** until
+that file is edited on the box. That is by design &mdash; per-install config must not
+be overwritten by a deploy &mdash; but it means this feature is a code deploy *and* a
+hand edit.
+
+### A good night says the name and the line, and nothing else (2026-08-29)
+
+*"On goodnight i dont want the spoken output to say what it turned off and whats
+on. Just goodnight, <who> and my affirmation sentences."*
+
+So it is **"Good night, Mum. Late hour. Rest well."** and that is the whole reply.
+The count of lights, the room, the night light and the fan all come out of the
+sentence.
+
+**This reverses the note directly above, and the reversal is the user's call
+against a real argument.** The clause naming what is still on was there because a
+lamp that comes on when you say good night and is not mentioned reads as the house
+having got it wrong &mdash; which is true, and is outweighed by the thing being a
+*good night*. The last thing anybody says in a day should not be answered with a
+status report. Worth keeping both halves on the record so this is not re-litigated
+as though the first version had been careless.
+
+**Nothing is lost, only unspoken.** The reply still carries `off`, `night`,
+`total` and `room`, and the history log still writes
+`{"e":"goodnight","who":"mum","room":"MASTER ROOM","total":4,"off":3,"night":1}`.
+Verified against the stand-in hub in the same run as the reply above: three cobs
+to `false` and `473 FOOT LIGHT := true` on the wire, with none of it said aloud.
+
+**A refusal is the exception and keeps its sentence**, because a room still lit
+answered with "sleep well" is the house being cheerful about not having done what
+it was asked. Both refusals carry no closing line, which is the rule that was
+already there. Proven by pointing an instance at an unreachable hub with a lit
+room: *"I couldn't switch anything off in Parent Room."*, `ok: false`.
+
+**A config typo moved from the reply to the journal.** A night light this room has
+not got used to be named out loud; with the reply cut back it is a `console.warn`
+instead, so a hand-edited file is still discoverable without putting a
+configuration fault into somebody's good night. The console refuses such a name at
+the point of typing, so this is now only reachable by editing the file on the box.
+
+#### `say-speech-review.js` found two things, and one is a pre-existing bug
+
+- **"Your good night is set to a room this house does not have"** was mangled into
+  **"Your good night is is now set to"** by `SPEAK_WHOLE`'s `set to` rule. That
+  refusal has existed since good night was built and had never been in the review
+  tool, so nobody had heard it. Reworded to *"Your good night **names** a room this
+  house does not have"*, which ends on a word no rule reaches for. The lesson is
+  the tool's own: **a sentence that is not in the review list is a sentence nobody
+  has read.**
+- **The short replies read as captions**, because `HAS_VERB` had never seen an
+  imperative &mdash; the verb had always been supplied by the fact clause
+  ("I *have* switched off"), and cutting that away left "Good night, Bhai. Rest
+  well." with nothing the checker recognised. `rest|sleep|let|put|breathe|wait|
+  needs|did|names` were added: a gap in a list of verbs, not a loosened rule.
+
+And the pool is now checked **in the reply that actually carries it** &mdash;
+`'Good night, Bhai. ' + line` rather than the old three-clause sentence &mdash; so
+all thirty closing lines are read as they will be said. 0 to fix across 34;
+`say-eval.js` still 55/55.
+
+### /setup became a console (2026-08-29)
+
+*"Make my setup page a proper console so I can have control, its a big ask so do
+it properly"*, and then *"my console should have a good native looking UI"*. The
+scope was settled by asking: **everything, including cues and schedules**, and
+**no passcode** &mdash; an optional gate was offered and declined, which is
+consistent with a LAN dashboard on a box whose vendor API has no authentication
+either.
+
+**Five config keys could only be reached by SSH-ing to the box and editing
+`config.json`**, and for one of them that is worse than inconvenient. The
+receiver's `host` is a DHCP lease that has already moved twice, and the symptom
+is not an error: it is a perfectly healthy dashboard with a dead Sound card, an
+empty source list and `No route to host` from the hub. Now: `receivers`,
+`media_players` (app tiles included), `cinemas`, `goodnight` and `room_aliases`,
+plus **Find it on the network**, which sweeps for port 23 in 32-address slices
+&mdash; about ten seconds &mdash; because looking for a Denon MAC prefix does not
+work here, this unit's `00:06:78` being Fujitsu-registered.
+
+**Thirteen panels**: House, Rooms (renames and aliases), Circuits, Groups,
+Televisions, Cinema, Good night, Automations, Cues, Schedules, Backdrop, Health,
+Maintenance.
+
+#### It takes the opaque half of the design language, and that is the whole look
+
+This file's own rule is that **sheets and popovers stay opaque, because glass is
+for chrome you look past and a panel you read and type into has to be a panel**.
+A console is nothing *but* panels you read and type into &mdash; so there is no
+photograph, no `backdrop-filter` and no lens anywhere on it. Everything else is
+the board's, token for token: the paper palette and its dark counterpart swapped
+**on the hub's clock**, the mono upper-case pill for a heading, the specular lip
+along a pane's top edge, coral for the number that matters, the amber-edged
+callout shaped like a left-on advisory, and the **60ms-down / 240-back press**
+that this file calls the whole trick. It is also, by construction, the cheapest
+page here to render, which matters because it is the one most likely to be opened
+on the doorbell tablet.
+
+Three things it inherits by *reading* rather than by restating:
+- **A cue's card is drawn in the light the cue makes**, averaged from its steps,
+  which is what makes a library of near-identical names browsable by eye.
+- **The source codes come off the receiver** (`SSFUN`), never a built-in table
+  &mdash; which is why the cinema's input picker offers **PS5** for `GAME`.
+- **`FONT_FACES` was extracted** so the board and the console declare the three
+  typefaces once. Eleven `@font-face` rules copied twice is two things to keep in
+  step, and the console wanting the same faces is the point of it looking like
+  the same product. Verified as a pure move: the board still serves all ten.
+
+#### Refusals name what they wanted, and write nothing
+
+Every one of these was run against the live endpoint and every one left
+`config.json` byte-identical:
+
+| asked for | answer |
+|---|---|
+| an alias `dining` | *"dining" is already how you address DINING* |
+| a night light the room has not got | *MASTER ROOM has no circuit called bed lamp* |
+| a good night room the hub lacks | *this house has no room called GARAGE* |
+| a cinema whose projector is record 449 | *circuit 449 is not a projector* |
+| a cinema with no members | *a cinema needs a projector, a receiver or a media player* |
+| an app tile with a name and no link | *an app needs both a name and a link* |
+| `volume_max: 200` | *must be 20 to 98 &mdash; the unit's own maximum is 98, and 98 is deafening* |
+
+That last one is **refused rather than clamped**, unlike the link's own guard:
+that one protects the code from a bad file, this is somebody typing, and silently
+turning 200 into 98 hides a typo in the one field where being wrong is loud.
+
+**An alias that shadows a real room is the interesting refusal.** `applyConfig()`
+drops it silently, which is right at startup and wrong when somebody is watching
+&mdash; it would make that room *ambiguous* rather than aliased, so `pick()` finds
+two candidates and refuses, and the room it was meant to help stops answering
+altogether.
+
+#### What is live and what needs a restart, said rather than implied
+
+`receivers`, `media_players` and `cinemas` build their link objects from
+module-level constants at startup, so they need a restart exactly as televisions
+already did, and the reply says so. **Good night no longer does**:
+`GOODNIGHT_WHO` moved out of a `const` beside `runGoodnight` and into
+`applyConfig()`, declared `var` up with `ROOM_ALIASES` &mdash; which is the
+early-`let` ReferenceError this file has now recorded four times. Verified live:
+a new alias saved from the console answered `/do/nani` with no restart.
+
+#### Four bugs of my own, and each is a rule worth keeping
+
+- **A panel hash must not be an element id.** `#circuits` is also the id of the
+  circuits *table*, so the browser jumped to the element before the script ran
+  &mdash; which presented as a panel opening half way down itself with the
+  masthead floating over a table. Hashes are `#p-<name>` now.
+- **A night light is stored as a name and resolved through `slug()`**, so
+  comparing the stored `"foot light"` against a circuit's `foot-light` marked
+  every working night light as missing. `slugify()` in the page makes the same
+  derivation the server does.
+- **Cards need a grid wrapper.** Without one each card is a full-width block and
+  a port number gets a 660px field, which reads as a mistake rather than a form.
+- **A tick must not redraw the list it is in.** The schedule picker rebuilt its
+  whole tick list on every pick, so with eighty-eight circuits it threw the list
+  back to the top and made the checkbox you had just clicked a *different node*
+  &mdash; the detached-target trap this file already records for the sleep panel.
+  The picker and the options are two containers now, and only a screen &mdash;
+  which genuinely changes which ticks are drawn &mdash; costs a full redraw.
+
+**And an instrument note that cost twenty minutes: navigating to `#p-cinema` on
+a page already at that URL is a same-document navigation.** The script never
+re-ran, so an old build was still live and every panel read as hidden. Change the
+query string, or reload properly, before believing a fix did not work.
+
+#### Verified end to end, and how
+
+Against the stand-in hub, at three in the morning, so nothing in the house could
+move. A cue **created, saved and deleted** through the UI (id `console-test`, one
+step, record 448); a schedule **created, saved and deleted**, carrying a
+television's string id &mdash; the `Number('tv-ashu')` trap this file records
+three times; the curtain rule proven both ways (two curtains give open/close, and
+adding LIVING's `CURTAIN ROPE`, which is a *light*, falls back to on/off); the
+screen rule proven to replace the selection **and say so**; a settings save
+round-tripped and put back. Both themes, 1280 and 375, no horizontal overflow at
+either, no console errors, and `config.json` byte-identical at the end.
+
+`/setup` is **gzipped now**, which it never was: only `res.json` is wrapped by
+the compression note in this file, so the console was going out as 118KB of
+uncompressed HTML. `sendPage()` serves both pages, 118KB &rarr; **30KB**, with a
+304 on an unchanged page. SSE is untouched and still streams.
+
+**Not verified against the real hub.** Everything above is the stand-in plus the
+review tools. And `deploy/push.sh` copies `server.js` alone, which is right
+&mdash; per-install config must never be overwritten by a deploy &mdash; so the
+console is a code deploy and nothing else, while **the hub's own `config.json`
+still holds the old bare-string good-night shape** until it is edited there or in
+the console itself.
+
 ### What the voice path keeps, and where it is said (2026-08-25)
 
 Asked whether recordings are stored on the hub. **They are not, and this was
@@ -2528,6 +2805,71 @@ from DOM nodes so there is nothing to escape. And `openAvr` lost its tail to an
 edit that split it to create `openMedia`, so a lone receiver would have opened an
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
+
+### The cinema became a dark room at the top of the board (2026-08-29)
+
+*"Cinema should appear on top of home theatre list ... the cinema section should
+feel cinematic and different, staying always dark ... each component's heading
+should be more obvious in size."*
+
+**A category was the wrong container for it.** It rode with the screens, which put
+it fifth: in HOME THEATRE you scrolled past ten lamps, a curtain and an air
+conditioner to reach the one thing that room is for. Every other category groups
+circuits *of a kind*; this is three machines that only mean anything together. So
+it leaves `KIND_ORDER` entirely and draws first, on `.cineplate`.
+
+**The plate keeps its own palette and never follows the theme.** A cinema is a
+dark room, which is the same argument the app icon already settled &mdash; there has
+to be a dark for the light to be light against. Every token is scoped to
+`.cineplate` and `.cinesheet`, so nothing leaks out and the theme swap cannot
+reach in. The colour of light is **not** a new accent: it is `--cool`, which is
+what a screen already glows in this house.
+
+**The panel went dark by restating tokens, not by rewriting controls.** Every key,
+strip, field and disclosure in there already draws from tokens, so `.cinesheet`
+redefines `--sheet`, `--paper-2`, `--ink`, `--line` and the rest &mdash; the move
+`.dark body` makes for the whole house, scoped to one dialog. That is why this is
+a palette rather than a second design.
+
+**The dead space is the control.** The card is the only thing on the plate that
+takes a press and it sits well inside it, so a thumb travelling down the board
+meets inert plate on every side. No hold, no gesture: browsers already cancel a
+click when a scroll happens, so spacing plus that is the whole answer.
+
+**Headings went 10px &rarr; 14px**, near-white, wide-tracked, with a short leader
+rule. Both halves use the same treatment, so the board and the panel name things
+the same way.
+
+Four things that had to be measured or reasoned rather than styled:
+
+- **A lit card glows, it does not flood.** Inherited, it took the board's lamp
+  fill &mdash; a gradient whose stops were chosen against cream &mdash; and washed the
+  whole face bright blue, dropping the three machine labels to about **2:1**. The
+  dark theme's own rule applies: the pane stays dark and the light comes out of
+  it. Measured after: labels **5.2:1** over the glow, values 15.6, title 18.1.
+- **The volume strip was drawing its paper treatment inside a dark panel**, a
+  solid pale slab that was the brightest thing on the panel and put its own label
+  at roughly 1.76:1 &mdash; the exact figure this file already records. It takes the
+  dark treatment explicitly: dim body, full-strength bar at the leading edge.
+- **A chosen key is lit, not inverted.** The board's idiom is ink-on-ink, which on
+  a dark panel is a white block; three of them turned the quietest surface in the
+  house into a chequerboard.
+- **Only the machines that answer mark their power pair.** The receiver and the
+  box report their own state, so their on/off shows which is true. The projector's
+  pair stays deliberately unmarked &mdash; lighting a key there would dress a belief
+  as a reading on the one panel that is careful about the difference.
+
+Two layout traps, both already in this file and both hit again: the card had to
+come **out of the tile grid's fixed height** or the third machine clipped off the
+bottom at 375px once the readings wrapped, and its body had to be `relative`
+rather than `static` when it left the absolute box, or the face falls under the
+glow. And `.tile.cinema .cineread` carries three classes and is declared later,
+so the plate's row rule needs three of its own rather than `!important`.
+
+Verified at 1280 and 375, in both themes, lit and dark, with rooms that have no
+cinema untouched &mdash; Ashu and Living keep their Screens category and draw no
+plate, while HOME THEATRE draws the plate and no longer draws an empty Screens
+heading.
 
 ### Play now gets the box ready, not just the room (2026-08-28)
 
