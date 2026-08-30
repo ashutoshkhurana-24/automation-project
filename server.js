@@ -10341,8 +10341,32 @@ function hubClock(now = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   const wall = now.getFullYear() + '-' + p(now.getMonth() + 1) + '-' + p(now.getDate())
     + 'T' + p(h) + ':' + p(now.getMinutes());
-  return { minutes, wall, night: h >= NIGHT_FROM || h < NIGHT_UNTIL };
+  return { minutes, wall, zone: HUB_ZONE, night: h >= NIGHT_FROM || h < NIGHT_UNTIL };
 }
+
+/* What to call the hub's timezone, computed once at startup.
+
+   Node's own short name is no use — Asia/Calcutta gives "GMT+5:30", which is a
+   fact about the offset and not what anybody in this house calls the hour. The
+   long name is "India Standard Time", and its initials are the abbreviation
+   people actually say. That rule holds for the named zones generally (Pacific
+   Daylight Time, Australian Eastern Standard Time), and where a zone has no
+   name at all the long form is itself an offset — so it falls back to that
+   rather than taking initials of "GMT+05:45" and inventing a word. */
+const HUB_ZONE = (() => {
+  try {
+    const name = (s) => {
+      const part = new Intl.DateTimeFormat('en-US', { timeZoneName: s })
+        .formatToParts(new Date()).find((x) => x.type === 'timeZoneName');
+      return part ? part.value : '';
+    };
+    const long = name('long');
+    if (/^[A-Za-z]+(?: [A-Za-z]+)+$/.test(long)) {
+      return long.split(' ').map((w) => w[0]).join('').toUpperCase();
+    }
+    return long || name('shortOffset') || '';
+  } catch { return ''; }
+})();
 
 function circadianTune(now = new Date()) {
   const h = now.getHours() + now.getMinutes() / 60;
@@ -15937,6 +15961,45 @@ ${FONT_FACES}
     .blindnote { font-size: 8.5px; }
   }
 
+  /* ── the house's hour ──────────────────────────────────────────────────
+     Two homes, one rule: the phone's status line and the desktop masthead.
+     They are never both on screen, and writing them apart is how they would
+     come to disagree about the hour or about when to name the zone.
+
+     Tabular figures because a clock that reflows on every minute reads as a
+     glitch, and the zone is dropped entirely when it is empty — a flex gap
+     around nothing still takes its width. */
+  .clock { display: inline-flex; align-items: baseline; gap: 4px; flex: 0 0 auto;
+           font-family: var(--mono); font-variant-numeric: tabular-nums;
+           letter-spacing: .04em; white-space: nowrap; }
+  .clock b { font-weight: 500; font-size: 12px; color: var(--soft); }
+  .clock i { font-style: normal; font-size: 9px; letter-spacing: .1em;
+             color: var(--faint); }
+  .clock i:empty { display: none; }
+  /* Away from the house it stops being furniture: this is the only thing on the
+     screen saying the hour you are reading is not the hour you are standing in,
+     so it takes the ink and the accent the moment the two disagree. */
+  .clock.away b { color: var(--ink); }
+  /* The accent was picked for display numerals, where large text may sit at
+     3.5:1. At 9px it does not: on paper it measures 3.26 against the phone's
+     bar, so it is deepened toward the ink for this one label — still plainly
+     coral at rgb(144,69,58), and 5.92 there.
+
+     Chosen against the *desktop* pane, which is the harder of the two and had
+     to be composited rather than read: .plate is translucent over the
+     photograph, so its ground moves with the picture. Across that whole range
+     58% gives 4.71 at the worst of it — the pane over a black photograph — and
+     6.55 at the best. After seven the plain accent runs 5.41 at the brightest
+     the backdrop gets (fitShot lands its 88th percentile at 88 in dark) and
+     6.70 over the dark of it, so it is left alone.
+
+     Measure this by compositing the pane explicitly. Reading the ancestor's
+     background reports the *token*, which is translucent, and walking up from a
+     hidden element reports nothing at all — a first pass called the phone's bar
+     1.4:1 when at that width it was display:none. */
+  .clock.away i { color: color-mix(in oklab, var(--accent) 58%, var(--ink)); }
+  .dark .clock.away i { color: var(--accent); }
+
   .thinbar { display: none; }
   @media (max-width: 860px) {
     /* It carries the notch inset itself and sticks to the top edge — the bar it
@@ -15962,6 +16025,15 @@ ${FONT_FACES}
                         color: var(--ink); }
     .thinbar #thinright { color: var(--faint); }
     .thinbar #thinleft { cursor: pointer; }
+    /* It leads the row, set off by a rule the way the masthead sets its name
+       off from the tally. The rule belongs to the *back link*, not to the
+       clock: #thinleft is empty on the house view, and a divider hanging with
+       nothing after it reads as a rendering fault. */
+    .thinbar .clock b { font-size: 12.5px; }
+    .thinbar #thinleft:not(:empty) { padding-left: 10px; border-left: 1px solid var(--line); }
+    /* A long room name gives way rather than pushing the reading off the row. */
+    .thinbar #thinmid { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                        white-space: nowrap; }
     /* The card it replaces: on a phone the bar held a title and a search icon,
        and the title is what the status line now says. */
     header.plate { display: none; }
@@ -18674,6 +18746,7 @@ ${FONT_FACES}
        house consists of. On a room it becomes the way back, the room, and its
        reading. Both are one row of 11px type, which is all a phone can spare. -->
   <div class="thinbar" id="thinbar">
+    <span class="clock"><b></b><i></i></span>
     <span id="thinleft"></span><span id="thinmid"></span><span id="thinright"></span>
   </div>
 
@@ -18727,6 +18800,11 @@ ${FONT_FACES}
       </svg>
       <span>Plans</span>
     </button>
+    <!-- Last in the row, which is where a clock goes. It is the house's hour,
+         not this machine's, so it is genuinely new information beside the OS
+         clock two inches above it — and it is the hour every plan on the board
+         is quoted in. -->
+    <span class="clock"><b></b><i></i></span>
   </header>
 
   <!-- What the house will do next, directly under the bar. Hidden entirely
@@ -19536,7 +19614,8 @@ async function load() {
   houseGroups = snap.groups || [];
   state.schedules = snap.schedules || [];
   if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now();
-    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null; applyTheme(); }
+    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null;
+    hubZone = snap.clock.zone || ''; applyTheme(); }
   drawIndex();
   drawField();
   readout();
@@ -19587,7 +19666,8 @@ function applySnapshot(snap) {
     drawSchedules();
   }
   if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now();
-    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null; applyTheme(); }
+    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null;
+    hubZone = snap.clock.zone || ''; applyTheme(); }
   if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
     // On first load the CSS already points at the right picture, but nothing
     // has measured it yet, so the dimming still has to be worked out.
@@ -19756,6 +19836,12 @@ function tick() {
 function drawThin() {
   const tl = el('#thinleft'), tm = el('#thinmid'), tr = el('#thinright');
   if (!tl) return;
+  /* The clock is the house's, never this device's — see hubTime(). It reads the
+     hour a plan fires at and the hour the board goes dark at, so a phone abroad
+     showing its own time here would disagree with everything else on screen.
+     It is also the one thing on this bar that holds in both views: the rest of
+     the row changes with where you are, and what time it is at home does not. */
+  drawClock();
   if (state.view === 'room' && !state.q) {
     tl.textContent = '‹ HOUSE';
     tl.onclick = () => go('house');
@@ -19763,13 +19849,24 @@ function drawThin() {
     const here = inRoom(state.room);
     tr.textContent = lit(here).length ? Math.round(output(here) * 100) + '%' : '';
   } else {
-    const now = new Date();
-    tl.textContent = String(now.getHours()).padStart(2, '0') + ':' +
-                     String(now.getMinutes()).padStart(2, '0');
+    tl.textContent = '';
     tl.onclick = null;
     tm.textContent = '';
     tr.textContent = state.devices.length + ' devices · ' + rooms().length + ' rooms';
   }
+}
+
+/* One clock, drawn wherever there is a cell for it: the phone's status line and
+   the desktop masthead. Both are .clock, so the two can never come to disagree
+   about the hour or about when to name the zone. */
+function drawClock() {
+  const t = hubTime();
+  document.querySelectorAll('.clock').forEach((c) => {
+    c.querySelector('b').textContent = t.time;
+    c.querySelector('i').textContent = t.zone;
+    c.classList.toggle('away', t.away);
+    c.title = t.away ? 'The time at the house' : '';
+  });
 }
 
 /* Beside a room's board: what it is doing, and what of that is actually known.
@@ -25220,7 +25317,7 @@ async function loadAuto() {
     const a = await fetch('/api/automations').then(r => r.json());
     Object.assign(auto, a);
     if (a.clock) { hubMinutes = a.clock.minutes; hubMinutesAt = Date.now();
-      hubWall = a.clock.wall ? new Date(a.clock.wall) : null; }
+      hubWall = a.clock.wall ? new Date(a.clock.wall) : null; hubZone = a.clock.zone || ''; }
     applyTheme();
     drawNudges();
     drawTimers();
@@ -25782,7 +25879,16 @@ function dismissSheet(scrim) {
 // Keep up with the house: poll while the tab is in view, re-read on return.
 setInterval(() => { if (!document.hidden && !streamLive) sync(); }, 10000);
 setInterval(readout, 5000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+/* The clock had been redrawn only when the board repainted, so on a quiet house
+   it sat on whatever minute the last hub push happened to land in. Its own tick,
+   because the rest of the page has no reason to redraw once a minute — and at
+   20s the displayed minute is never more than a third of one late. */
+setInterval(drawClock, 20000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  drawClock();          // a phone put down for an hour comes back on the hour
+  sync();
+});
 
 /* ── after seven ─────────────────────────────────────────────────────────
  *
@@ -25805,6 +25911,7 @@ const THEME_KEY = 'neo-theme';        // 'dark' | 'light' | absent = follow the 
 let hubMinutes = null;                // minutes past midnight, IST, as the hub says
 let hubMinutesAt = 0;                 // when we were told, by our own clock
 let hubWall = null;                   // the hub's wall clock, as a local-frame Date
+let hubZone = '';                     // what the house calls its hour — IST here
 
 /* Now, on the hub's clock rather than this device's.
  *
@@ -25821,6 +25928,27 @@ let hubWall = null;                   // the hub's wall clock, as a local-frame 
 function hubNow() {
   if (!hubWall) return new Date();
   return new Date(hubWall.getTime() + (Date.now() - hubMinutesAt));
+}
+
+/* The hour to put on the board, and whether to say whose hour it is.
+ *
+ * The zone is named only when this device disagrees with the house. At home the
+ * two are the same and "IST" would be a label on the obvious — and worse, it is
+ * the one place the phone's own status bar already answers. Away, it is the
+ * whole point: the time in the corner is not the time in your pocket, and
+ * nothing else on the screen would say so.
+ *
+ * A minute of tolerance, not a comparison of zones: a browser cannot ask the
+ * hub for its IANA name, and a device merely a few seconds adrift is at home. */
+function hubTime() {
+  const there = hubNow(), here = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const away = hubWall && Math.abs(there.getTime() - here.getTime()) >= 60000;
+  return {
+    time: p(there.getHours()) + ':' + p(there.getMinutes()),
+    zone: away ? (hubZone || 'HOUSE') : '',
+    away: !!away,
+  };
 }
 
 function hubNowMinutes() {

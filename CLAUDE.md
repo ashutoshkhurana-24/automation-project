@@ -2853,6 +2853,73 @@ plans and `HUB_IP=192.0.2.1` so nothing could be commanded, driven from a browse
 on Europe/Paris. Checked first that no plan sat inside the ten-minute grace window,
 so none could fire; none did.
 
+### And the hour itself is on the board now (2026-08-30)
+
+*"on the dash can you also show ist time especially on mobile on top. As time on
+hub."* The phone's status line **already had a clock, and it was the device's** —
+`new Date()`, the same fault as the countdown above, sitting one line higher on
+the same bar. So this is less an addition than the other half of the same fix.
+
+`hubTime()` reads `hubNow()` and returns the hour plus whether to name the zone.
+`drawClock()` paints every `.clock` on the page, because there are two homes —
+the phone's status line and the desktop masthead, never both on screen — and
+writing them apart is how they would come to disagree.
+
+**The zone is named only when this device disagrees with the house.** At home the
+two are the same and `IST` would be a label on the obvious, in the one place the
+phone's own status bar already answers. Away it is the whole point: the time in
+the corner is not the time in your pocket, and nothing else on the screen says
+so. The test is **a minute of tolerance between the two clocks**, not a
+comparison of zone names — a browser cannot ask the hub for its IANA name, and a
+device a few seconds adrift is at home.
+
+**What to call the zone is computed on the hub and it is not the obvious field.**
+Node's short name for `Asia/Calcutta` is `GMT+5:30`, which is a fact about the
+offset and not what anybody here calls the hour. The *long* name is "India
+Standard Time" and its initials are the abbreviation people say — a rule that
+holds for the named zones generally (Pacific Daylight Time, Australian Eastern
+Standard Time). Where a zone has no name the long form is itself an offset, so it
+falls back to that rather than taking initials of "GMT+05:45" and inventing a
+word. Verified on the hub's own Node 18, which has full ICU.
+
+Three things worth keeping:
+
+- **It has its own tick.** It was redrawn only when the board repainted, so on a
+  quiet house it sat on whatever minute the last hub push landed in. 20s, so the
+  displayed minute is never more than a third of one late, and a redraw on
+  `visibilitychange` as well — a phone put down for an hour comes back on the
+  hour rather than on the minute it was put down.
+- **The divider belongs to the back link, not to the clock.** `#thinleft` is
+  empty on the house view, so a rule after the clock would hang beside nothing,
+  which reads as a rendering fault. Measured at 375px: the room view is four
+  cells — clock, back link, room name, reading — and does not overflow, with the
+  name given `text-overflow: ellipsis` so a long one gives way rather than
+  pushing the reading off the row.
+- **The empty zone is `display: none`, not an empty span.** A flex gap around
+  nothing still takes its width.
+
+**The away label had to be re-chosen for paper, which is this file's standing rule
+about anything coloured as a fraction of the accent.** Coral was picked for
+display numerals, where large text may sit at 3.5:1; at 9px it measured **3.26**
+against the phone's bar. Deepened 58% toward the ink it is `rgb(144,69,58)` —
+still plainly coral — and measures **5.92** there. After seven the plain accent
+already runs 5.41 at the brightest the backdrop gets and 6.70 over the dark of
+it, so it is left alone.
+
+**Measuring it needs the pane composited explicitly, and two ways of not doing
+that both lied.** Reading the ancestor's background reports the *token*, which is
+translucent, so the desktop plate came back as though it were opaque. Walking up
+from an element that is not rendered reports nothing at all — a pass run at
+1280px called the phone's bar **1.4:1** when at that width it is `display: none`.
+And `getComputedStyle` returns `oklab(...)` for a `color-mix`, so a luminance
+parser expecting `rgb()` reads the lightness as a red channel and reports every
+candidate as identical. Resolve through a canvas.
+
+Verified at 375 and 1280, in both themes, in a room and on the house view: the
+away state (`01:30 IST`, coral) against a browser on CEST, and the at-home state
+(`21:55`, no label, the zone element gone rather than empty) by moving `hubWall`
+to this device's own clock.
+
 ### The cinema became a dark room at the top of the board (2026-08-29)
 
 *"Cinema should appear on top of home theatre list ... the cinema section should
