@@ -3,8 +3,8 @@
 # Push server.js to the hub and restart it. Works from the LAN or from away.
 #
 #   bash deploy/push.sh                     # 192.168.1.3, the LAN address
-#   bash deploy/push.sh 100.83.127.114      # the hub's tailnet address
-#   NEO_HOST=100.83.127.114 bash deploy/push.sh
+#   bash deploy/push.sh 100.x.y.z      # the hub's tailnet address
+#   NEO_HOST=100.x.y.z bash deploy/push.sh
 #
 # Why this exists rather than the two scp lines in README-DEPLOY.md: those pin
 # the LAN address, which is the one thing that does not work from away, and the

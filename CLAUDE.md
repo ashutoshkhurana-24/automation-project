@@ -64,7 +64,7 @@ and the `/do` reply was `{"ok":true,"count":1,"sent":1,"spoken":"Ac in Ashu Room
 
 **An AVR would work the same way, and this house has none (2026-08-22).** Asked whether the vendor's code carries IR for an audio-video receiver: it does, in three places, and the payload is **identical to the projector's** — so if one is ever fitted, `prjCommand`'s shape works unchanged and only the key names differ.
 
-**It does have one, and it is on the network rather than the hub (2026-08-22).** A **Denon AVR-X1700H** in HOME THEATRE, on Wi-Fi, MAC `00:06:78:aa:3a:9e`. **Its address is a DHCP lease and it has already moved once** — `192.168.1.34` on 2026-08-22, `192.168.1.6` on 2026-08-23 — which presents as "the AVR does not work" with a perfectly healthy dashboard: `avr_online: false`, an empty source list, and `No route to host` from the box. `config.receivers[].host` is the only place that address lives and `/setup` has no field for it, so it is a hand edit plus a restart. Find it again by sweeping the LAN for **port 23** (one host answers) rather than by looking for a Denon MAC prefix — this unit's `00:06:78` is Fujitsu-registered, not D&M, so the obvious grep finds nothing. The hub has never heard of it — `devices_tbl` holds no AVR row and its twenty stored scenes reference only L, AC and PRJ — so the IR path above is not how it is driven. It is spoken to directly, the way the televisions are, and **it is the best-behaved device in the house**.
+**It does have one, and it is on the network rather than the hub (2026-08-22).** A **Denon AVR-X1700H** in HOME THEATRE, on Wi-Fi, MAC `00:06:78:··:··:9e`. **Its address is a DHCP lease and it has already moved once** — `192.168.1.34` on 2026-08-22, `192.168.1.6` on 2026-08-23 — which presents as "the AVR does not work" with a perfectly healthy dashboard: `avr_online: false`, an empty source list, and `No route to host` from the box. `config.receivers[].host` is the only place that address lives and `/setup` has no field for it, so it is a hand edit plus a restart. Find it again by sweeping the LAN for **port 23** (one host answers) rather than by looking for a Denon MAC prefix — this unit's `00:06:78` is Fujitsu-registered, not D&M, so the obvious grep finds nothing. The hub has never heard of it — `devices_tbl` holds no AVR row and its twenty stored scenes reference only L, AC and PRJ — so the IR path above is not how it is driven. It is spoken to directly, the way the televisions are, and **it is the best-behaved device in the house**.
 
 Denon's telnet protocol on port 23, one `\r`-terminated ASCII line per message, `?` making it a query. Three properties, all measured:
 - **At least five concurrent sessions**, all answering, so a persistent socket does not lock the HEOS app out of somebody's phone. Older Denons allow exactly one — re-check before assuming this is polite on other hardware.
@@ -965,24 +965,24 @@ Two **LG webOS QNED82BXA** sets, both reachable on the LAN and both controllable
 
 | | MAC | Name | Address when last seen |
 |---|---|---|---|
-| TV 1 | `d0:cd:bf:a0:fc:cb` | Ashu's Room | `192.168.1.8` |
-| Harshit | `60:95:f8:1d:11:da` | Harshit Room (QNED82BXA) | `192.168.1.18` |
-| Living | `8c:77:79:5f:dc:64` | webOS TV QNED70BLA | `192.168.1.28` |
-| Master | `d0:cd:bf:91:00:26` | Master Room (QNED82BXA) | `192.168.1.30` |
+| TV 1 | `d0:cd:bf:··:··:cb` | Ashu's Room | `192.168.1.8` |
+| Harshit | `60:95:f8:··:··:da` | Harshit Room (QNED82BXA) | `192.168.1.18` |
+| Living | `8c:77:79:··:··:64` | webOS TV QNED70BLA | `192.168.1.28` |
+| Master | `d0:cd:bf:··:··:26` | Master Room (QNED82BXA) | `192.168.1.30` |
 
-**All five are now accounted for, and `60:95:f8:1d:11:da` was Harshit's** — the MAC this file carried as "TV 2, unnamed" and guessed at twice. Switched on, it named itself at the same `192.168.1.18` it had been seen at all along, which is the only identification method that has ever worked here. Two wrong guesses about it are recorded above and below; both were reasoning from MAC ranges rather than asking the set.
+**All five are now accounted for, and `60:95:f8:··:··:da` was Harshit's** — the MAC this file carried as "TV 2, unnamed" and guessed at twice. Switched on, it named itself at the same `192.168.1.18` it had been seen at all along, which is the only identification method that has ever worked here. Two wrong guesses about it are recorded above and below; both were reasoning from MAC ranges rather than asking the set.
 
 | room | driven by | interface | power-on | its other interface |
 |---|---|---|---|---|
-| Ashu | `d0:cd:bf:a0:fc:cb` | wired | reliable | Wi-Fi `60:95:f8:1d:0e:c8` |
-| Master | `d0:cd:bf:91:00:26` | wired | reliable | Wi-Fi `8c:77:79:7c:7a:50` |
-| Parent | `60:95:f8:1d:08:ba` | Wi-Fi | unreliable | wired `D0:CD:BF:A0:FC:DC` |
-| Harshit | `60:95:f8:1d:11:da` | Wi-Fi | unreliable | wired `D0:CD:BF:A0:FC:D7` |
-| Living | `8c:77:79:5f:dc:64` | Wi-Fi | unreliable | — |
+| Ashu | `d0:cd:bf:··:··:cb` | wired | reliable | Wi-Fi `60:95:f8:··:··:c8` |
+| Master | `d0:cd:bf:··:··:26` | wired | reliable | Wi-Fi `8c:77:79:··:··:50` |
+| Parent | `60:95:f8:··:··:ba` | Wi-Fi | unreliable | wired `D0:CD:BF:··:··:DC` |
+| Harshit | `60:95:f8:··:··:da` | Wi-Fi | unreliable | wired `D0:CD:BF:··:··:D7` |
+| Living | `8c:77:79:··:··:64` | Wi-Fi | unreliable | — |
 
 The three QNED82BXA sets carry consecutive wired MACs in the same `D0:CD:BF:A0:FC:xx` block, so they came from one batch — which is exactly why guessing between them by MAC kept failing. **Cabling any of the three Wi-Fi sets would make its power-on reliable and orphan its pairing key in the same move**, since keys are filed by MAC; the wired addresses are here so that trade can be made deliberately.
 
-**The Living set is a QNED70BLA, not a QNED82BXA** (added 2026-08-20), and its MAC is outside the `60:95:f8` range the other two share — so **`60:95:f8:1d:11:da` is still unaccounted for**; it is not this set, as had been assumed. It announced itself over SSDP with its model number rather than a room name, so the only way to place it was to switch it on with somebody standing in front of it. LIVING has no hub screen record, so `shadowedByTv()` has nothing to hide. It was also first seen sitting on `com.webos.app.home` where Ashu and Parent were on `com.webos.app.livetv` — but the Master set (a QNED82BXA, the same model as Ashu) reported `home` too, so that is **just what a set happens to be showing**, not a property of the model. A `home` reading is not a launch that failed, on any of them.
+**The Living set is a QNED70BLA, not a QNED82BXA** (added 2026-08-20), and its MAC is outside the `60:95:f8` range the other two share — so **`60:95:f8:··:··:da` is still unaccounted for**; it is not this set, as had been assumed. It announced itself over SSDP with its model number rather than a room name, so the only way to place it was to switch it on with somebody standing in front of it. LIVING has no hub screen record, so `shadowedByTv()` has nothing to hide. It was also first seen sitting on `com.webos.app.home` where Ashu and Parent were on `com.webos.app.livetv` — but the Master set (a QNED82BXA, the same model as Ashu) reported `home` too, so that is **just what a set happens to be showing**, not a property of the model. A `home` reading is not a launch that failed, on any of them.
 
 **Keys are per-install and the hub keeps its own file, so a set paired from the Mac has to have its key carried over** — and `data/tv-keys.json` must be *merged*, never blindly overwritten, because a key lost is a pairing prompt somebody has to walk to the television to accept. Check the shared entries match before copying.
 
@@ -1051,7 +1051,7 @@ Two things that went wrong while chasing it, both instrument errors of the kind 
 
 `POST /api/tv/:id {youtube}` takes a link in any of the usual shapes or a bare id, and **wakes a sleeping set and waits for it** before launching, because "put this on the television" has to mean it whatever the set is doing.
 
-**The MAC prefix says which interface it is, and therefore whether power-on will work.** Asking the Master set for its own interfaces settled what had only been inferred from prefixes before: its `wiredInfo` MAC is `D0:CD:BF:91:00:26` — the very address ARP knows it by, so it is on **Ethernet** — while its idle Wi-Fi radio is `8C:77:79:7C:7A:50`. So on this hardware:
+**The MAC prefix says which interface it is, and therefore whether power-on will work.** Asking the Master set for its own interfaces settled what had only been inferred from prefixes before: its `wiredInfo` MAC is `D0:CD:BF:··:··:26` — the very address ARP knows it by, so it is on **Ethernet** — while its idle Wi-Fi radio is `8C:77:79:··:··:50`. So on this hardware:
 
 | prefix | interface | power-on |
 |---|---|---|
@@ -1060,13 +1060,13 @@ Two things that went wrong while chasing it, both instrument errors of the kind 
 
 Which places all five without further guessing — see the table above. Harshit's set then confirmed the rule from the other direction: the MAC we drive it by is its own `wifiInfo`, and its idle wired interface is in the `d0:cd:bf` block, exactly as the rule predicts.
 
-**Control works over Wi-Fi; switching a set *on* effectively wants Ethernet.** `network()` asks the set which interfaces it has, and the MAC that matches what ARP knows is the live one. The Ashu Room set answers `wiredInfo: D0:CD:BF:A0:FC:CB` — the very MAC we drive it by — so **it is on Ethernet, and that is why its power-on is flawless**: wired Wake-on-LAN woke it in under five seconds, twice. Its idle Wi-Fi radio is `60:95:f8:1d:0e:c8`.
+**Control works over Wi-Fi; switching a set *on* effectively wants Ethernet.** `network()` asks the set which interfaces it has, and the MAC that matches what ARP knows is the live one. The Ashu Room set answers `wiredInfo: D0:CD:BF:··:··:CB` — the very MAC we drive it by — so **it is on Ethernet, and that is why its power-on is flawless**: wired Wake-on-LAN woke it in under five seconds, twice. Its idle Wi-Fi radio is `60:95:f8:··:··:c8`.
 
-Which settles the other two sets: `60:95:f8:1d:11:da` and `60:95:f8:1d:08:ba` sit in that same `60:95:f8` range one or two digits from the Ashu set's *Wi-Fi* MAC, so both are on **Wi-Fi**. That is exactly why a magic packet to `…11:da` woke its radio and not its panel — Wake-on-Wireless-LAN is the unreliable half of this. Everything else (off, volume, apps, the remote, a YouTube link) is indifferent to the medium.
+Which settles the other two sets: `60:95:f8:··:··:da` and `60:95:f8:··:··:ba` sit in that same `60:95:f8` range one or two digits from the Ashu set's *Wi-Fi* MAC, so both are on **Wi-Fi**. That is exactly why a magic packet to `…11:da` woke its radio and not its panel — Wake-on-Wireless-LAN is the unreliable half of this. Everything else (off, volume, apps, the remote, a YouTube link) is indifferent to the medium.
 
 Consequence worth knowing before moving a set to a cable: **keys are filed by MAC, and the MAC changes with the interface.** Plugging a Wi-Fi-paired television into Ethernet orphans its key and costs another pairing prompt. Filing by the set's serial or UUID would fix that if it ever becomes a nuisance.
 
-**Wake-on-LAN does not always wake the panel, and a set can serve SSAP with the screen off.** Measured on `60:95:f8:1d:11:da`: fully dark to begin with (no ping, both ports shut), then after a magic packet it answered ping, accepted TCP, completed the WebSocket handshake **and raised a pairing prompt** — which nobody could accept, because no picture had appeared. So "handshake completes" does not mean "the screen is on", and the only calls that can tell you are `getPowerState` and `getForegroundAppInfo`, both of which need pairing first. Chicken and egg on an unpaired set: the way in is to switch it on with its own remote.
+**Wake-on-LAN does not always wake the panel, and a set can serve SSAP with the screen off.** Measured on `60:95:f8:··:··:da`: fully dark to begin with (no ping, both ports shut), then after a magic packet it answered ping, accepted TCP, completed the WebSocket handshake **and raised a pairing prompt** — which nobody could accept, because no picture had appeared. So "handshake completes" does not mean "the screen is on", and the only calls that can tell you are `getPowerState` and `getForegroundAppInfo`, both of which need pairing first. Chicken and egg on an unpaired set: the way in is to switch it on with its own remote.
 
 **Report the secure port's error, never the fallback's.** `connect()` tries `wss:3001` then `ws:3000`, and it used to surface whichever failed last — so a set that had raised a prompt and waited ninety seconds for somebody to accept was reported as `ECONNRESET`, which reads like a flat refusal and sent the diagnosis the wrong way. It only falls back now when the secure port never opened at all (`this.spoke`).
 
@@ -1089,26 +1089,26 @@ internet ── Airtel AOT5222ZY 192.168.1.1 ──┬── OptiPlex hub 192.16
 The Archer was in **Router mode**, NATing `192.168.0.0/24` out of its WAN. So the hub could not reach the televisions and never could — **you cannot route into a NAT from outside**, and no static route on the hub can change that. Three false trails, all worth recognising again:
 
 - *It looks like a missing route.* The hub had internet and the Mac reached the hub, so only one direction was broken. Adding `192.168.0.0/24 via 192.168.1.31` changed nothing, because that address is the Archer's **WAN port**, which drops everything inbound.
-- *The MACs give it away.* `192.168.0.1` is `e4:fa:c4:97:7a:df` and `192.168.1.31` is `…:e0` — consecutive, so one device with two interfaces. That is a router straddling both, not two boxes.
+- *The MACs give it away.* `192.168.0.1` is `e4:fa:c4:··:··:df` and `192.168.1.31` is `…:e0` — consecutive, so one device with two interfaces. That is a router straddling both, not two boxes.
 - *The decisive evidence was accidental*, and now the tool reports it deliberately: SSDP discovery run from the hub had **both televisions answering from the single address `192.168.1.31`**, which only happens through NAT. `ipconfig getpacket` on the Mac then confirmed the Archer was leasing addresses and naming itself router and DNS — which an access point does not do.
 
-**Resolved by putting the Archer into Access Point mode**, giving one flat `192.168.1.0/24`. AP mode keeps its Wi-Fi — same SSID, same coverage — it only stops it routing, so nothing else in the house noticed beyond taking a new address. Before doing it, `192.168.1.3` was reserved for the hub's MAC `f8:bc:12:a8:5f:8a` on the Airtel router (**Network Setting → LAN → Static DHCP, maximum 8 entries**), because that address is a DHCP lease and everything — every phone's vendor app, the doorbell tablet, Shortcuts, the dashboard — is pinned to it.
+**Resolved by putting the Archer into Access Point mode**, giving one flat `192.168.1.0/24`. AP mode keeps its Wi-Fi — same SSID, same coverage — it only stops it routing, so nothing else in the house noticed beyond taking a new address. Before doing it, `192.168.1.3` was reserved for the hub's MAC `f8:bc:12:··:··:8a` on the Airtel router (**Network Setting → LAN → Static DHCP, maximum 8 entries**), because that address is a DHCP lease and everything — every phone's vendor app, the doorbell tablet, Shortcuts, the dashboard — is pinned to it.
 
-Two things this leaves worth knowing: the tailnet was never a path (the hub runs Tailscale at `100.83.127.114` but advertises no routes and has `RouteAll: false`), and reserving the two televisions on that router would be sensible if their addresses moving ever becomes a nuisance — though keying by MAC already makes it harmless.
+Two things this leaves worth knowing: the tailnet was never a path (the hub runs Tailscale at `100.x.y.z` but advertises no routes and has `RouteAll: false`), and reserving the two televisions on that router would be sensible if their addresses moving ever becomes a nuisance — though keying by MAC already makes it harmless.
 
 ## Working on this remotely, over Tailscale (2026-08-21)
 
-**The hub is already a tailnet node and always has been: `100.83.127.114`, `abneo`, online.** What was broken was only the *Mac* — `tailscale status` said `Logged out` / `NeedsLogin`, which is the whole reason the tailnet address did not answer. `tailscale login` on the Mac is the entire setup; nothing on the hub needs touching, because `sshd` binds `0.0.0.0:22` and the dashboard binds `*:3000` already. Also on that tailnet: the iPhone, and an Android node named `rk3566-u` — an RK3566 is the usual wall-panel SoC, so that is very likely the doorbell tablet.
+**The hub is already a tailnet node and always has been: `100.x.y.z`, `abneo`, online.** What was broken was only the *Mac* — `tailscale status` said `Logged out` / `NeedsLogin`, which is the whole reason the tailnet address did not answer. `tailscale login` on the Mac is the entire setup; nothing on the hub needs touching, because `sshd` binds `0.0.0.0:22` and the dashboard binds `*:3000` already. Also on that tailnet: the iPhone, and an Android node named `rk3566-u` — an RK3566 is the usual wall-panel SoC, so that is very likely the doorbell tablet.
 
 **Edit on the Mac, run on the hub. That is the decision the user took (2026-08-21), and the rest of this section is why.** The code has to run where the hardware is; the tunnel's job is to carry SSH and a browser, not device traffic. **The subnet route below was explicitly considered and rejected — do not re-propose it** unless somebody specifically wants a fast local restart loop while working on television code.
 
 ```bash
-bash deploy/push.sh 100.83.127.114
+bash deploy/push.sh 100.x.y.z
 ```
 
 `deploy/push.sh` is the deploy path now, for home as well as away — the two `scp` lines it replaces pinned the LAN address, which is the one thing that cannot work from away. It copies **`server.js` and nothing else** (so the `scenes.json` hazard below cannot arise), runs the backtick audit `node --check` cannot do, verifies the page actually came up, and **rolls back to the previous `server.js` if it did not** — which is what makes deploying from a café reasonable at all, since a broken startup otherwise leaves the house with no dashboard, nobody near the box, and the watchdog restarting the wreck every five minutes. Both paths are tested: forcing the verification to fail rolled back and left the service active on 200.
 
-**The hub's WebSocket ignores the `Host` header, so `ALLOWED_HOSTS` does not gate it.** Worth knowing because it is the opposite of the HTTP API, where a wrong `Host` gets the DisallowedHost debug page this file already records. Tested against the live hub by connecting to `192.168.1.3:8090` while claiming `Host: 100.83.127.114:8090`: handshake fine, full `site_config`, 88 devices — identical to the baseline. So `HUB_IP=100.83.127.114` genuinely works from off-LAN, and a remote dev server can drive every light in the house.
+**The hub's WebSocket ignores the `Host` header, so `ALLOWED_HOSTS` does not gate it.** Worth knowing because it is the opposite of the HTTP API, where a wrong `Host` gets the DisallowedHost debug page this file already records. Tested against the live hub by connecting to `192.168.1.3:8090` while claiming `Host: 100.x.y.z:8090`: handshake fine, full `site_config`, 88 devices — identical to the baseline. So `HUB_IP=100.x.y.z` genuinely works from off-LAN, and a remote dev server can drive every light in the house.
 
 **The televisions are the part that does not simply follow, and it splits three ways.** Saying "TVs will not work over Tailscale" is wrong — most of the surface is ordinary TCP:
 
@@ -1122,8 +1122,8 @@ bash deploy/push.sh 100.83.127.114
 So control needs a *route*, and discovery needs replacing. Neither is exotic:
 
 - **The route.** The hub is not a subnet router yet — measured `net.ipv4.ip_forward = 0`. It is `sysctl -w net.ipv4.ip_forward=1` plus `sudo tailscale set --advertise-routes=192.168.1.0/24`, an approval in the admin console, and `--accept-routes` on the Mac. Use `tailscale set`, **not** `tailscale up --reset`, which would clobber the hub's working config. The catch is that accepting `192.168.1.0/24` collides with any café or hotel LAN on that very common prefix.
-- **Discovery: `TV_ORACLE`.** `/api/health` already publishes every set's live address, so the hub is an address oracle and `find()` asks it when its own SSDP sweep comes up empty. `TV_ORACLE=http://100.83.127.114:3000 npm start`. It is **half of a setup and useless alone** — an address is only worth having if it is routable, so without the subnet route above it hands back a perfectly correct address that nothing can reach. Since that route was rejected, this is built and inert: it costs nothing where it is not switched on, and it is the half that would be tedious to work out again.
-- **Power-on has no fix of this kind.** A magic packet is a broadcast; the hub's `bc_forwarding = 0`, so a directed broadcast to `192.168.1.255` dies there too. `wake(mac, broadcast)` in `tools/webos.js` does take a target address, so unicast is a one-argument change — but it only lands while the router still holds an ARP entry for a *sleeping* set, which is exactly why WoL is a broadcast in the first place. The reliable route is to ask the hub, which is on the LAN: `curl -X POST http://100.83.127.114:3000/api/tv/tv-ashu -d '{"on":true}'`. Note that this last point is what makes the whole subnet-route exercise poor value — once power-on goes through the hub anyway, so should the rest.
+- **Discovery: `TV_ORACLE`.** `/api/health` already publishes every set's live address, so the hub is an address oracle and `find()` asks it when its own SSDP sweep comes up empty. `TV_ORACLE=http://100.x.y.z:3000 npm start`. It is **half of a setup and useless alone** — an address is only worth having if it is routable, so without the subnet route above it hands back a perfectly correct address that nothing can reach. Since that route was rejected, this is built and inert: it costs nothing where it is not switched on, and it is the half that would be tedious to work out again.
+- **Power-on has no fix of this kind.** A magic packet is a broadcast; the hub's `bc_forwarding = 0`, so a directed broadcast to `192.168.1.255` dies there too. `wake(mac, broadcast)` in `tools/webos.js` does take a target address, so unicast is a one-argument change — but it only lands while the router still holds an ARP entry for a *sleeping* set, which is exactly why WoL is a broadcast in the first place. The reliable route is to ask the hub, which is on the LAN: `curl -X POST http://100.x.y.z:3000/api/tv/tv-ashu -d '{"on":true}'`. Note that this last point is what makes the whole subnet-route exercise poor value — once power-on goes through the hub anyway, so should the rest.
 
 **A cold set is invisible to everything, which is worth knowing before diagnosing any of the above.** Measured with all five off: zero answers to an 8s SSDP sweep *from the Mac, on the LAN*, TCP 3001 timing out to all four known addresses, and no ping from either machine. So "SSDP found nothing" is not evidence of a network fault — check whether the house is simply dark first. It also means a cold house yields no addresses to anybody and needs none: power-on is a broadcast to the MAC and wants no address, and the set answers SSDP as soon as it is up.
 
@@ -2538,7 +2538,7 @@ resolve and change nothing, confirmed by reading the room back.
 ## The media player, and the cinema rebuilt around it (2026-08-27)
 
 A **Sercomm XstreamIPTV2-SM** (model ASD6101SR) in HOME THEATRE, on **Ethernet**
-at `192.168.1.128`, MAC `98:2c:c6:d7:72:cf`. An Airtel Xstream IPTV box and a
+at `192.168.1.128`, MAC `98:2c:c6:··:··:cf`. An Airtel Xstream IPTV box and a
 certified Android TV device. It feeds the receiver's **MPLAY** input, which is
 where `SIMPLAY` in the AVR's reading has always come from.
 

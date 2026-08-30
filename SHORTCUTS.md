@@ -231,7 +231,7 @@ understanding.
 | | Action | Settings |
 |---|---|---|
 | 1 | **Record Audio** | Stop Recording: whichever suits you — *After a set duration* is one tap, *On Tap* lets a long sentence finish |
-| 2 | **Get Contents of URL** | `http://100.83.127.114:3000/api/hear?who=ashu` · Method **POST** · Header `Content-Type: audio/m4a` · Request Body **File**: *Recorded Audio* |
+| 2 | **Get Contents of URL** | `http://100.x.y.z:3000/api/hear?who=ashu` · Method **POST** · Header `Content-Type: audio/m4a` · Request Body **File**: *Recorded Audio* |
 | 3 | **Speak Text** | *Get Dictionary Value* `spoken` from *Contents of URL* |
 
 **Why the recording rather than iOS dictation.** `Dictate Text` is on-device and

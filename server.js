@@ -41,7 +41,7 @@ let config = readConfig();
 const HOUSE_NAME = process.env.HOUSE_NAME || config.house_name || 'The House';
 /* The name the home-screen icon sits under, where there is room for about
    twelve characters. Taken from the first word of the house's name unless the
-   install says otherwise — "Pravita's Apartment" wants to read "Pravita's". */
+   install says otherwise, since a long name would be clipped. */
 const HOUSE_SHORT = config.house_short || HOUSE_NAME.split(/[\s]+/)[0];
 
 const HUB_IP = process.env.HUB_IP || config.hub_ip || '192.168.1.3';
@@ -1731,7 +1731,7 @@ function saveTvApps(mac, apps) {
  * would have been fine, SSAP being ordinary TCP on 3001.
  *
  * The hub's own dashboard is on the LAN and already publishes every address it
- * has found, so ask it:   TV_ORACLE=http://100.83.127.114:3000 npm start
+ * has found, so ask it:   TV_ORACLE=http://100.x.y.z:3000 npm start
  *
  * This is half of a setup and useless alone: an address is only worth having if
  * it is routable, and 192.168.1.8 is not reachable over a tunnel unless the hub

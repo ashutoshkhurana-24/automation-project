@@ -191,7 +191,7 @@ byte-identical when it does.
 Pass the hub's tailnet address, or set `NEO_HOST`:
 
 ```bash
-bash deploy/push.sh 100.83.127.114
+bash deploy/push.sh 100.x.y.z
 ```
 
 Nothing else needs configuring — `sshd` and the dashboard both already bind all
