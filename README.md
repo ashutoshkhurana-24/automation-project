@@ -113,11 +113,7 @@ and answers out loud.
 <sub>Actual replies from a running instance. The middle column is the road the
 sentence took — none of these five reached a model.</sub>
 
-[**How the house listens →**](docs/how-the-house-listens.html) — the pipeline
-written up end to end: the phone, the transcriber, the three gates, the free
-grammar, the model, the guards, and the reply.
-
-![How the house listens](docs/images/voice-flow.png)
+![The voice pipeline](docs/images/voice-pipeline.png)
 
 The whole design is about **staying off the model.** A sentence can be resolved on
 the hub for nothing in a tenth of a second, or by a model for a fraction of a
@@ -156,6 +152,12 @@ Model choice was benchmarked rather than assumed — 17 sentences, four runs eac
 scored against the address each should resolve to. The nearest rival was 27%
 cheaper and consistently misread Hinglish numerals (`aadhe` as "down" rather than
 50), which is the competence this house actually needs.
+
+[**How the house listens →**](docs/how-the-house-listens.html) is the whole thing
+written up end to end — every step above, why each is shaped the way it is, and
+what each one measured.
+
+![How the house listens](docs/images/voice-flow.png)
 
 ### The family guide is generated, never written
 
