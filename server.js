@@ -10327,7 +10327,21 @@ const NIGHT_UNTIL = 6;
 function hubClock(now = new Date()) {
   const minutes = now.getHours() * 60 + now.getMinutes();
   const h = now.getHours();
-  return { minutes, night: h >= NIGHT_FROM || h < NIGHT_UNTIL };
+  /* The hub's wall clock as a *date*, not just an hour, and deliberately with no
+     zone on the end. Parsed in a browser it yields a moment whose local
+     components equal this box's — so a page anywhere can do calendar
+     arithmetic in the hub's frame without knowing what that frame is.
+
+     minutes was enough while the only consumer was the theme, which asks one
+     question about the hour. A schedule needs the weekday too: it is stored as a
+     bare "23:00" and fires on the hub's own day, so a page working out when that
+     next comes round has to count days the way the hub counts them. Kept
+     alongside minutes rather than replacing it, because the theme and the
+     circadian read that and neither should have to parse a date. */
+  const p = (n) => String(n).padStart(2, '0');
+  const wall = now.getFullYear() + '-' + p(now.getMonth() + 1) + '-' + p(now.getDate())
+    + 'T' + p(h) + ':' + p(now.getMinutes());
+  return { minutes, wall, night: h >= NIGHT_FROM || h < NIGHT_UNTIL };
 }
 
 function circadianTune(now = new Date()) {
@@ -19521,7 +19535,8 @@ async function load() {
   state.sync = snap;
   houseGroups = snap.groups || [];
   state.schedules = snap.schedules || [];
-  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now(); applyTheme(); }
+  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now();
+    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null; applyTheme(); }
   drawIndex();
   drawField();
   readout();
@@ -19571,7 +19586,8 @@ function applySnapshot(snap) {
     state.schedules = snap.schedules;
     drawSchedules();
   }
-  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now(); applyTheme(); }
+  if (snap.clock) { hubMinutes = snap.clock.minutes; hubMinutesAt = Date.now();
+    hubWall = snap.clock.wall ? new Date(snap.clock.wall) : null; applyTheme(); }
   if (snap.backdrop_v && snap.backdrop_v !== state.bgv) {
     // On first load the CSS already points at the right picture, but nothing
     // has measured it yet, so the dimming still has to be worked out.
@@ -23271,7 +23287,12 @@ function awayWord(then, from) {
 function drawWhatsNext() {
   const bar = el('#whatsnext');
   if (!bar) return;
-  const now = new Date();
+  /* The hub's clock, not this device's. A plan is a bare "23:00" that fires when
+     the hub reads 23:00, so both the day-counting in nextRun and the "in N
+     hours" here have to be done in the hub's frame — otherwise a browser in
+     another timezone reads the right plan off the right list and puts a
+     confidently wrong time on it. */
+  const now = hubNow();
   let best = null;
   for (const sch of state.schedules) {
     if (sch.target_missing) continue;
@@ -25198,7 +25219,8 @@ async function loadAuto() {
   try {
     const a = await fetch('/api/automations').then(r => r.json());
     Object.assign(auto, a);
-    if (a.clock) { hubMinutes = a.clock.minutes; hubMinutesAt = Date.now(); }
+    if (a.clock) { hubMinutes = a.clock.minutes; hubMinutesAt = Date.now();
+      hubWall = a.clock.wall ? new Date(a.clock.wall) : null; }
     applyTheme();
     drawNudges();
     drawTimers();
@@ -25782,6 +25804,24 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) sync
 const THEME_KEY = 'neo-theme';        // 'dark' | 'light' | absent = follow the house
 let hubMinutes = null;                // minutes past midnight, IST, as the hub says
 let hubMinutesAt = 0;                 // when we were told, by our own clock
+let hubWall = null;                   // the hub's wall clock, as a local-frame Date
+
+/* Now, on the hub's clock rather than this device's.
+ *
+ * A plan is stored as a bare "23:00" and fires when the *hub* reads 23:00, so
+ * anything working out when that next comes round has to ask the hub what time
+ * it is. Read from the browser instead, a Mac in Paris was told a 23:00 curtain
+ * was "in 1 hour" when the hub would not fire it for 22 — the plan was correct
+ * throughout and only the line above the board lied, which is the worse of the
+ * two ways to be wrong because nothing looks broken.
+ *
+ * Falls back to this device's clock when the hub has not spoken yet, which is
+ * right: on a phone at home they are the same, and a countdown is better than a
+ * blank while the first snapshot lands. */
+function hubNow() {
+  if (!hubWall) return new Date();
+  return new Date(hubWall.getTime() + (Date.now() - hubMinutesAt));
+}
 
 function hubNowMinutes() {
   if (hubMinutes == null) return null;

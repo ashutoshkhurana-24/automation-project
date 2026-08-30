@@ -2806,6 +2806,53 @@ edit that split it to create `openMedia`, so a lone receiver would have opened a
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
 
+### A plan fires on the hub's clock; the countdown was on the phone's (2026-08-31)
+
+*"When I make new plans, are they wired to the hub's timezone i.e. IST?"* The
+firing is, unambiguously. `tickSchedules()` runs on the box and takes everything
+from its own local time &mdash; `now.getHours()`, `localDay(now)`, `now.getDay()`
+&mdash; and the service reports `TZ=Asia/Calcutta`. A plan is stored as a bare
+wall-clock string with no zone on it (`"at": "23:00"`), and `fired_on` is the
+hub's date, so the once-a-day guard and the weekday test are IST too. **There is
+no conversion anywhere in that path, which is the right design: 23:00 means 23:00
+in the hall, whoever set it and from wherever.**
+
+**The "NEXT ... in N hours" bar was not.** `nextRun()` and `drawWhatsNext()` ran
+in the page off `new Date()`, so they counted days and hours in the *device's*
+frame while the plan fired in the hub's. Measured with a browser on Europe/Paris
+at 21:41 against a hub at 01:11 IST, over this house's seven real plans:
+
+| | says |
+|---|---|
+| before, device clock | next **22:45**, "in 1 hour" |
+| after, hub clock | next **07:14** Footlight morning guard, "in 6 hours" |
+
+**It named the wrong plan, not merely the wrong duration** &mdash; which is the
+worse shape, because nothing looks broken. The plans themselves fired correctly
+throughout.
+
+**Fixed with the authority that was already there.** The theme has read the hub's
+clock since 2026-08-21, for exactly this reason. `hubClock()` now publishes
+`wall` beside `minutes` &mdash; the hub's local date and time as
+`YYYY-MM-DDTHH:MM` with **no zone on the end**, so a browser parses it in its own
+frame and gets a moment whose components equal the hub's. `hubNow()` adds the
+elapsed milliseconds since it arrived. `minutes` is kept rather than replaced:
+the theme and the circadian ask one question about the hour and should not have
+to parse a date.
+
+Two things worth keeping:
+- **Minutes alone was not enough**, which is why this needed a new field rather
+  than reusing `hubNowMinutes()`. A plan runs on chosen weekdays, so working out
+  when it next comes round means counting *days* the way the hub counts them, and
+  a minutes-past-midnight figure cannot say which day it is.
+- **It falls back to the device clock** until the first snapshot lands. On a phone
+  at home the two are the same, and a countdown beats a blank.
+
+Tested by running an instance under `TZ=Asia/Calcutta` with the hub's own seven
+plans and `HUB_IP=192.0.2.1` so nothing could be commanded, driven from a browser
+on Europe/Paris. Checked first that no plan sat inside the ten-minute grace window,
+so none could fire; none did.
+
 ### The cinema became a dark room at the top of the board (2026-08-29)
 
 *"Cinema should appear on top of home theatre list ... the cinema section should
