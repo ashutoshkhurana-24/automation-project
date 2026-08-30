@@ -78,3 +78,8 @@ data/history/
 
 # Cortex Code's own plan files. Working notes from the agent, not the project's.
 .cortex/
+
+# The saved family guide. A generated artefact — `tools/make-guide.js` fetches
+# /guide and writes it — whose only job is to be sent to the family, so it names
+# them and their rooms. Regenerate it rather than committing one house's copy.
+data/speaking-to-the-house.html

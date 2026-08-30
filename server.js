@@ -6876,7 +6876,155 @@ function goodnightGuideNight() {
     + ' room is never pitch dark.</p>';
 }
 
-function guidePage(houseName, rooms, screens, health, saved) {
+/* The example phrases, picked from the live house rather than typed into it.
+ *
+ * They were nineteen literals — "Ashu room ka fan chalu karo" — which is the
+ * fault this file already recorded for the good-night map one section up: true
+ * of the house they were written in, and a second installation would have been
+ * handed a guide teaching it to say a room it has not got. Worse here than
+ * there, because this is the page the family reads to learn what works.
+ *
+ * Two rules. Every phrase names a room and a circuit that exist *here*, checked
+ * with the same predicates the address grammar uses rather than by matching on
+ * a name. And a phrase whose ingredients are missing is dropped, along with the
+ * sentence around it — a guide a paragraph shorter is better than one teaching
+ * a sentence nobody has seen work, which is the standard the rest of this page
+ * was written to.
+ *
+ * They also spread across the house on purpose: `take` prefers a room that has
+ * not been used yet, so the reader sees several rooms named rather than
+ * learning the shape from one of them nineteen times.
+ */
+/* A row of things to say, skipping any the house could not supply an example
+   for. Built by concatenation rather than as a nested template, so there is no
+   backtick inside guidePage's own template literal. */
+function guideSays(list) {
+  return list.filter(Boolean)
+    .map((t) => '  <span class="say">' + escHtml(t) + '</span>').join('\n');
+}
+
+/* "Short names work too". It needs two of this house's own names whose first
+   word is unambiguous, and there is no guarantee it has either — a house whose
+   rooms are all one word, or whose circuits are, gives nothing to shorten. The
+   sentence is assembled from whichever it has and dropped when it has neither,
+   rather than teaching a shortening that would be refused as ambiguous. */
+function guideShortNames(ex) {
+  const bits = [];
+  if (ex.shortRoom) bits.push('<b>' + escHtml(ex.shortRoom.head) + '</b> becomes '
+    + escHtml(ex.shortRoom.full));
+  if (ex.shortCircuit) bits.push('<b>' + escHtml(ex.shortCircuit.head) + '</b> becomes '
+    + escHtml(ex.shortCircuit.full));
+  if (!bits.length) return '';
+  return '<p class="lead">Short names work too \u2014 ' + andList(bits)
+    + '. If a short name fits two things, the house asks which one instead of '
+    + 'guessing.</p>';
+}
+
+function guideExamples() {
+  const rooms = [...roomsIndex()].map(([sl, name]) =>
+    ({ slug: sl, name, circuits: circuitsOf(name) }));
+  /* The collective names a room always has. They are not circuits somebody
+     points at, so they must not be offered as "what in it". */
+  const COLLECTIVE = new Set(['all', 'lights', 'cobs', 'direct-lights', 'indirect-lights']);
+  const used = new Map();
+  const every = (c, test) => c.records.length > 0 && c.records.every(test);
+
+  const take = (test) => {
+    const hits = [];
+    for (const r of rooms) for (const c of r.circuits) if (test(c, r)) hits.push({ r, c });
+    if (!hits.length) return null;
+    hits.sort((a, b) => (used.get(a.r.slug) || 0) - (used.get(b.r.slug) || 0));
+    const hit = hits[0];
+    used.set(hit.r.slug, (used.get(hit.r.slug) || 0) + 1);
+    return { room: guideSaid(hit.r.slug), circuit: guideSaid(hit.c.slug),
+             slug: hit.r.slug, n: hit.c.records.length };
+  };
+  const room = (test) => { const h = take(test); return h && h.room; };
+  const cap = (t) => t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+
+  const fan     = take((c) => !COLLECTIVE.has(c.slug) && every(c, isFanRecord));
+  const curtain = take((c) => !COLLECTIVE.has(c.slug) && every(c, isCurtainRec));
+  const cobs    = take((c) => c.slug === 'cobs');
+  const warm    = take((c) => c.slug === 'cobs' && c.records.some((r) => r.is_tunable === 'true'));
+  const cobs2   = take((c) => c.slug === 'cobs');
+  const cobs3   = take((c) => c.slug === 'cobs');
+  const lit     = room((c) => c.slug === 'lights');
+  const anyRoom = room(() => true);
+  const other   = room(() => true);
+  /* The biggest ceiling in the house, for the "partly" reading — a fraction of
+     three of eleven says nothing if the room only has three. */
+  const biggest = rooms.map((r) => r.circuits.find((c) => c.slug === 'cobs'))
+    .filter(Boolean).sort((a, b) => b.records.length - a.records.length)[0];
+  const biggestRoom = biggest && rooms.find((r) => r.circuits.includes(biggest));
+
+  /* A room whose ceiling is a single lamp has no group, so it is addressed as
+     cob 1. Worth saying only if this house has one. */
+  const solo = rooms.find((r) => !r.circuits.some((c) => c.slug === 'cobs')
+    && r.circuits.some((c) => /^cob-1$/.test(c.slug)));
+
+  /* Short names: the first word of a name, where it is a unique prefix. Derived
+     rather than asserted, because "which prefix is unambiguous" is a property of
+     this house's own set of names and of nothing else. */
+  const roomSlugs = rooms.map((r) => r.slug);
+  const shortRoom = rooms.find((r) => {
+    const head = r.slug.split('-')[0];
+    return head !== r.slug && roomSlugs.filter((x) => x.startsWith(head)).length === 1;
+  });
+  /* A shortening must not land on a word that names a *kind*. "curtain becomes
+     curtain rope" was the first thing this picked, and in another room CURTAIN
+     ROPE is a light while MAIN CURTAIN is a motor — so it would have taught the
+     one ambiguity this page exists to warn about. */
+  const KIND_WORDS = new Set(['curtain', 'parda', 'fan', 'pankha', 'light', 'lights',
+    'cob', 'cobs', 'ac', 'tv', 'direct', 'indirect', 'all', 'screen']);
+  let shortCircuit = null;
+  for (const r of rooms) {
+    const hit = r.circuits.find((c) => {
+      if (COLLECTIVE.has(c.slug) || !c.slug.includes('-')) return false;
+      const head = c.slug.split('-')[0];
+      if (KIND_WORDS.has(head)) return false;
+      return r.circuits.filter((x) => x.slug.startsWith(head)).length === 1;
+    });
+    if (hit) { shortCircuit = { room: r, circuit: hit }; break; }
+  }
+
+  const screens = deviceList().filter((d) => d.is_tv);
+  const tvRoom = screens.length ? guideSaid(slug(screens[0].room)) : null;
+
+  return {
+    fanOn:      fan && cap(fan.room) + ' ka ' + fan.circuit + ' chalu karo',
+    fanPolite:  fan && 'Zara ' + fan.room + ' ka ' + fan.circuit + ' on kar dijiye',
+    fanTerse:   fan && cap(fan.room) + ' ' + fan.circuit + ' on',
+    fanPankha:  fan && cap(fan.room) + ' ka pankha chalu karo',
+    fanAsk:     fan && cap(fan.room) + ' ka pankha on hai?',
+    fanReading: fan && 'Yes. ' + guideWords(fan.circuit) + ' in ' + guideWords(fan.room) + ' is on.',
+    curtainOpen: curtain && cap(curtain.room) + ' ka ' + curtain.circuit + ' khol do',
+    cobsLevel:  cobs && cap(cobs.room) + ' ke cobs 40 kar do',
+    cobs40:     cobs && cap(cobs.room) + ' cobs 40',
+    cobsDown:   cobs && cap(cobs.room) + ' cobs down',
+    cobsWarm:   warm && cap(warm.room) + ' cobs 40 warm',
+    cobsOn:     cobs && cap(cobs.room) + ' cobs on',
+    directOn:   cobs2 && cap(cobs2.room) + ' ke direct lights on karo',
+    direct40:   cobs3 && cap(cobs3.room) + ' ke direct lights 40 karo',
+    indirectOff: cobs && cap(cobs.room) + ' ke indirect lights band karo',
+    lightsOff:  lit && cap(lit) + ' lights off',
+    roomOff:    anyRoom && cap(anyRoom) + ' off',
+    otherOff:   other && cap(other) + ' off',
+    askRoom:    anyRoom && cap(anyRoom) + ' mein kya chal raha hai?',
+    askAnything: other && cap(other) + ' mein kuch chalu hai?',
+    partly:     biggest && biggestRoom && biggest.records.length > 3
+      ? 'Partly. 3 of the ' + biggest.records.length + ' cobs in '
+        + guideWords(guideSaid(biggestRoom.slug)) + ' are on.' : null,
+    solo:       solo ? guideWords(guideSaid(solo.slug)) : null,
+    tvVolume:   tvRoom && cap(tvRoom) + ' TV ka volume 12 kar do',
+    shortRoom:  shortRoom ? { head: shortRoom.slug.split('-')[0],
+                              full: guideWords(guideSaid(shortRoom.slug)) } : null,
+    shortCircuit: shortCircuit ? { head: shortCircuit.circuit.slug.split('-')[0],
+                                   full: guideSaid(shortCircuit.circuit.slug) } : null,
+    support: config.support_name || 'whoever set this up',
+  };
+}
+
+function guidePage(houseName, rooms, screens, ex, health, saved) {
   /* Every set here is named "TV", so the name on its own is unsayable — what a
      person says is the room and then the screen. The receiver answers to both
      "AVR" and "receiver", and the guide leads with the word the reply uses. */
@@ -7099,19 +7247,14 @@ function guidePage(houseName, rooms, screens, health, saved) {
 <p>Three things, in this order — <b>which room</b>, <b>what in it</b>, <b>what to
 do</b>:</p>
 <div class="says">
-  <span class="say">Ashu room ka fan chalu karo</span>
-  <span class="say">Master room ke cobs 40 kar do</span>
-  <span class="say">Living ka main curtain khol do</span>
+${guideSays([ex.fanOn, ex.cobsLevel, ex.curtainOpen])}
 </div>
 <p>Extra words in between are ignored, so there is no need to talk like a
 machine. These do exactly the same thing:</p>
 <div class="says">
-  <span class="say">Zara ashu ka fan on kar dijiye</span>
-  <span class="say">Ashu fan on</span>
+${guideSays([ex.fanPolite, ex.fanTerse])}
 </div>
-<p class="lead">Short names work too — <b>ashu</b> becomes Ashu Room, <b>foot</b>
-becomes foot light. If a short name fits two things, the house asks which one
-instead of guessing.</p>
+${guideShortNames(ex)}
 
 <div class="note">
 <span class="k">Worth knowing</span>
@@ -7122,7 +7265,7 @@ are the names the house knows.</p>
 <p><b>Two exceptions, because everybody says them:</b>
 <span class="say">pankha</span> works for a fan and
 <span class="say">parda</span> works for a curtain. So
-<span class="say">Ashu ka pankha chalu karo</span> is fine. Anything else needs the
+<span class="say">${escHtml(ex.fanPankha || '')}</span> is fine. Anything else needs the
 English word — <span class="say">batti</span> will not work,
 <span class="say">light</span> or <span class="say">cob</span> will.</p>
 <p>Where a room has two curtains it asks which, and where it has none it says so
@@ -7132,12 +7275,12 @@ rather than switching on something with a similar name.</p>
 <h2>Dimming and colour</h2>
 <ul>
   <li>A number is <b>brightness</b>, out of a hundred:
-      <span class="say">Ashu cobs 40</span></li>
+      <span class="say">${escHtml(ex.cobs40 || '')}</span></li>
   <li><b>up</b> and <b>down</b> nudge it from where it is now:
-      <span class="say">Ashu cobs down</span></li>
+      <span class="say">${escHtml(ex.cobsDown || '')}</span></li>
   <li>For colour, say the word — <b>warm</b>, <b>cool</b>, <b>warmer</b>,
       <b>cooler</b> — or both at once:
-      <span class="say">Master cobs 40 warm</span></li>
+      <span class="say">${escHtml(ex.cobsWarm || '')}</span></li>
 </ul>
 <p class="lead">Only the ceiling cobs and a few lamps change colour; ask a plain
 light for colour and it says so rather than ignoring you. It names colours in its
@@ -7146,9 +7289,7 @@ that is the same thing, not a mistake.</p>
 
 <h2>A whole room at once</h2>
 <div class="says">
-  <span class="say">Living off</span>
-  <span class="say">Ashu lights off</span>
-  <span class="say">Ashu cobs on</span>
+${guideSays([ex.roomOff, ex.lightsOff, ex.cobsOn])}
 </div>
 <p class="lead">The first is everything in the room. The second is only the
 lights, so a fan keeps running. The third is the whole ceiling together.</p>
@@ -7175,13 +7316,12 @@ when you really do mean the whole house.</p>
 or off by accident:</p>
 <div class="says">
   <span class="say">Kya chalu hai?</span>
-  <span class="say">Living mein kya chal raha hai?</span>
-  <span class="say">Ashu ka pankha on hai?</span>
-  <span class="say">Ashu mein kuch chalu hai?</span>
+${guideSays([ex.askRoom, ex.fanAsk, ex.askAnything])}
 </div>
-<p>Ask about <b>one thing</b> and you get a yes or a no \u2014 <i>"Yes. Fan in Ashu
-Room is on."</i> Ask what is on and you get the list. Where only some of a set is
-lit it says so: <i>"Partly. 3 of the 11 cobs in Living are on."</i></p>
+<p>Ask about <b>one thing</b> and you get a yes or a no${ex.fanReading
+  ? ' \u2014 <i>"' + escHtml(ex.fanReading) + '"</i>' : '.'} Ask what is on and you
+get the list.${ex.partly ? ' Where only some of a set is lit it says so: <i>"'
+  + escHtml(ex.partly) + '"</i>' : ''}</p>
 <div class="note">
 <span class="k">Two things it cannot check</span>
 <p>The air conditioners and the projector work over infrared, like an ordinary
@@ -7218,21 +7358,20 @@ playing — so it leaves it alone and says why.</p>
 <p>Say <b>direct lights</b> instead. It means exactly the same ceiling lights, and
 the phone gets it right first time because they are ordinary words.</p>
 <div class="says">
-  <span class="say">Ashu ke direct lights on karo</span>
-  <span class="say">Living ke direct lights 40 karo</span>
+${guideSays([ex.directOn, ex.direct40])}
 </div>
 <p class="lead">The other lights in a room — rope, profile, hanging, spot — are the
 <b>indirect lights</b>, and they work the same way.</p>
 <div class="says">
-  <span class="say">Master ke indirect lights band karo</span>
+${guideSays([ex.indirectOff])}
 </div>
 <div class="note">
 <span class="k">Both names still work</span>
 <p><b>cobs</b> has not gone anywhere. Say whichever comes out — and
 <span class="say">direct</span> on its own is enough, you do not need the word
 lights.</p>
-<p>Harshit Room has only one ceiling light, so it is named
-<span class="say">cob 1</span> there rather than being a group.</p>
+${ex.solo ? '<p>' + escHtml(ex.solo) + ' has only one ceiling light, so it is named '
+  + '<span class="say">cob 1</span> there rather than being a group.</p>' : ''}
 </div>
 
 <h2>Going to bed</h2>
@@ -7258,7 +7397,7 @@ that is"</i> and switches nothing off, rather than guessing at somebody's room.<
 <p><b>It does not switch the television off.</b> Say
 <span class="say">TV band karo</span> as well if it is on.</p>
 <p><b>It is one room, never the house.</b> To put a different room to bed, name it
-the ordinary way: <span class="say">Dining off</span></p>
+the ordinary way: <span class="say">${escHtml(ex.otherOff || '')}</span></p>
 </div>
 <p class="lead">Said it by accident? <span class="say">Cancel</span> puts the whole
 room back, the same as any other command.</p>
@@ -7271,7 +7410,7 @@ ${screens.length ? `    <details class="room">
       <summary><span class="rname">Screens &amp; sound</span><span class="n">${screens.length}</span></summary>
       <p class="lead">Say <b>on</b>, <b>off</b>, a <b>volume</b>, <b>louder</b>,
       <b>quieter</b>, <b>mute</b> or <b>unmute</b> — for example
-      <span class="say">Ashu TV ka volume 12 kar do</span></p>
+      <span class="say">${escHtml(ex.tvVolume || '')}</span></p>
 ${screenRows}
       <div class="grp"><span class="cat-head">Not wired up</span>
         <div class="names"><span class="hint">Apps, channels and inputs are not
@@ -7294,9 +7433,9 @@ heard.</p>
     <tr><td>There is no fan in&nbsp;&hellip;</td><td>That room has none. Open it above to see what it does have.</td></tr>
     <tr><td>A curtain can only open, close or stop</td><td>A curtain has no on or off — open it, close it, or stop it halfway.</td></tr>
     <tr><td>&hellip; can't change colour</td><td>That one is a plain light. Give it a brightness, or just on.</td></tr>
-    <tr><td>I don't know whose good night that is</td><td>This phone has no name set, so it cannot tell which room to put to bed. Tell Ashutosh.</td></tr>
+    <tr><td>I don't know whose good night that is</td><td>This phone has no name set, so it cannot tell which room to put to bed. Tell ${escHtml(ex.support)}.</td></tr>
     <tr><td>You haven't said anything I can cancel</td><td>Nothing to put back — either five minutes have passed, or that command came from a different phone.</td></tr>
-    <tr><td>The hub didn't answer</td><td>The controller is not responding. Try once more, and tell Ashutosh if it keeps happening.</td></tr>
+    <tr><td>The hub didn't answer</td><td>The controller is not responding. Try once more, and tell ${escHtml(ex.support)} if it keeps happening.</td></tr>
     <tr><td>Nothing at all</td><td>The phone has to be on the home Wi&#8209;Fi. None of this works from outside the house.</td></tr>
   </tbody>
 </table></div>
@@ -7342,7 +7481,8 @@ app.get('/guide', (req, res) => {
     .filter((d) => d.is_tv || d.is_avr)
     .map((d) => ({ name: d.name, room: d.room, avr: !!d.is_avr }));
   res.type('html').set('Cache-Control', 'no-cache')
-    .send(guidePage(config.house_name || 'The house', rooms, screens, {}, saved));
+    .send(guidePage(config.house_name || 'The house', rooms, screens,
+                    guideExamples(), {}, saved));
 });
 
 app.get('/do', (req, res) => {

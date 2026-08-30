@@ -1245,6 +1245,52 @@ spoken answer. And its per-room honesty falls out of reading the live house:
 HOME THEATRE's AC shows no infrared hedge because record 496 really is a relay,
 while the other six carry it.
 
+### The guide's own examples were nineteen literals (2026-08-30)
+
+The family guide is generated from a running server so it cannot go stale about
+*what the house has* &mdash; and its **example phrases were typed in**:
+`Ashu room ka fan chalu karo`, nineteen of them, plus `Tell Ashutosh` twice in
+the troubleshooting table. True of this house, and a second installation would
+have been handed a page teaching it to say a room it has not got. Exactly the
+fault this file already records for the good-night map, on the same page, one
+section down.
+
+`guideExamples()` picks them from the live house instead, and two rules make it
+safe:
+
+- **Every phrase names a room and a circuit that exist here**, selected with the
+  same predicates the address grammar uses (`isFanRecord`, `isCurtainRec`) rather
+  than by matching on a name &mdash; which is what the old regex-on-the-name
+  approach did and what made `isCob` wrong in anybody else's house.
+- **A phrase whose ingredients are missing is dropped, and the sentence around it
+  with it.** A house with no curtain gets two shapes rather than three; a house
+  whose ceilings are all single lamps loses the "only one ceiling light"
+  paragraph. A guide a paragraph shorter beats one teaching a sentence nobody has
+  seen work &mdash; which is the standard the rest of the page was already
+  written to.
+
+`take()` prefers a room it has not used yet, so the reader sees seven rooms named
+rather than learning the shape from one of them nineteen times. Verified against
+the live house: every generated command resolves on the **free grammar path**
+(the three questions go to the model, as every question does), tested against an
+instance pointed at an unreachable hub so nothing could be commanded.
+
+**One pick was actively harmful and is the reason `KIND_WORDS` exists.** The
+short-name line derives its own example &mdash; a first word that is a unique
+prefix &mdash; and the first thing it chose was *"curtain becomes curtain rope"*.
+That is true in that room and it teaches the one ambiguity this page exists to
+warn about: `CURTAIN ROPE` is a light while `MAIN CURTAIN` is a motor, which this
+file already records as the trap the schedule picker hit. A head word that names
+a *kind* is excluded, and it picks `wall becomes wall light`.
+
+**`support_name` is config, defaulting to "whoever set this up".** Naming a person
+this installation has never heard of is the same bug in prose.
+
+**And `data/speaking-to-the-house.html` is no longer tracked.** It is a generated
+artefact whose only job is to be sent to the family, so it names them and their
+rooms &mdash; and the repository is public. `tools/make-guide.js` rebuilds it and
+`/guide` serves it live, so nothing is lost but one house's copy of it.
+
 **The register follows the medium, and the page was rebuilt once to get it
 right.** It shipped wholly in Hinglish, on the reasoning that Hinglish is what
 gets spoken. The user's correction: *"Keep description an instruction as english,

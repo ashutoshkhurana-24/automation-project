@@ -46,6 +46,14 @@
     "dad": { "room": "MASTER ROOM", "night_light": "foot light" },
     "kid": "HARSHIT ROOM"
   },
+  "_support_name": [
+    "Who the family guide tells them to ask when something is wrong. It appears",
+    "twice, in the troubleshooting table at the foot of /guide, and nowhere else.",
+    "Left out, the page says \"whoever set this up\" rather than naming somebody",
+    "this installation has never heard of."
+  ],
+  "support_name": "Sam",
+
   "_room_aliases": [
     "A second name a room answers to, for the families who call it something",
     "other than what the installer typed. The key is the spoken name and the",
