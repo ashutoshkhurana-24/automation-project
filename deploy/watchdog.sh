@@ -31,8 +31,10 @@
 set -uo pipefail
 
 PORT="${PORT:-3000}"
-SERVICE=neo-dashboard
-VENDOR=tistron_backend
+# Overridable so the decision path can be exercised against a stub health
+# endpoint and a unit nobody minds, rather than by breaking the real bus.
+SERVICE="${SERVICE:-neo-dashboard}"
+VENDOR="${VENDOR:-tistron_backend}"
 STAMP="${TMPDIR:-/tmp}/neo-watchdog.state"
 BUS_STAMP="${TMPDIR:-/tmp}/neo-watchdog-bus.state"
 

@@ -233,6 +233,26 @@ Without it the script **says so every cycle rather than once** &mdash; this is t
 branch where the house is broken and nothing can fix it automatically, so a line
 per cycle is the only thing that will get somebody's attention.
 
+**The line was added on 2026-08-31 and the grant checked rather than assumed.**
+`/bin/systemctl` is the path in that line while `systemctl` resolves to
+`/usr/bin/systemctl` here, which is the classic sudoers footgun &mdash; and the
+box's own pre-existing `neo-dashboard` entry lists **both** paths, so whoever
+wrote it hit exactly this. Tested with `sudo -n -l <command>`, which asks
+whether a command would be permitted without running it: all three forms
+(`/bin/...`, `/usr/bin/...`, and the bare name the script actually writes) are
+permitted, because sudo canonicalises the `/bin -> usr/bin` symlink. **Check
+with `sudo -n -l`, never by reading the sudoers line** &mdash; on a box without
+usrmerge the same line would not match.
+
+**`SERVICE` and `VENDOR` are overridable so the decision path can be tested
+without breaking the bus.** Exercised against a stub `/api/health` on a spare
+port with `VENDOR` pointed at a unit that does not exist: `ok:false` waits one
+cycle then acts, `ok:true` and `ok:null` do nothing at all, and the stamps live
+under `TMPDIR` so a test cannot leave state the real cron run would read. The
+one link proven by permission rather than by execution is the successful restart
+itself &mdash; running it for real interrupts the household's own app, and it is
+the same command that fixed this by hand an hour earlier.
+
 **And `deploy/push.sh` copies `server.js` alone**, so a change to `watchdog.sh`
 is a separate `scp`. That is right &mdash; but it means this fix is two files.
 
