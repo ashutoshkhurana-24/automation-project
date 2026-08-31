@@ -1069,6 +1069,7 @@ function relayModules() {
 }
 
 const POLL_MIN_MS = 10000;        // a burst of questions must not flood the bus
+const BUS_CHECK_MS = 10 * 60 * 1000;   // how often to ask whether the bus answers
 let lastPoll = 0;
 
 /**
@@ -1103,6 +1104,81 @@ function pollHardware(force) {
       setTimeout(() => give(true), 700);
     });
   });
+}
+
+/* ── is the bus actually answering? ──────────────────────────────────────
+ *
+ * A poll that draws silence and a poll where every module already agreed look
+ * *identical* from here: both leave every reading exactly where it was. On
+ * 2026-08-31 that cost ten hours. The vendor's own listener had been dead since
+ * 03:36, so its record was frozen at the value each circuit held that morning;
+ * every command still went out and every lamp still obeyed, but the
+ * confirmation re-read compared against the frozen record and reported "not
+ * applied", and the board put each tile back. Asked what was wrong,
+ * /api/poll answered "The hub already agreed with the hardware" — which was
+ * silence reported as agreement, and is the confident-lie shape this file
+ * spends its length avoiding.
+ *
+ * The vendor's journal is the only instrument that separates them, which is
+ * what this file already says about telling our bugs from its. `abneo` is in
+ * `adm`, so no sudo, and reading a log cannot disturb anything.
+ *
+ * Off the hub there is no journal to read, so this answers **null — unknown,
+ * never zero**. A machine that cannot see the evidence must not raise the
+ * alarm, and a dev instance on a laptop is exactly that machine.
+ */
+const BUS_LOG_UNIT = 'tistron_backend';
+
+/* Does that unit exist on this box at all?
+ *
+ * Asked only when the count came back zero, and it is the difference between a
+ * fault and a false alarm. `journalctl -u no-such-unit` exits 0 with nothing but
+ * its own header, so a renamed or absent unit reads as "nobody answered" —
+ * indistinguishable from a dead bus, and it would have the watchdog restarting
+ * a service that is not there. A unit that is not loaded means we cannot tell,
+ * which is null. */
+function unitExists(unit) {
+  return new Promise((done) => {
+    execFile('systemctl', ['show', unit, '-p', 'LoadState', '--value'],
+      { timeout: 3000 }, (err, out) => done(!err && String(out).trim() === 'loaded'));
+  });
+}
+
+function busReplies(sinceSec = 15) {
+  return new Promise((done) => {
+    execFile('journalctl', ['-u', BUS_LOG_UNIT, '--since', sinceSec + ' seconds ago', '--no-pager'],
+      { timeout: 4000, maxBuffer: 4 << 20 }, async (err, out) => {
+        if (err && !out) return done(null);          // no journal here at all
+        const n = (String(out).match(/Receieved status/gi) || []).length;
+        if (n > 0) return done(n);
+        // Zero is only a fault if there was something that could have spoken.
+        done(await unitExists(BUS_LOG_UNIT) ? 0 : null);
+      });
+  });
+}
+
+/* What we last learned about the bus. `ok: null` means "not established" —
+   which is the honest state on a laptop and until the first check lands. */
+let busSync = { at: 0, replies: null, ok: null, silentSince: 0 };
+
+/* Provoke a reply and see whether one came. This is the only way to ask: at
+   idle the bus is silent, so hearing nothing proves nothing unless we spoke
+   first. */
+async function busCheck() {
+  const polled = await pollHardware(true);
+  if (!polled) return busSync;
+  await new Promise((r) => setTimeout(r, 1200));   // replies land inside a second
+  const replies = await busReplies(15);
+  const ok = replies == null ? null : replies > 0;
+  if (ok === false && !busSync.silentSince) busSync.silentSince = Date.now();
+  if (ok === true) busSync.silentSince = 0;
+  busSync = { at: Date.now(), replies, ok, silentSince: busSync.silentSince };
+  if (ok === false) {
+    console.error('bus: polled ' + relayModules().length
+      + ' modules and heard nothing back — the hub is not receiving status.'
+      + ' Every confirmation will read as "not applied" until it is.');
+  }
+  return busSync;
 }
 
 function readHubState() {
@@ -3865,6 +3941,22 @@ app.get('/api/health', (req, res) => {
       stale,
     },
     commands: { sent: stats.commandsSent, failed: stats.commandsFailed },
+    /* Whether the hub is hearing the lighting bus at all.
+     *
+     * Deliberately NOT part of the 200/503 verdict above. That verdict drives
+     * deploy/watchdog.sh, which restarts *this* service — and restarting the
+     * dashboard does nothing for a dead vendor listener. It would flap the
+     * board every ten minutes while the real fault sat there, which is worse
+     * than the silence it replaced. The watchdog reads this field instead and
+     * restarts the vendor app, which is the thing that can actually fix it.
+     *
+     * ok:null means unknown — no journal to read, which is every dev instance. */
+    bus: {
+      ok: busSync.ok,
+      replies: busSync.replies,
+      checked_s_ago: busSync.at ? Math.round((now - busSync.at) / 1000) : null,
+      silent_s: busSync.silentSince ? Math.round((now - busSync.silentSince) / 1000) : 0,
+    },
     /* The televisions are the one subsystem that holds its own long-lived
        connections, so whether each link is up is the thing most worth watching
        here — a set that is simply switched off looks identical to one whose
@@ -10154,7 +10246,10 @@ app.all('/api/poll', async (req, res) => {
   try {
     await readHubStateFresh().catch(() => {});
     const before = snap();
-    const polled = await pollHardware(true);
+    /* busCheck polls and then asks the vendor's journal whether anybody
+       answered — without that, silence and agreement are the same answer. */
+    const bus = await busCheck();
+    const polled = bus.at > 0 || (await pollHardware(true));
     await readHubStateFresh().catch(() => {});
     const after = snap();
 
@@ -10170,12 +10265,21 @@ app.all('/api/poll', async (req, res) => {
         });
       }
     }
-    res.json({ ok: true, polled, modules: relayModules(),
-      circuits: Object.keys(after).length, changed,
-      spoken: changed.length
+    /* Three outcomes, not two. "Nothing changed" used to be reported as
+       agreement whether or not a single module had spoken. */
+    const heard = bus.ok;
+    const spoken = heard === false
+      ? 'No module answered. The hub is not hearing the bus, so every reading is '
+        + 'frozen and every command will report itself as refused.'
+      : changed.length
         ? changed.length + (changed.length === 1 ? ' circuit' : ' circuits')
           + ' disagreed with the hub, and the hardware won'
-        : 'The hub already agreed with the hardware' });
+        : heard === true
+          ? 'Every module answered, and the hub already agreed with all of them'
+          : 'Polled, but I cannot tell from here whether the modules answered';
+    res.json({ ok: true, polled, modules: relayModules(),
+      circuits: Object.keys(after).length, changed,
+      answered: heard, replies: bus.replies, spoken });
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message });
   }
@@ -14687,6 +14791,12 @@ app.listen(PORT, () => {
   // One reader for the whole house, however many browsers are open. Keeps the
   // cache fresh enough that a page load never waits on the hub.
   setInterval(() => { if (!reading) readHubState(); }, REFRESH_MS);
+  /* The bus is quiet at idle, so this has to speak before it can listen. Ten
+     minutes: frequent enough that a dead listener is caught within one, rare
+     enough that the extra broadcast is nothing. The first one runs a moment
+     after boot so a restart re-establishes the answer straight away. */
+  setTimeout(() => { busCheck().catch(() => {}); }, 8000);
+  setInterval(() => { busCheck().catch(() => {}); }, BUS_CHECK_MS);
 
   /* Every 20s is enough for minute precision and cheap enough to ignore. The
      tick is what replaces the hub's own scheduler, which is dead server-side —
@@ -21685,6 +21795,15 @@ function drawHealth(h) {
     hub.reads_failed > 0);
   if (hub.consecutive_failures) row('In a row', hub.consecutive_failures + ' failing', true);
   if (hub.last_error) row('Last error', String(hub.last_error).slice(0, 90), true);
+  /* The bus, and only when there is something to say. It is the fault that
+     looks like nothing from here: the link to the hub perfect, every command
+     accepted, and every reading frozen where it stood when the vendor's
+     listener died. Drawn as a fault rather than a statistic, because a house
+     whose bus is silent cannot be trusted about anything on this panel. */
+  if (h.bus && h.bus.ok === false) {
+    row('The bus', 'no module is answering \u2014 readings are frozen'
+      + (h.bus.silent_s ? ' for ' + forHumans.spell(h.bus.silent_s) : ''), true);
+  }
 
   sep();
   for (const t of h.tvs || []) {

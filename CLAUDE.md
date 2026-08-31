@@ -161,6 +161,87 @@ c0a801c8 534d415254434c4f5544 aaaa 11 0101 8058 da44 ffff 1a081912 0a1ee48e
 
 **A passive listener was designed and then abandoned, and the reason is the useful part: at idle the bus is silent.** Four minutes of capture yielded **eleven packets, one opcode, one source** — a 30-second clock tick from a gateway at **`192.168.1.200`** (which answers no HTTP and holds no ARP entry from the Mac, and which nothing in this project had noticed before). No status announcements at all. And the wall switches here are **smart switches that fire preset groups through the vendor's app**, so the hub *originates* essentially every change rather than overhearing it — which is why its record is usually right, and why a passive observer would have almost nothing to observe. Do not build one expecting it to catch wall-switch activity.
 
+### The hub stopped hearing the bus, and nothing said so (2026-08-31)
+
+*"Why am i getting wrong reading and errors on the hub? You broke something?"*
+Reported as the dashboard being broken, and it was not: **every command still
+went out and every lamp still obeyed** &mdash; the user's own words were *"the
+buttons work, but i keep getting error hub did not answer when in reality it
+did."*
+
+**The vendor's own status listener had been dead since 03:36 that morning.**
+Status frames received from the bus, by hour: 162 in hour 01, 81 in hour 02,
+then **zero**. `tistron_backend` went down around 03:35 (our journal logged
+`ECONNREFUSED`) and came back a minute later without its `device_listener`
+resuming. UDP 6000 stayed bound; nothing was processed.
+
+The symptom follows exactly. The hub's record froze at whatever each circuit
+held at 02:00, so `/api/toggle` sent, waited `SETTLE_MS`, re-read the frozen
+record and honestly reported *"the hub did not apply that"* &mdash; and the board
+put the tile back. Six of them in one afternoon, and **none in the previous
+fourteen days**, which is what made it look like a regression.
+
+**It was not one, and that was worth proving rather than asserting.** Three
+checks: the deployed `server.js` was byte-identical to the local build; `git log
+-S` over `SETTLE_MS`, `takenAt`, `commandedAt`, `markCommanded`, `readHubState`,
+`sendToHub`, `/api/toggle`, `decodeLevel` and `intents` returned **zero commits
+in 48 hours**; and the hub's own journal showed our commands arriving correctly
+(`Sending Operation on device id 62 on channel id 22 Operation false`, three
+times). Fixed by `sudo systemctl restart tistron_backend`, after which a poll
+drew 43 replies and the frozen records corrected themselves.
+
+#### `/api/poll` reported silence as agreement
+
+Asked what was wrong, it answered **"The hub already agreed with the hardware"**
+while not one module had spoken. It compared readings either side of a poll, and
+*nothing changed* is what both a dead bus and a healthy one produce. I nearly
+believed it. That is the confident-lie shape this file spends its length
+avoiding, in our own diagnostic.
+
+**The vendor's journal is the only instrument that separates them** &mdash; the
+same thing this file already says about telling our bugs from its. `busReplies()`
+counts `Receieved status` lines in a window; `busCheck()` polls first, because at
+idle the bus is silent and hearing nothing proves nothing unless you spoke. Now
+there are three answers rather than two: every module answered, no module
+answered, or **cannot tell from here**.
+
+**Off the hub it must answer null, never zero.** A dev instance on a laptop has
+no journal, and a machine that cannot see the evidence must not raise the alarm.
+Two paths get there: no `journalctl` at all, and &mdash; the one that had to be
+found by testing &mdash; **a unit that is not loaded**. `journalctl -u
+no-such-unit` exits 0 with nothing but its own header, so a renamed vendor
+service read as "nobody answered" and would have had the watchdog restarting
+something that is not there. `unitExists()` is asked only on the zero path.
+
+#### A silent bus is deliberately **not** a 503
+
+`/api/health` carries `bus: {ok, replies, silent_s}` and the verdict above it is
+untouched. That verdict drives `watchdog.sh`, which restarts **this** service
+&mdash; and restarting the dashboard does nothing for a dead vendor listener. It
+would flap the board every ten minutes while the fault sat there, which is worse
+than the silence it replaced.
+
+The watchdog reads the field instead and restarts **the vendor app**, on two
+consecutive failures like the existing check. That needs one sudoers line, since
+`sudo -n` is refused on this box:
+
+```
+abneo ALL=(root) NOPASSWD: /bin/systemctl restart tistron_backend
+```
+
+Without it the script **says so every cycle rather than once** &mdash; this is the
+branch where the house is broken and nothing can fix it automatically, so a line
+per cycle is the only thing that will get somebody's attention.
+
+**And `deploy/push.sh` copies `server.js` alone**, so a change to `watchdog.sh`
+is a separate `scp`. That is right &mdash; but it means this fix is two files.
+
+Verified live on the hub, all three paths from the deployed code: the vendor unit
+gave 129 replies (`ok:true`), a real unit with no status lines gave 0
+(`ok:false`, which is the genuine dead-bus shape), and a missing unit gave `null`.
+`/api/health` reads `bus: {ok: true, replies: 86}`, the watchdog runs clean and
+silent on a healthy house, and its cron line was already installed.
+
 **`GET_STATUS` works, and `pollHardware()` in `server.js` is it (2026-08-25).** Broadcasting `HEADER + GET_STATUS + <module id> + crc` makes a module report its channels; the vendor's own `device_listener()` catches the replies and its workers save them, so nothing here parses a byte and there is no second copy of the house's state. Called forced at startup — a restart being when the hub's record is least trustworthy — before `look` answers a question, and on demand at `POST /api/poll`, which reads, polls, reads again and names every circuit whose value moved.
 
 Four things measured, and one still open:
