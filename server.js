@@ -14191,8 +14191,34 @@ const REPORT_CSS = [
   '.months a { font:500 11px/1 var(--mono); letter-spacing:.04em; text-decoration:none;',
   '  color:var(--soft); background:var(--paper); border:1px solid var(--line);',
   '  border-radius:999px; padding:7px 11px; }',
-  '.months a.now { color:var(--paper); background:var(--ink); border-color:var(--ink); }',
   '.months a.get { color:var(--accent); }',
+  '.months form { display:flex; gap:6px; margin:0; }',
+  '.months select, .months .go { font:500 11px/1 var(--mono); letter-spacing:.04em;',
+  '  color:var(--soft); background:var(--paper); border:1px solid var(--line);',
+  '  border-radius:999px; padding:7px 11px; cursor:pointer; }',
+  /* The caret is drawn rather than left to the platform, because a native select
+     arrow brings the platform's whole chrome with it — a grey bevelled box beside
+     a row of paper pills. Two gradients meeting at a point is the cheapest
+     triangle there is, and it takes its colour from the tokens like everything else. */
+  '.months select { appearance:none; -webkit-appearance:none; padding-right:27px;',
+  '  background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),',
+  '    linear-gradient(135deg,var(--faint) 50%,transparent 50%);',
+  '  background-position:calc(100% - 15px) 52%,calc(100% - 11px) 52%;',
+  '  background-size:4px 4px,4px 4px; background-repeat:no-repeat; }',
+  '.months select:hover, .months .go:hover { color:var(--ink); border-color:var(--soft); }',
+  /* Under 16px iOS zooms the page when a control takes focus, and this file has
+     recorded that trap for a text field three times. A select is no different.
+     Longhands, because the shorthand here wipes the padding the caret is drawn
+     into and the month reads straight through the arrow — the same silent
+     overwrite this file records for `padding` on .tools. */
+  '@media (max-width:520px) {',
+  '  .months select, .months .go { font-size:16px; padding-top:8px; padding-bottom:8px; }',
+  '  .months select { padding-right:31px; }',
+  '}',
+  /* [hidden] is display:none from the UA sheet, the weakest origin there is, and
+     the script hides the View button with it. Said once here so a later rule
+     giving .go a display cannot quietly bring it back. */
+  '.months [hidden] { display:none; }',
 
   /* A ranked row does not fit on one line at phone width — the name column was
      squeezed to 64px and every room came out truncated. Stacked, the name gets
@@ -14234,6 +14260,7 @@ const REPORT_CSS = [
   '.up { display:inline-block; color:var(--faint); font:500 10px/1 var(--mono);',
   '  letter-spacing:.14em; text-transform:uppercase; text-decoration:none; }',
   '.up:hover { color:var(--accent); }',
+  '.pv .up { display:none; }',
   '.up::before { content:"\u2190  "; }',
 
   /* A circuit row carries a kind and a count that a room row does not. */
@@ -14245,10 +14272,16 @@ const REPORT_CSS = [
   'footer { color:var(--faint); font-size:11.5px; line-height:1.6; margin-top:18px; }',
   'footer p { margin:0 0 8px; }',
   'footer b { color:var(--soft); font-weight:600; }',
+  '@page { margin:14mm 12mm; }',
   '@media print {',
   '  body { background:#fff; }',
   '  section, .fig { break-inside:avoid; box-shadow:none; }',
-  '  .months { display:none; }',
+  /* Navigation is the first thing to go: a tab strip on paper is a row of words
+     that do nothing, and the printable assembly repeats neither. */
+  '  .months, .tabs, .up, .noprint { display:none !important; }',
+  /* One room to a page. Only the printable assembly has these; the served page
+     has none, so this costs it nothing. */
+  '  .pv { break-before:page; }',
   '}',
 ].join('\n');
 
@@ -14299,20 +14332,40 @@ const pageHead = (title) =>
   + '<title>' + escHtml(title) + '</title>\n'
   + '<style>\n' + fontCss() + '\n' + REPORT_CSS + '\n</style>\n</head>\n<body><div class="wrap">\n';
 
-/* A mono month strip, on the served page only.
+/* The month picker, on the served page only.
+ *
+ * It offers the months there is a file for and nothing else. A month with no
+ * record renders a page of zeroes, and a control that can reach one invites the
+ * question "why is August empty" about a house that was simply not being logged
+ * yet. `historyMonths()` is the whole of the list — it reads the directory, so
+ * the picker cannot claim a month the report cannot draw.
+ *
+ * It is a real form with a submit button, so it works with **no script at all**.
+ * That is not politeness: the strip is the only interactive thing on a page whose
+ * whole claim is that it survives being saved and forwarded, and the script in
+ * housePage() below only removes the second click.
  *
  * Deliberately absent from the download: a saved file's links back to /report
  * are dead the moment it leaves the house network, and a page full of dead links
  * is a worse artefact than one with no navigation at all. */
-function monthStrip(ym, room) {
-  const base = room ? '/report/' + encodeURIComponent(room) : '/report';
-  const months = historyMonths().slice(0, 13);
-  if (!months.includes(ym)) months.unshift(ym);
+function monthStrip(ym) {
+  const months = historyMonths().slice(0, HISTORY_MONTHS);
+  /* A month reached by a hand-typed URL is not in that list. It is added rather
+     than dropped, because a picker reading September while the page underneath
+     reports August is worse than one admitting there is nothing behind it. */
+  const known = months.includes(ym);
+  const opts = (known ? months : [ym, ...months]).map((m) =>
+    '<option value="' + m + '"' + (m === ym ? ' selected' : '') + '>'
+    + escHtml(monthName(m)) + (m === ym && !known ? ' \u00b7 no record' : '')
+    + '</option>').join('');
+
   return '<nav class="months">'
-    + months.map((m) => '<a href="' + base + '?month=' + m + '"'
-      + (m === ym ? ' class="now"' : '') + '>' + escHtml(monthName(m).replace(' ', ' ')) + '</a>').join('')
-    + '<a class="get" href="' + base + '?month=' + ym + '&amp;download=1">Download</a>'
-    + (room ? '<a href="/report?month=' + ym + '">\u2190 The house</a>' : '')
+    + '<form class="mpick" method="get" action="/report">'
+    + '<select name="month" aria-label="Which month to report on">' + opts + '</select>'
+    + '<button class="go" type="submit">View</button>'
+    + '</form>'
+    + '<a class="get" href="/report?month=' + ym + '&amp;print=1">Save as PDF</a>'
+    + '<a class="get" href="/report?month=' + ym + '&amp;download=1">Download page</a>'
     + '</nav>\n';
 }
 
@@ -14635,10 +14688,35 @@ function houseView(rep) {
       + 'was.</p></section>\n' : '');
 }
 
+/* The picker works without this — it is a form with a submit button — so all of
+ * this does is remove the second click and carry the fragment along, which means
+ * changing the month from inside a room lands in that room instead of throwing
+ * you back to the house. A GET form cannot post a fragment, so that half is only
+ * available here.
+ *
+ * Served pages only, for the reason the strip itself is: the download has no
+ * strip, so it has no script either, and stays a file that opens anywhere.
+ *
+ * Classes rather than ids, because the strip is emitted once per view and nine
+ * copies of an id is nine bugs. */
+const PICK_JS = `<script>
+(function () {
+  var forms = document.querySelectorAll('.mpick');
+  for (var i = 0; i < forms.length; i++) (function (form) {
+    var pick = form.querySelector('select'), go = form.querySelector('.go');
+    if (go) go.hidden = true;
+    pick.onchange = function () {
+      location = '/report?month=' + encodeURIComponent(pick.value) + location.hash;
+    };
+  })(forms[i]);
+})();
+</script>
+`;
+
 function housePage(rep, opts) {
   const nav = opts && opts.nav;
   const rooms = rep.rooms.filter((x) => x.circuits.length);
-  const strip = nav ? monthStrip(rep.ym, null) : '';
+  const strip = nav ? monthStrip(rep.ym) : '';
 
   return pageHead(sentence(HOUSE_NAME) + ' \u00b7 ' + monthName(rep.ym))
     /* Rooms first: `.rv:target ~ #house` is how the house gives way. */
@@ -14646,6 +14724,7 @@ function housePage(rep, opts) {
       + strip + navHtml(rep, x.room) + roomView(x, rep) + footerHtml(rep) + '</div>\n').join('')
     + '<div id="house">' + strip + navHtml(rep, null) + houseView(rep)
     + footerHtml(rep) + '</div>\n'
+    + (nav ? PICK_JS : '')
     + '</div></body></html>\n';
 }
 
@@ -14726,7 +14805,56 @@ function footerHtml(rep) {
     + '</footer>\n';
 }
 
-const monthOf = (q) => (/^\d{4}-\d{2}$/.test(String(q || '')) ? String(q) : historyMonth());
+/* ── the report as one printable document ─────────────────────────────
+ *
+ * A separate assembly rather than a print stylesheet laid over the served page,
+ * and the reason is ordering. That page emits every room **before** the house,
+ * because `.rv:target ~ #house` is the whole of how the house gives way — so
+ * printing it puts seven bedrooms ahead of the summary and repeats the honest
+ * half once per view. Putting the house back on top in CSS means fragmenting a
+ * flex container across pages, which is the corner of printing that engines
+ * disagree about most, and a PDF that comes out as one enormous page is worse
+ * than no PDF at all.
+ *
+ * So this is the same builders in reading order: the house, then a room to a
+ * page, then the footer once at the end. Nothing that would be a dead link on
+ * paper — no tabs, no back links, no month strip.
+ *
+ * It opens the print dialog itself, that being the whole of what the button
+ * promises, and keeps a visible one for anybody who dismisses it. */
+/* Waiting for the faces matters: they are inline base64 with font-display:swap,
+   so a dialog opened at load can catch the fallback stack and hand back a PDF set
+   in Georgia — the one failure that is invisible until it is already on paper.
+   Both arms of .then, because a browser without document.fonts must still print. */
+const PRINT_JS = `<script>
+(function () {
+  var open = function () { setTimeout(function () { window.print(); }, 60); };
+  var faces = document.fonts && document.fonts.ready;
+  if (faces) faces.then(open, open); else open();
+})();
+</script>
+`;
+
+function printPage(rep) {
+  const rooms = rep.rooms.filter((x) => x.circuits.length);
+  return pageHead(sentence(HOUSE_NAME) + ' \u00b7 ' + monthName(rep.ym))
+    + '<nav class="months noprint">'
+    + '<button class="go" type="button" onclick="window.print()">Save as PDF</button>'
+    + '<a class="get" href="/report?month=' + rep.ym + '">\u2190 Back to the report</a>'
+    + '</nav>\n'
+    + '<div id="house">' + houseView(rep) + '</div>\n'
+    + rooms.map((x) => '<div class="pv">' + roomView(x, rep) + '</div>\n').join('')
+    + footerHtml(rep)
+    + PRINT_JS
+    + '</div></body></html>\n';
+}
+
+/* The month asked for, or the newest there is a record of — which is this month
+   as soon as anything has happened in it, and last month on the first of a new
+   one before anything has. Landing on a page of zeroes because the calendar has
+   turned is not a report, and it is also the one month the picker cannot offer. */
+const monthOf = (q) => (/^\d{4}-\d{2}$/.test(String(q || '')) ? String(q)
+  : (historyMonths()[0] || historyMonth()));
 const fileName = (what, ym) => what.toLowerCase().replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '') + '-' + ym + '.html';
 
@@ -14736,6 +14864,12 @@ const fileName = (what, ym) => what.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 app.get('/report', (req, res) => {
   const ym = monthOf(req.query.month);
   const down = !!req.query.download;
+  /* Its own address rather than a button on this one, so the served page keeps
+     no script of its own beyond the picker, and so that "the report as a PDF"
+     is a link somebody can send, bookmark or put in a shortcut. */
+  if (req.query.print) {
+    return res.type('html').set('Cache-Control', 'no-cache').send(printPage(houseReport(ym)));
+  }
   const page = housePage(houseReport(ym), { nav: !down });
   if (down) res.set('Content-Disposition', 'attachment; filename="'
     + fileName(HOUSE_NAME + '-house', ym) + '"');

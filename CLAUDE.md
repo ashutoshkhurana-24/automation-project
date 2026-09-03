@@ -2953,6 +2953,73 @@ edit that split it to create `openMedia`, so a lone receiver would have opened a
 empty panel — unreachable in this house, wrong everywhere else. Also `const run`
 declared inside a `try` and read from the reply outside it.
 
+### The report picks its month, and prints itself (2026-09-03)
+
+Two asks: a date selector showing only the dates there are, and a PDF.
+
+**The picker is a `<select>` in a real form with a submit button, so it works
+with no script at all.** That is not politeness. The strip is the only
+interactive thing on a page whose whole claim is that it survives being saved,
+emailed and opened from a `file:` URL &mdash; and the same page already moves
+between its rooms on `:target` for exactly that reason. `PICK_JS` only removes
+the second click, and it is emitted **on the served page alone**: the download
+has no strip, so it still has no script.
+
+The script buys one thing the form cannot. A GET form cannot post a fragment, so
+submitting from inside a room threw you back to the house; `location.hash` is
+carried along, and changing the month from Dining lands in Dining. Verified live:
+one change event, `?month=2026-08#r-dining`, title and `:target` both following.
+
+**It offers only months there is a file for.** `historyMonths()` reads the
+directory, so the control cannot name a month the report cannot draw. A month
+reached by a hand-typed URL is **added and labelled `· no record`** rather
+than dropped &mdash; a picker reading September while the page beneath it reports
+August is worse than one admitting there is nothing behind it.
+
+**And `monthOf` now defaults to the newest month with a record**, not to the
+calendar month. In practice they are the same within fifteen seconds of anything
+happening; the difference is the first of a new month, where the old default
+served a page of zeroes for a month the picker could not even offer.
+
+#### The PDF is the browser's, and it has its own address
+
+`/report?month=<ym>&print=1` &mdash; a link, not a button, so the served page
+gains no script of its own and "the report as a PDF" is something that can be
+sent, bookmarked or put in a Shortcut. It opens the print dialog on load and
+keeps a visible button for anybody who dismisses it.
+
+**A separate assembly rather than a print stylesheet over the served page, and
+the reason is ordering.** That page emits every room *before* the house, because
+`.rv:target ~ #house` is the whole of how the house gives way &mdash; so printing
+it puts seven bedrooms ahead of the summary and repeats the honest half once per
+view. Putting the house back on top in CSS means fragmenting a flex container
+across pages, which is the corner of printing engines disagree about most, and a
+PDF that comes out as one enormous page is worse than no PDF at all. So:
+`printPage()` calls the same `houseView`, `roomView` and `footerHtml`, in reading
+order, with nothing that would be a dead link on paper. Verified: house first,
+seven `.pv` rooms, **one** footer, no tabs, no back links.
+
+Three smaller things it needed. `@page { margin:14mm 12mm }`. `.months, .tabs,
+.up, .noprint` hidden in print, which is an improvement on the saved file too.
+And the dialog waits on `document.fonts.ready` &mdash; the faces are inline base64
+with `font-display: swap`, so a dialog opened at `load` can catch the fallback
+stack and hand back a PDF set in Georgia, which is the one failure invisible
+until it is already on paper.
+
+#### Two traps, both already in this file
+
+**`deploy/push.sh` parses every `<script>` in `server.js`,** and my two were
+built by string concatenation &mdash; so the extractor pulled out `'(function(){'
++ 'var f=...` and the preflight would have died. They are **template literals
+containing real JavaScript** now, which puts them back under the same audit as
+every other page script: 5 of 5 parse, where it was 3 before.
+
+**And the mobile 16px bump used shorthand `padding`,** which wiped the
+`padding-right` the caret is drawn into &mdash; the month read straight through
+the arrow at 390px. Longhands, the same silent overwrite this file records for
+`padding` on `.tools`. The 16px itself is the iOS zoom-on-focus rule, now
+recorded for a fourth control.
+
 ### A plan fires on the hub's clock; the countdown was on the phone's (2026-08-31)
 
 *"When I make new plans, are they wired to the hub's timezone i.e. IST?"* The
