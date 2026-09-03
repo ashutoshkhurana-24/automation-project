@@ -14161,6 +14161,11 @@ const REPORT_CSS = [
   '.axis { display:grid; grid-template-columns:repeat(24,1fr); gap:2px; margin-top:6px;',
   '  font:500 9px/1 var(--mono); color:var(--faint); }',
   '.axis span { text-align:center; }',
+  /* Every hour is there, and midnight, six, noon and six are a shade darker so
+     the row can still be read at a glance rather than counted along. Twenty-four
+     numbers at one weight is a ribbon of digits; four of them standing slightly
+     proud is a scale. */
+  '.axis .q { color:var(--soft); }',
 
   /* ── lists ─────────────────────────────────────────────────────────── */
   '.row { display:flex; align-items:baseline; gap:10px; padding:7px 0;',
@@ -14375,6 +14380,14 @@ const warmA = (a) => 'rgba(242,162,51,' + Math.max(0, Math.min(1, a)).toFixed(3)
 
 const pctWord = (x) => (x >= 0 ? '+' : '\u2212') + Math.round(Math.abs(x) * 100) + '%';
 
+/* Every hour is labelled, not every sixth. The profile above is twenty-four
+   bars whose only address is the number underneath, so somebody who has just
+   read "busiest around 9pm" and wants to find that bar was left counting in
+   sixes. The same string in both views, so it is built once. */
+const HOUR_AXIS = Array.from({ length: 24 }, (_, h) =>
+  '<span' + (h % 6 === 0 ? ' class="q"' : '') + '>'
+  + String(h).padStart(2, '0') + '</span>').join('');
+
 /* ── the house report ─────────────────────────────────────────────────── */
 
 /* ── the report is one document, and the rooms are inside it ──────────────
@@ -14449,8 +14462,6 @@ function roomView(x, rep) {
     const cls = ms === peak && ms > 0 ? 'pk' : ms > 0 ? 'on' : '';
     return '<i class="' + cls + '" style="height:' + h + '%"></i>';
   }).join('');
-  const axis = Array.from({ length: 24 }, (_, h) =>
-    '<span>' + (h % 6 === 0 ? String(h).padStart(2, '0') : '') + '</span>').join('');
 
   /* The sentence above has already said the hours, so these say what it did not
      — the same rule as the house's figures. Lit hours appear here only when the
@@ -14494,7 +14505,7 @@ function roomView(x, rep) {
       + 'the hub sent it, not what it did.</p></section>\n' : '')
 
     + (x.hours > 0.008 ? '<section><h2>The shape of a day</h2><div class="prof">' + prof + '</div>'
-      + '<div class="axis">' + axis + '</div>'
+      + '<div class="axis">' + HOUR_AXIS + '</div>'
       + (busiest ? '<p class="note">Busiest day was <b>'
         + dayWord(new Date(busiest.day + 'T12:00:00').getTime()) + '</b>, at '
         + hoursWord(busiest.ms / 3600000) + '.</p>' : '') + '</section>\n' : '')
@@ -14619,8 +14630,6 @@ function houseView(rep) {
     const cls = ms === peakHour && ms > 0 ? 'pk' : ms > 0 ? 'on' : '';
     return '<i class="' + cls + '" style="height:' + h + '%"></i>';
   }).join('');
-  const axis = Array.from({ length: 24 }, (_, h) =>
-    '<span>' + (h % 6 === 0 ? String(h).padStart(2, '0') : '') + '</span>').join('');
 
   const nights = rep.nights.slice(0, 8).map((n) =>
     '<div class="row"><div class="who"><b>' + esc(n.name) + '</b> '
@@ -14653,7 +14662,7 @@ function houseView(rep) {
     + '</section>\n'
 
     + '<section><h2>The shape of a day</h2><div class="prof">' + prof + '</div>'
-    + '<div class="axis">' + axis + '</div>'
+    + '<div class="axis">' + HOUR_AXIS + '</div>'
     + '<p class="note">Every hour of the month laid on one day, so this is when the house '
     + 'is awake rather than what any single day looked like.</p></section>\n'
 

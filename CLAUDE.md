@@ -3006,6 +3006,26 @@ with `font-display: swap`, so a dialog opened at `load` can catch the fallback
 stack and hand back a PDF set in Georgia, which is the one failure invisible
 until it is already on paper.
 
+#### Every hour is on the axis (2026-09-03)
+
+*"on x axis of busiest hour chart, i need all hrs visible."* It labelled every
+sixth hour &mdash; `00 06 12 18` &mdash; so a reader who had just been told the house
+is busiest around nine had to count along twenty-four bars to find the one drawn
+in coral. All twenty-four are labelled now, from one `HOUR_AXIS` constant rather
+than the identical expression that was sitting in `roomView` and `houseView`.
+
+**It fits, and that was measured rather than hoped.** IBM Plex Mono at 9px puts
+`23` in 10.8px. The axis is a 24-column grid with a 2px gap, so the label starts
+overlapping its neighbour only once a cell is under 8.8px &mdash; about a 290px
+viewport, narrower than any phone. Checked at 1280, 390 and the pane's 335px
+floor: worst ink gap 2px, no horizontal scroll anywhere. No media query needed,
+which is why there is none.
+
+**Midnight, six, noon and six keep a darker shade (`.axis .q`).** Twenty-four
+numbers at one weight is a ribbon of digits; four standing slightly proud is a
+scale, so nothing was lost by dropping the old six-hour rhythm &mdash; it changed
+from being the only labels to being the readable ones.
+
 #### Two traps, both already in this file
 
 **`deploy/push.sh` parses every `<script>` in `server.js`,** and my two were
