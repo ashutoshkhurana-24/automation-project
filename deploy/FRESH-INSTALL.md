@@ -85,6 +85,51 @@ Anything fitted, removed or renamed needs **Re-read the hub** in the console. An
 ordinary read ignores a `record_id` the dashboard has never seen, so a new light
 is invisible however many times the hub is read.
 
+## If the vendor's app dies at boot
+
+Optional, and only worth doing if you see it. On the hub this was written for,
+`tistron_backend` waits for `ping 8.8.8.8`, sleeps 30s and then calls Firebase
+&mdash; and ICMP comes up before the resolver does, so on a slow boot it crashes
+with `Temporary failure in name resolution`, **never binds 8090, and still
+reports itself `active`**. The dashboard then says `ECONNREFUSED` and the house
+has no control at all.
+
+`deploy/wait-for-dns.conf` is a systemd drop-in that waits for the resolver
+instead. It touches nothing the vendor owns &mdash; a drop-in leaves the unit file
+alone, and its `ExecStartPre` appends, so it runs last, after the sleep and
+immediately before the app starts.
+
+```bash
+scp deploy/wait-for-dns.conf abneo@<hub>:/tmp/
+ssh -t abneo@<hub> 'sudo mkdir -p /etc/systemd/system/tistron_backend.service.d && sudo cp /tmp/wait-for-dns.conf /etc/systemd/system/tistron_backend.service.d/ && sudo systemctl daemon-reload'
+```
+
+Stage it with `scp` and copy it into place, rather than piping a heredoc through
+`ssh` &mdash; quotes pushed through your shell, then ssh, then the remote shell
+get word-split, and a mangled unit file is logged `Missing '=', ignoring line`
+and silently skipped.
+
+**One thing to check for another house: `TimeoutStartSec` on the unit.** The
+`timeout 40` has to fit inside it alongside whatever the unit already sleeps, or
+the wait fails the unit outright &mdash; which is worse than the bug it fixes. It
+cannot fail the unit as written, since `ExecStartPre=-` ignores a non-zero exit,
+so the worst case is the app starting and crashing as before, which the watchdog
+heals.
+
+The hostname needs no changing. It probes a neutral public name rather than the
+app's own cloud endpoint, because a resolver is either answering or it is not and
+any name proves it &mdash; while a per-install cloud address written into a repo
+is published for no gain.
+
+Confirm systemd took it. `ExecStartPre` should gain an entry, and it should be
+the last one, reading `ignore_errors=yes`:
+
+```bash
+ssh abneo@<hub> 'systemctl show tistron_backend -p DropInPaths -p ExecStartPre'
+```
+
+Then restart it once in daylight, rather than finding out at the next power cut.
+
 ## Files that belong to one house
 
 Per-install and git-ignored, so cloning this repo never carries somebody else's

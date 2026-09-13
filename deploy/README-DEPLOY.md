@@ -94,9 +94,21 @@ not on IST the schedule times will be off.
 
 ## 4b. The watchdog
 
-systemd restarts the service if it *crashes*. It cannot see the other failure:
-the process alive and serving pages while its hub connection has died.
-`/api/health` returns 503 in that case, and this catches it:
+systemd restarts the service if it *crashes*. It cannot see the three failures
+where nothing crashes at all, and they need different remedies:
+
+| what has happened | `/api/health` | what to restart |
+|---|---|---|
+| our process alive and serving, hub connection dead | 503 | the dashboard |
+| the vendor's app not listening on 8090 | 503, `ECONNREFUSED` | **the vendor** |
+| the vendor answering us but deaf to the lighting bus | 200, `bus.ok:false` | **the vendor** |
+
+The second row is the one that is easy to get wrong. Restarting *us* does nothing
+for a vendor that is down, and until 2026-09-13 that is exactly what happened:
+the 503 branch exited before the bus branch could be reached, so the watchdog
+spent five hours restarting a dashboard with nothing wrong with it. It is
+`ECONNREFUSED` and nothing else &mdash; a timeout or `EHOSTUNREACH` is the network
+or a wedged box, where restarting the vendor would be a guess.
 
 ```cron
 */5 * * * * /home/abneo/dashboard/deploy/watchdog.sh
@@ -108,18 +120,28 @@ interactive authentication and `sudo -n` wants a password, so grant exactly that
 one command and nothing else:
 
 ```bash
-echo 'abneo ALL=(root) NOPASSWD: /usr/bin/systemctl restart neo-dashboard, /bin/systemctl restart neo-dashboard' \
+echo 'abneo ALL=(root) NOPASSWD: /usr/bin/systemctl restart neo-dashboard, /bin/systemctl restart neo-dashboard
+abneo ALL=(root) NOPASSWD: /usr/bin/systemctl restart tistron_backend, /bin/systemctl restart tistron_backend' \
   | sudo tee /etc/sudoers.d/neo-dashboard >/dev/null \
   && sudo chmod 440 /etc/sudoers.d/neo-dashboard \
   && sudo visudo -c
 ```
 
+**Both paths of `systemctl` are listed on purpose.** sudo matches on the literal
+path, and `/bin` is a symlink to `/usr/bin` here while `systemctl` resolves to
+`/usr/bin/systemctl` &mdash; on a box without usrmerge one form would not match.
+Name the vendor's unit as yours calls it if it is not `tistron_backend`.
+
 The `visudo -c` at the end validates every sudoers file — don't skip it, a
 malformed one can lock you out of `sudo`. Confirm it took with:
 
 ```bash
-sudo -n systemctl restart neo-dashboard && echo "watchdog can restart"
+sudo -n -l systemctl restart neo-dashboard && sudo -n -l systemctl restart tistron_backend
 ```
+
+`sudo -n -l` asks whether a command *would* be permitted without running it, which
+is the check to make &mdash; never read the sudoers line and assume, since it is
+the path matching that catches people out.
 
 It restarts only after two consecutive bad checks, so one slow read doesn't
 bounce the service. Check health by hand any time:
