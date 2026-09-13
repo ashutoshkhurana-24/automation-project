@@ -262,6 +262,99 @@ gave 129 replies (`ok:true`), a real unit with no status lines gave 0
 `/api/health` reads `bus: {ok: true, replies: 86}`, the watchdog runs clean and
 silent on a healthy house, and its cron line was already installed.
 
+### The watchdog could not fix the one fault it was built for (2026-09-13)
+
+*"My dashboard / hub fails to connect, fix through tailscale."* Tailscale was
+healthy throughout and had nothing to do with it &mdash; `abneo` online, ping
+answering, the dashboard serving pages over the tunnel the whole time. Worth
+recording because the tunnel is the first thing suspected whenever the house is
+unreachable, and it has now been the cause of none of it: the one real Tailscale
+fault this file carries was the *Mac* being logged out, which presents as nothing
+answering at all rather than as a dashboard that loads and reports a problem.
+
+**What was wrong is that nothing was listening on 8090.** `/api/health` said
+`connect ECONNREFUSED 192.168.1.3:8090`, which is not a network failure &mdash;
+the host is up and the port is shut. `tistron_backend` had crashed during startup
+at 06:36 on this:
+
+```
+firebase_admin.exceptions.UnavailableError: ... [Errno -3] Temporary failure in name resolution
+```
+
+A boot race. The unit waits for `ping -c1 8.8.8.8`, sleeps 30s, then Django
+immediately calls Firebase &mdash; and **ICMP comes up before the resolver does**,
+so the wait passes too early. DNS was perfectly healthy by the time anybody
+looked, which is what makes this one hard to catch after the fact.
+
+**And it reported itself `active` the entire time**, with a live main PID, having
+never bound the port. The same shape this file spends its length on: the
+confident-looking signal is the thing that hides the fault.
+
+#### The watchdog spent five hours restarting the wrong process
+
+This is the part worth keeping. `watchdog.sh` has two branches, written for two
+faults that need different remedies &mdash; and branch 1 fires on **any** non-200
+and then `exit 0`s. So the moment the vendor was dead enough to make our own
+health check 503, the bus branch below it became unreachable and the vendor was
+never a candidate at all. Every ten minutes it restarted the dashboard, which had
+nothing whatever wrong with it.
+
+The journal shows exactly this. `Started Tistron Service` at 06:05, 06:15, 06:25
+and 06:35 &mdash; the bus branch working correctly while our health was still
+200 &mdash; and then **nothing for five hours**, because the 06:35 restart was the
+one that left the port shut, which flipped us to 503 and locked the branch out.
+It fixed itself into a state it could no longer fix.
+
+**The fix is that branch 1 now asks *why* it is unhealthy**, and `ECONNREFUSED` in
+the body means the vendor rather than us. Deliberately that string and nothing
+else: `EHOSTUNREACH` or a timeout is the network or a wedged box, where restarting
+the vendor is a guess, and *refused* is not a guess &mdash; it is the host saying
+nothing is listening. `restart_vendor()` is one definition now, since two branches
+reach it and two copies would drift about the sudoers message.
+
+Exercised against a stub health endpoint and a unit nobody minds, which is what
+`SERVICE` and `VENDOR` are overridable for: 503 + ECONNREFUSED restarts the vendor
+(it restarted the dashboard before), a 503 without it still restarts the dashboard,
+a silent bus still restarts the vendor, and `ok:true` or `ok:null` still do nothing
+at all. The two-strike discipline holds in every branch.
+
+#### Waiting for DNS rather than for ICMP
+
+`/etc/systemd/system/tistron_backend.service.d/wait-for-dns.conf` is a drop-in on
+the vendor's unit, which is as little of it as can be touched. Three things it has
+to get right, and the first draft got two of them wrong:
+
+- **The host has to be one that resolves.** `firebaseio.com` has no address record
+  &mdash; only the full project host does &mdash; so an `until getent hosts
+  firebaseio.com` loop can never exit. Check the name before writing the wait.
+- **It has to be bounded.** `TimeoutStartSec` is 90s and the unit already spends
+  30 of them in `sleep 30`, so an unbounded wait fails the unit outright at every
+  boot: *worse than the bug it fixes*. `timeout 40` fits the budget.
+- **It must not be able to fail the unit.** `ExecStartPre=-` ignores a non-zero
+  exit, so if DNS really is still down at 40s the app starts and crashes exactly
+  as it did today &mdash; which the patched watchdog now heals in ten minutes.
+  The drop-in can only help; it can no longer do harm.
+
+A drop-in's `ExecStartPre` **appends**, so it runs last, after the `sleep 30` and
+immediately before Django starts, which is where the resolver needs to be up.
+Proven by a real restart at midday rather than discovered at the next power cut:
+8090 bound at **36s**, `Result=success`, and `📡 Device listener started` in the
+log, so the listener resumed too.
+
+**Do not push quotes through your shell, then ssh, then the remote shell.** Two
+attempts at writing that file failed and both failed there. The first lost its
+`sudo systemctl daemon-reload` and the drop-in sat on disk unloaded; the second
+was word-split into `"ExecStartPre=-/usr/bin/timeout`, `40`, `/bin/bash` on
+separate lines. **Both were caught by systemd rather than by me** &mdash; an
+un-reloaded file does nothing, and a line with no `=` is logged `Missing '=',
+ignoring line` and skipped &mdash; so the running house was never touched, which
+was luck and not care. The route that works is `scp` the bytes to `/tmp`, compare
+`md5sum` against the local file, then one `sudo cp`. No quoting anywhere.
+
+Verified end to end afterwards: page 200, health 200, hub reads clean with zero
+consecutive failures, 88 devices, and a forced poll answered by 43 status frames
+with `changed: 0` &mdash; the hub's record and the hardware in agreement.
+
 **`GET_STATUS` works, and `pollHardware()` in `server.js` is it (2026-08-25).** Broadcasting `HEADER + GET_STATUS + <module id> + crc` makes a module report its channels; the vendor's own `device_listener()` catches the replies and its workers save them, so nothing here parses a byte and there is no second copy of the house's state. Called forced at startup — a restart being when the hub's record is least trustworthy — before `look` answers a question, and on demand at `POST /api/poll`, which reads, polls, reads again and names every circuit whose value moved.
 
 Four things measured, and one still open:
@@ -270,7 +363,7 @@ Four things measured, and one still open:
 - **Only two of the four modules answer.** 61 gave 21 replies and 62 gave 22, while **19 and 195 gave none**, retested individually. Module 19 is **all thirty-six COBs**, so the poll covers the fans, switches and curtain relays and leaves every ceiling lamp unverified. A dimmer module probably wants a different opcode — that is a guess, not a finding.
 - **Do not bind udp/6000.** `socket_manager.find_and_kill_process` kills whatever holds it. Sending from an ephemeral port sidesteps this and the reply still lands where it is wanted.
 - **The CRC is CRC-16/CCITT (XModem), init 0**, over everything after the SMARTCLOUD header and before the checksum. Verified against a captured frame *before* transmitting, which is why it worked first time.
-- **Still unproven: that a reply overwrites a *wrong* value.** Every test found the hub already in agreement, including one run against a deliberate desync that had resolved itself by the time it was polled. So the poll is proven to be answered and saved, and is **not** proven to correct. Do not describe it as a fix until something has watched it happen.
+- **A reply does overwrite a wrong value — watched at last on 2026-09-13.** Every earlier test found the hub already in agreement, including one run against a deliberate desync that had resolved itself by the time it was polled, so this stood unproven for a fortnight. The five-hour outage above made the clean setup that could not be staged on purpose: the vendor's records sat frozen at their pre-crash values while the house went on being lived in. The first `POST /api/poll` after the restart named several circuits moving — 430 FAN, 434 CURTAIN ROPE, 439 FAN and 470 CEILING ROPE among them — each `was: 100, now: 0`; a poll an hour later reported `changed: 0`. Both readings come from inside the one call, which reads, polls and reads again, so the move is the poll's rather than a stale cache catching up. Consistent with only 61 and 62 answering, too: every circuit named is a fan, a rope or a relay, and not one is a COB. One observation, and it is the one that was missing.
 
 **Timing, measured against this hub.** A `site_config` arrives ~1.5–3s after connecting, and snapshots state at connect time. A read starting too soon after a command still reports the *previous* state; `SETTLE_MS = 3200` is that measurement plus margin. Do not lower it without re-measuring.
 

@@ -38,6 +38,23 @@ VENDOR="${VENDOR:-tistron_backend}"
 STAMP="${TMPDIR:-/tmp}/neo-watchdog.state"
 BUS_STAMP="${TMPDIR:-/tmp}/neo-watchdog-bus.state"
 
+# Restarting the vendor's app is now reached from two directions — a silent bus,
+# and a dead one — so it is written once. It is the only thing on this box that
+# needs a sudoers line, and the failure to have one is said every time.
+restart_vendor() {
+  if sudo -n systemctl restart "$VENDOR" 2>/dev/null; then
+    echo "$(date -Is) restarted $VENDOR" >&2
+    return 0
+  fi
+  # Say it every time rather than once. This is the branch where the house is
+  # broken and nothing can fix it automatically, so a line in the log each cycle
+  # is the only thing that will ever get somebody's attention.
+  echo "$(date -Is) cannot restart $VENDOR — no passwordless sudo." >&2
+  echo "  add:  abneo ALL=(root) NOPASSWD: /bin/systemctl restart $VENDOR" >&2
+  echo "  or by hand:  sudo systemctl restart $VENDOR" >&2
+  return 1
+}
+
 # curl already prints 000 via -w when it cannot connect; the || is a fallback for
 # the case where it prints nothing at all. Assigning rather than echoing keeps the
 # two from concatenating into a confusing "000000" in the log.
@@ -50,6 +67,22 @@ if [[ "$code" != "200" ]]; then
   if [[ ! -f "$STAMP" ]]; then
     echo "$(date -Is) health=$code — first failure, waiting for confirmation" >&2
     touch "$STAMP"
+    exit 0
+  fi
+  # Which thing to restart depends on WHY we are unhealthy, and until 2026-09-13
+  # this branch never asked. ECONNREFUSED on the hub's own port means the host is
+  # up and nothing is listening: the vendor's app is down, and restarting OURS is
+  # provably useless — worse, this branch exits, so a 503 locked out the bus check
+  # below and the vendor was never a candidate at all. Found after the vendor
+  # crashed at boot on a DNS race and sat dead for five hours while the watchdog
+  # dutifully restarted a dashboard that had nothing wrong with it.
+  #
+  # ECONNREFUSED and nothing else. EHOSTUNREACH or a timeout is the network or a
+  # wedged box, where restarting the vendor is a guess; refused is not a guess.
+  if [[ "$body" == *ECONNREFUSED* ]]; then
+    echo "$(date -Is) health=$code twice in a row, hub port refusing — restarting $VENDOR" >&2
+    restart_vendor
+    rm -f "$STAMP"
     exit 0
   fi
   echo "$(date -Is) health=$code twice in a row — restarting $SERVICE" >&2
@@ -78,14 +111,6 @@ if [[ ! -f "$BUS_STAMP" ]]; then
 fi
 
 echo "$(date -Is) bus silent twice in a row — restarting $VENDOR" >&2
-if sudo -n systemctl restart "$VENDOR" 2>/dev/null; then
-  echo "$(date -Is) restarted $VENDOR" >&2
+if restart_vendor; then
   rm -f "$BUS_STAMP"
-else
-  # Say it every time rather than once. This is the branch where the house is
-  # broken and nothing can fix it automatically, so a line in the log each cycle
-  # is the only thing that will ever get somebody's attention.
-  echo "$(date -Is) cannot restart $VENDOR — no passwordless sudo." >&2
-  echo "  add:  abneo ALL=(root) NOPASSWD: /bin/systemctl restart $VENDOR" >&2
-  echo "  or by hand:  sudo systemctl restart $VENDOR" >&2
 fi
