@@ -2531,6 +2531,23 @@ class AvrLink {
     for (const code of this.srcUse) {
       if (!this.srcNames.has(code)) out.push({ code, name: code });
     }
+    /* A label is the owner's free text and nothing on the unit stops two inputs
+       sharing one. This receiver genuinely answers PS5 for SAT/CBL, MPLAY *and*
+       GAME — checked against its own SSFUN reply — so the card read "ON · PS5"
+       with the media player playing, and the picker offered three identical
+       chips with no way to tell which was which.
+
+       So a shared label is **dropped for the unit's own code**, not decorated
+       with it: a name that names three inputs identifies none of them, and
+       "PS5 (MPLAY)" is the parenthesis doing all the work while the word in
+       front of it misleads. A label used once is left exactly as the owner
+       wrote it — reading them off the unit is the whole point, and BD is not
+       an improvement on Blu-ray. This self-heals: rename the other two on the
+       receiver and GAME becomes uniquely PS5 again, with nothing to change
+       here. */
+    const used = new Map();
+    for (const s of out) used.set(s.name, (used.get(s.name) || 0) + 1);
+    for (const s of out) if (used.get(s.name) > 1) s.name = s.code;
     return out;
   }
 
