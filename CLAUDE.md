@@ -355,6 +355,112 @@ Verified end to end afterwards: page 200, health 200, hub reads clean with zero
 consecutive failures, 88 devices, and a forced poll answered by 43 status frames
 with `changed: 0` &mdash; the hub's record and the hardware in agreement.
 
+### The hub moved house, and the watchdog restarted the wrong thing again (2026-09-17)
+
+*"Hub cannot be connected, probe via tailscale."* Tailscale was healthy and had
+nothing to do with it &mdash; **the third time the tunnel has been suspected and
+the third time it has been the cause of none of it.** So is the pattern: the
+tunnel is what you are looking *through*, so it is what you blame.
+
+Nothing was wrong with the vendor's app either. `tistron_backend` was active,
+8090 was bound on `0.0.0.0`, and a WebSocket to **`127.0.0.1:8090` returned a
+full `site_config`** from the box itself. The dashboard was serving pages the
+whole time. Every layer worked.
+
+**The hub's LAN address had moved.** `enp2s0` held **192.168.1.2** while
+`config.json` still said `192.168.1.3`, and `.3` was **alive** &mdash; a stranger
+at `e0:2e:fe:bc:88:36`, port 80 and nothing else. The gateway MAC had changed to
+`3c:f7:5d:b2:73:c8`, so the router was replaced or reset and the static
+reservation this file records setting went with it: the hub took a fresh lease
+and something else took the old one.
+
+**That is the AVR's DHCP fault, arriving at the controller.** This file already
+warns that a moved lease *"presents as the AVR does not work with a perfectly
+healthy dashboard"*. The same thing one layer down presents as the whole house
+not working, with a perfectly healthy everything.
+
+#### `ECONNREFUSED` does not say WHICH host refused
+
+This is the part worth keeping. The 2026-09-13 fix reads `ECONNREFUSED` in the
+health body as "the vendor is down", chosen deliberately over `EHOSTUNREACH`
+because *"refused is not a guess &mdash; it is the host saying nothing is
+listening"*. That reasoning is still correct and it is still not enough: it is
+**a** host saying so, and here it was a stranger holding the old lease.
+
+So the watchdog restarted the household's controller **eighteen times in three
+hours** while nothing whatever was wrong with it &mdash; the 2026-09-13 fault
+inverted, the same branch picking the wrong remedy for the opposite reason.
+
+**The string cannot separate them and does not have to, because the watchdog
+runs on the hub.** It takes the address out of the error the dashboard reported
+and asks whether that port is listening on **loopback**. Serving means the
+vendor is fine and only our address is wrong, and then the honest answer is to
+**restart nothing**: a restart cannot fix an address. That is the third branch
+where the house is broken and no remedy is automatic, so it says so every cycle
+&mdash; the stamp is deliberately kept rather than cleared, or it would alternate
+with "first failure, waiting for confirmation" and say it half as often. The
+message names the address being called, the addresses the box actually holds,
+and the three places the wrong one can live.
+
+**An unreadable error falls through to restarting the vendor**, which is the
+2026-09-13 behaviour and the safe way to be wrong: that is the fault where the
+house really is down.
+
+**`port_open()` does not depend on `timeout`.** The first draft did, and the
+dependency was caught by the branch silently taking the wrong road on a machine
+that has no such binary &mdash; bash opens `/dev/tcp` itself, so the probe needs
+no coreutils and no netcat. Depending on an external binary to answer *"is the
+house broken"* is how a probe comes to report the opposite of the truth.
+
+All four paths exercised against a stub health endpoint and a unit nobody minds,
+which is what `SERVICE` and `VENDOR` are overridable for: refused with the port
+serving locally says so and touches nothing (and repeats on the third cycle),
+refused with nothing serving restarts the vendor, a 503 that is not refused
+restarts the dashboard, and a healthy house produces silence. The two-strike
+discipline holds in every branch.
+
+#### The fix was inert for twenty minutes, because the unit hard-codes the address
+
+Editing `config.json` changed nothing. `HUB_IP` is **`process.env.HUB_IP ||
+config.hub_ip`**, and the unit carries
+`Environment=PORT=3000 HUB_IP=192.168.1.3 HUB_PORT=8090` &mdash; so the
+environment won, exactly as this file says it is meant to for a test instance.
+**That is also why the console's hub address field has never done anything on
+this box**, and it is worth knowing before somebody debugs that separately:
+`/api/setup` reports the override beside the field, and reading it is the
+check.
+
+**The value was replaced rather than removed, and that is not fastidiousness.**
+If `HUB_IP` sits on its own `Environment=` line, deleting the value leaves a
+bare `Environment=`, which **resets the whole environment** and would take
+`PORT` and `HUB_PORT` with it. A `sed` that swaps the value cannot do that
+whatever shape the line has &mdash; and the file is root-owned, so it could not be
+read first to find out which shape it was.
+
+It is `127.0.0.1` in both places now. The dashboard runs **on** the hub, so
+loopback is the one address that cannot move again, `doPage` already anticipates
+it (*"config.hub_ip is 127.0.0.1 on an install where the dashboard runs on the
+hub"*), and the WebSocket ignores the `Host` header so nothing gates it. The one
+casualty is `/api/setup/find-avr`, which derives its sweep subnet from `HUB_IP`
+and now defaults to `127.0.0.x`; it takes an explicit subnet, so pass
+`192.168.1` there.
+
+**What this does not fix, and cannot.** The phones' vendor app, the doorbell
+tablet and any Shortcuts are all pinned to `192.168.1.3`. Only a reservation for
+`f8:bc:12:a8:5f:8a` on the new router restores those. **Re-reserve it before
+trusting any address in this file** &mdash; every one of them is a lease.
+
+Verified from the Mac over the tunnel afterwards: health **200**, `ok: true`,
+2 reads for 0 failures, no error, bus **86 replies** with `silent_s: 0`, page
+200, and the house reading three fans running and nothing else.
+
+**And the hub reports 90 devices to `devices.json`'s 88.** Two circuits have
+been fitted and are invisible, which is the merge rule this file already
+records. `node tools/discover.js` and a restart.
+
+**`deploy/push.sh` copies `server.js` alone**, so the watchdog change is a
+separate `scp`. Second time that has been worth writing down.
+
 **`GET_STATUS` works, and `pollHardware()` in `server.js` is it (2026-08-25).** Broadcasting `HEADER + GET_STATUS + <module id> + crc` makes a module report its channels; the vendor's own `device_listener()` catches the replies and its workers save them, so nothing here parses a byte and there is no second copy of the house's state. Called forced at startup — a restart being when the hub's record is least trustworthy — before `look` answers a question, and on demand at `POST /api/poll`, which reads, polls, reads again and names every circuit whose value moved.
 
 Four things measured, and one still open:
