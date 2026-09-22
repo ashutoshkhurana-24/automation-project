@@ -3370,6 +3370,42 @@ awake as a light forgotten, and the house cannot tell which, so the page says so
 Fans and air conditioning are never counted as light anywhere; they are their own
 lines.
 
+#### Then it was made to tell a story (2026-09-23, the same day)
+
+*"So the changes you made were only visual. What i want is a better report both
+visually and data storytelling wise."* Fair: the first redraw fixed the numbers
+and the look but was still a set of charts. So the history was mined first for
+what it could actually say, and the page was rebuilt around findings, each
+followed by the chart that shows it.
+
+**The house page opens with "<Month> in 5 things"**: findings rather than
+totals, each said only when the data can carry it, tried in order and the first
+five kept. Bedtimes (latest and earliest room), left-on reminders (which room),
+daylight lamps (10 am to 4 pm), when the television is watched (the best
+three-hour window and its share), what ran on a schedule and auto-off timers,
+voice commands understood, and a fan that outran every light. Then one chapter
+each: **when the house goes to bed** (a 7 pm to 7 am chart, median dot and the
+middle half of nights as a band), where the light goes, what was left on, what
+the house did by itself, talking to the house, screens, and fans and AC. Each
+room page opens with its own "In short" list.
+
+Rules the findings follow, each learned from the first run of them:
+- **A bedtime is the last lamp out between 7 pm and 7 am**, belonging to the date
+  the night started on, from `storyRuns` (the room's lamps without its night
+  lights). A run cut at the end of the window or at the start of a blind stretch
+  is not a switch-off and is skipped.
+- **At least five nights for a bedtime, and at least an hour of light a day to be
+  compared.** Ashu Room came out "first to bed at 10 pm" on 34 minutes of light a
+  day: a lamp switched off in an empty room is not somebody going to sleep.
+- **Long spans in hours** (`spanWord`): "285 minutes later" became "4¾ hours".
+- **Labels from the logs are re-cased** (`labelWord`, `whoWord`), so "AC in
+  HARSHIT ROOM" reads as the rest of the page names rooms.
+
+Two traps: `section > .mono { display: block }` beat the TV strip's own grid, so
+its axis collapsed into one line of text (the axis no longer carries `.mono`);
+and a room coloured near-white drew an invisible bedtime dot, so the dot is ink
+and only the band takes the room's colour.
+
 #### The history could not see an outage, and it had filed one as light
 
 **A logger bug, found while checking the numbers.** When the dashboard started

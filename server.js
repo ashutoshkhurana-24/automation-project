@@ -13936,6 +13936,7 @@ function screenTime(events, room, from, to) {
   const app = new Map();
   const openAt = new Map();
   const appAt = new Map();
+  const spans = [];
   const push = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
 
   for (const ev of events) {
@@ -13961,18 +13962,23 @@ function screenTime(events, room, from, to) {
       if (since != null) {
         openAt.delete(ev.id);
         push(sets, ev.id, Math.max(0, Math.min(ev.t, to) - Math.max(since, from)));
+        if (Math.min(ev.t, to) > Math.max(since, from)) spans.push({ from: Math.max(since, from), to: Math.min(ev.t, to) });
         if (was) push(app, was.app, Math.max(0, Math.min(ev.t, to) - Math.max(was.at, from)));
       }
       if (was) appAt.delete(ev.id);
     }
   }
-  for (const [id, since] of openAt) push(sets, id, Math.max(0, to - Math.max(since, from)));
+  for (const [id, since] of openAt) {
+    push(sets, id, Math.max(0, to - Math.max(since, from)));
+    if (to > Math.max(since, from)) spans.push({ from: Math.max(since, from), to });
+  }
   for (const [id, was] of appAt) {
     if (openAt.has(id)) push(app, was.app, Math.max(0, to - Math.max(was.at, from)));
   }
 
   return {
     hours: [...sets.values()].reduce((a, b) => a + b, 0) / 3600000,
+    hourMs: byHour(spans),
     apps: [...app.entries()].map(([id, ms]) => ({ app: id, hours: ms / 3600000 }))
       .filter((a) => a.hours >= 0.05).sort((a, b) => b.hours - a.hours).slice(0, 6),
   };
@@ -14045,6 +14051,44 @@ function litHoursOf(ym) {
   let ms = 0;
   for (const list of byRoom.values()) ms += msSum(union([list]));
   return { hours: ms / 3600000, days: r.days.size };
+}
+
+/* When a room goes to bed: the last time its lamps went dark each night.
+ *
+ * A night runs from 7 pm to 7 am and belongs to the date it started on, so
+ * lights out at 1:30 am on the 5th is the night of the 4th. An end that is not
+ * a real switch-off is left out: a run cut at the end of the window is still
+ * on, and one cut at the start of a blind stretch is where we stopped knowing.
+ * A night the room was never dark by 7 am has no bedtime at all. Minutes are
+ * counted from 7 pm, so 11 pm and 1 am sort the way a night runs. */
+const BED_FROM = 19;
+const BED_TO = 7;
+function bedtimes(runs, r) {
+  const nights = new Map();
+  for (const run of runs) {
+    const t = run.to;
+    if (t >= r.to - 60000) continue;
+    if ((r.blind || []).some((b) => Math.abs(t - b.from) < 60000)) continue;
+    const d = new Date(t);
+    const h = d.getHours();
+    if (h >= BED_TO && h < BED_FROM) continue;
+    const night = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (h < BED_TO ? 1 : 0));
+    if (night.getTime() < r.from) continue;
+    const min = (t - night.getTime()) / 60000 - BED_FROM * 60;
+    const key = localDay(night);
+    const was = nights.get(key);
+    if (!was || min > was.min) nights.set(key, { day: key, min, weekend: night.getDay() === 5 || night.getDay() === 6 });
+  }
+  return [...nights.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
+}
+
+/** The q-th quantile of a list of numbers, by linear interpolation. */
+function quantile(list, q) {
+  if (!list.length) return null;
+  const s = list.slice().sort((a, b) => a - b);
+  const at = (s.length - 1) * q;
+  const lo = Math.floor(at);
+  return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (at - lo);
 }
 
 function houseReport(ym) {
@@ -14140,7 +14184,7 @@ function houseReport(ym) {
       for (const n of overnights(c.runs)) {
         const key = localDay(new Date(n.night));
         if (!nightMap.has(key)) nightMap.set(key, { day: key, at: n.night, lights: [] });
-        nightMap.get(key).lights.push({ name: c.name, room: x.room, hours: n.hours });
+        nightMap.get(key).lights.push({ id: c.id, name: c.name, room: x.room, hours: n.hours });
       }
     }
   }
@@ -14151,19 +14195,63 @@ function houseReport(ym) {
      A light on at 2 am on at least half the nights, and on at least three, is
      the house's night light. It is named rather than counted. */
   const nightCount = new Map();
+  const nightName = new Map();
   for (const n of nightMap.values()) {
     for (const l of n.lights) {
-      const k = l.room + '\u0000' + l.name;
-      nightCount.set(k, (nightCount.get(k) || 0) + 1);
+      nightCount.set(l.id, (nightCount.get(l.id) || 0) + 1);
+      nightName.set(l.id, l);
     }
   }
   const nightLights = [...nightCount].filter(([, n]) => n >= Math.max(3, seenDays / 2))
-    .map(([k, n]) => { const [room, name] = k.split('\u0000'); return { room, name, nights: n }; })
+    .map(([id, n]) => ({ id, room: nightName.get(id).room, name: nightName.get(id).name, nights: n }))
     .sort((a, b) => b.nights - a.nights);
-  const usual = new Set(nightLights.map((l) => l.room + '\u0000' + l.name));
+  const usual = new Set(nightLights.map((l) => l.id));
   const litNights = [...nightMap.values()].map((n) => ({ ...n,
-    lights: n.lights.filter((l) => !usual.has(l.room + '\u0000' + l.name)) }))
+    lights: n.lights.filter((l) => !usual.has(l.id)) }))
     .filter((n) => n.lights.length).sort((a, b) => a.at - b.at);
+
+  /* The story: what the month did, rather than how much of it there was.
+     Each room's light without its night lights, so "when does this room go to
+     bed" is asked of the lamps somebody switches off, not of a foot light that
+     burns until morning. */
+  for (const x of list) {
+    const lamps = x.circuits.filter((c) => c.kind === 'light' && !usual.has(c.id));
+    x.storyRuns = union(lamps.map((c) => c.runs));
+    x.bedtimes = bedtimes(x.storyRuns, r);
+    // Lamp-hours between 10 am and 4 pm, when daylight should be doing the work.
+    x.daytimeMs = lamps.reduce((n, c) => n + byHour(c.runs).slice(10, 16).reduce((a, b) => a + b, 0), 0);
+  }
+
+  const inWin = r.events.filter((e) => e.t >= r.from && e.t < r.to);
+  const tally = (map, k) => map.set(k, (map.get(k) || 0) + 1);
+  const nudgeBy = new Map();
+  const nudgeRoom = new Map();
+  const sched = new Map();
+  const timers = new Map();
+  const goodnights = new Map();
+  const said = { total: 0, ok: 0, grammar: 0, voice: 0 };
+  let cancels = 0;
+  for (const e of inWin) {
+    if (e.e === 'nudge') { tally(nudgeRoom, e.room); tally(nudgeBy, e.id); }
+    else if (e.e === 'sched') tally(sched, e.says || e.id);
+    else if (e.e === 'timer') tally(timers, e.label || e.scope);
+    else if (e.e === 'goodnight') tally(goodnights, e.who);
+    else if (e.e === 'cancel') cancels++;
+    else if (e.e === 'said') {
+      said.total++;
+      if (e.ok) said.ok++;
+      if (e.via === 'grammar') said.grammar++;
+      if (e.input === 'voice') said.voice++;
+    }
+  }
+  const nudges = {
+    total: [...nudgeRoom.values()].reduce((a, b) => a + b, 0),
+    rooms: [...nudgeRoom].map(([room, n]) => ({ room, n })).sort((a, b) => b.n - a.n),
+    circuits: [...nudgeBy].map(([id, n]) => ({ id, n, name: (idx.get(id) || {}).name || String(id),
+      room: (idx.get(id) || {}).room || '', kind: (idx.get(id) || {}).kind || '' })).sort((a, b) => b.n - a.n),
+  };
+  const tvHourMs = new Array(24).fill(0);
+  for (const x of list) (x.screens.hourMs || []).forEach((ms, h) => { tvHourMs[h] += ms; });
 
   const litHours = list.reduce((n, x) => n + x.litHours, 0);
 
@@ -14179,6 +14267,10 @@ function houseReport(ym) {
     rooms: list,
     screenHours, hands, compare,
     blindDay, blindHours, roomsLitDay, litNights, nightLights,
+    nudges, tvHourMs, said, cancels,
+    sched: [...sched].map(([says, n]) => ({ says, n })).sort((a, b) => b.n - a.n),
+    timers: [...timers].map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n),
+    goodnights: [...goodnights].map(([who, n]) => ({ who, n })).sort((a, b) => b.n - a.n),
     apps: [...apps.entries()].map(([app, hours]) => ({ app, hours }))
       .sort((a, b) => b.hours - a.hours).slice(0, 6),
     cues: [...cues.entries()].map(([name, times]) => ({ name, times }))
@@ -14409,6 +14501,40 @@ section > .mono { display: block; margin-bottom: 18px; }
 
 .empty { color: var(--soft); margin-top: 40px; }
 
+.first { margin-top: 42px; }
+section h3 { margin: 34px 0 6px; font-size: 22px; }
+ol.short { list-style: none; margin: 16px 0 0; padding: 0; border-top: 1px solid var(--rule); }
+ol.short li { display: grid; grid-template-columns: 38px 1fr; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+ol.short li > span { font-size: 30px; line-height: 1; color: var(--accent); }
+ol.short p { margin: 0; font-size: 17px; line-height: 1.45; }
+ol.short b { font-weight: 600; }
+.row .nm .k, .list .k { font-size: 11px; color: var(--faint); font-weight: 400; margin-left: 4px; }
+
+/* bedtime: 7 pm to 7 am across, one row per room */
+.beds { display: grid; gap: 14px; margin-top: 6px; }
+.bedaxis { position: relative; height: 16px; margin-left: 164px; margin-right: 88px; font-size: 10px; }
+.bedaxis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.bedaxis span:first-child { transform: none; }
+.bedaxis span:last-child { transform: translateX(-100%); }
+.bed { display: grid; grid-template-columns: 150px 1fr 74px; gap: 14px; align-items: center; }
+.bed .nm { font-weight: 500; }
+.bed .track { position: relative; height: 14px; border-radius: 999px; background: var(--lamp-soft); }
+.bed .track i { position: absolute; top: 0; bottom: 0; border-radius: 999px; opacity: .85; }
+.bed .track b { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%;
+  transform: translate(-50%, -50%); border: 2px solid var(--paper); background: var(--ink) !important; }
+.bed .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--soft); font-size: 14px; white-space: nowrap; }
+@media (max-width: 520px) { .bedaxis { margin-left: 0; margin-right: 0; }
+  .bed { grid-template-columns: 1fr auto; } .bed .track { grid-column: 1 / -1; grid-row: 2; } }
+
+ul.list { list-style: none; margin: 14px 0 0; padding: 0; border-top: 1px solid var(--rule); }
+ul.list li { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+ul.list .v { color: var(--soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.strip24 { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; margin: 14px 0 4px; }
+.strip24 i { display: block; height: 30px; border-radius: 3px; background: #7fb2e0; }
+.strip24.axis { grid-template-columns: repeat(4, 1fr); margin: 0 0 16px; font: 500 10px "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+
 details.fine { margin-top: 64px; border-top: 1px solid var(--rule); padding-top: 18px; color: var(--soft); font-size: 14px; }
 details.fine summary { cursor: pointer; color: var(--ink); font-weight: 500; }
 details.fine p { margin: 12px 0 0; }
@@ -14587,109 +14713,250 @@ function mastHtml(rep, title, cls) {
       + MONTH_NAMES[m - 1] + ', so far') + ' · ' + rep.days + ' days recorded</div></header>';
 }
 
+/* ── the story helpers ───────────────────────────────────────────────── */
+
+// Minutes after 7 pm, as a time of night: 250 is "11:10 pm".
+const nightTime = (m) => {
+  const abs = Math.round((m + BED_FROM * 60) / 5) * 5 % 1440;
+  const h = Math.floor(abs / 60), mm = abs % 60;
+  return (h % 12 || 12) + (mm ? ':' + String(mm).padStart(2, '0') : '') + (h < 12 ? ' am' : ' pm');
+};
+const pctOf = (a, b) => Math.round(a / Math.max(1, b) * 100);
+// 45 is "45 minutes", 285 is "4¾ hours": nobody pictures 285 minutes.
+const spanWord = (min) => {
+  const q = Math.round(min / 15) * 15;
+  if (q < 90) return q + ' minutes';
+  const h = Math.floor(q / 60), f = ['', '¼', '½', '¾'][(q % 60) / 15];
+  return h + f + ' hours';
+};
+// "AC in HARSHIT ROOM" as the rest of the page names a room.
+const labelWord = (label) => String(label || '').replace(/ in (.+)$/, (m, room) => ' in ' + sentence(room));
+const whoWord = (who) => String(who || '').replace(/^./, (c) => c.toUpperCase());
+
+/* The rooms in bed order, each with its median and middle half. Only a room
+   with five nights or more: a median of two is an anecdote. */
+function bedRows(rooms) {
+  return rooms.map((x) => {
+    const m = x.bedtimes.map((b) => b.min);
+    const wk = x.bedtimes.filter((b) => !b.weekend).map((b) => b.min);
+    const we = x.bedtimes.filter((b) => b.weekend).map((b) => b.min);
+    return { room: x.room, colour: x.colour, n: m.length, med: quantile(m, 0.5),
+      q1: quantile(m, 0.25), q3: quantile(m, 0.75),
+      wk: wk.length >= 3 ? quantile(wk, 0.5) : null, we: we.length >= 2 ? quantile(we, 0.5) : null };
+  }).filter((b) => b.n >= 5).sort((a, b) => a.med - b.med);
+}
+
+/* The bedtime chart: 7 pm to 7 am across, one row per room, a dot at the
+   usual lights-out and a band over the middle half of the nights. */
+function bedChart(rows) {
+  const at = (m) => (Math.max(0, Math.min(720, m)) / 720 * 100).toFixed(2) + '%';
+  const axis = [0, 120, 240, 360, 480, 600, 720].map((m) => '<span style="left:' + at(m) + '">'
+    + nightTime(m).replace(':00', '') + '</span>').join('');
+  return '<div class="beds"><div class="bedaxis mono">' + axis + '</div>'
+    + rows.map((b) => '<div class="bed"><div class="nm">' + escHtml(sentence(b.room)) + '</div>'
+      + '<div class="track"><i style="left:' + at(b.q1) + ';width:calc(' + at(b.q3) + ' - ' + at(b.q1)
+      + ');background:' + b.colour + '"></i><b style="left:' + at(b.med) + ';background:' + b.colour + '"></b></div>'
+      + '<div class="v">' + nightTime(b.med) + '</div></div>').join('') + '</div>';
+}
+
+/* The three hours that hold the most television, and their share of it. */
+function primeTime(hourMs) {
+  const total = hourMs.reduce((a, b) => a + b, 0);
+  let best = 0, from = 0;
+  for (let h = 0; h < 24; h++) {
+    const v = hourMs[h] + hourMs[(h + 1) % 24] + hourMs[(h + 2) % 24];
+    if (v > best) { best = v; from = h; }
+  }
+  return { from, to: (from + 3) % 24, share: pctOf(best, total) };
+}
+
+function stripHtml(hourMs) {
+  const top = Math.max(1, ...hourMs);
+  return '<div class="strip24">' + hourMs.map((ms, h) => '<i title="' + hourName(h) + '" style="opacity:'
+    + (0.1 + 0.9 * ms / top).toFixed(2) + '"></i>').join('') + '</div>'
+    + '<div class="strip24 axis"><span>12 am</span><span>6 am</span><span>noon</span><span>6 pm</span></div>';
+}
+
+// "22:45 · close Sheer Curtain · Living, every day" reads as a line on its own.
+const schedWord = (says) => String(says || '').replace(/ · /g, ', ');
+
+function shortList(items) {
+  return items.length ? '<ol class="short">' + items.map((t, i) => '<li><span class="serif">' + (i + 1)
+    + '</span><p>' + t + '</p></li>').join('') + '</ol>' : '';
+}
+
 function houseArticle(rep) {
   const esc = escHtml;
   const [y, m] = rep.ym.split('-').map(Number);
+  const month = MONTH_NAMES[m - 1];
   const seen = Math.max(1, rep.days);
   const rooms = reportRooms(rep).slice().sort((a, b) => b.litHours - a.litHours);
   if (!rooms.length) {
-    return mastHtml(rep, MONTH_NAMES[m - 1] + '<small>' + y + '</small>')
+    return mastHtml(rep, month + '<small>' + y + '</small>')
       + '<p class="empty">Nothing was recorded for this month yet.</p>';
   }
   const lead = rooms[0];
 
-  /* Rooms lit, not "a light on somewhere". A foot light burning all night
-     makes the house "lit" at 3 am on every night of the month, which is true
-     and tells nobody anything. Counting rooms lit gives the evening its shape
-     back: one night light is one room, a lit evening is four. */
-  const hours = new Array(24).fill(0);
+  // Rooms lit rather than "a light on somewhere": a night light makes the
+  // house lit at 3 am on every night, which is true and tells nobody anything.
   const roomDay = new Map();
-  for (const x of rooms) {
-    byHour(x.litRuns).forEach((ms, h) => { hours[h] += ms; });
-    for (const [day, ms] of perDay(x.litRuns)) roomDay.set(day, (roomDay.get(day) || 0) + ms);
-  }
-  const dial = dialHtml(hours);
-  const atPeak = hours[dial.peak] / 3600000 / seen;
+  for (const x of rooms) for (const [day, ms] of perDay(x.storyRuns)) roomDay.set(day, (roomDay.get(day) || 0) + ms);
   let topDay = null;
   for (const [day, ms] of roomDay) if (!topDay || ms > topDay.ms) topDay = { day, ms };
 
+  // A room hardly used says nothing about bedtime: a lamp switched off at
+  // eight in an empty room is not somebody going to sleep.
+  const beds = bedRows(rooms.filter((x) => x.litHours / seen >= 1));
   const lateDays = new Set(rep.litNights.map((n) => n.day)).size;
-  const lede = esc(sentence(lead.room)) + ' was lit the longest, about <b>'
-    + Math.round(lead.litHours / seen) + ' hours a day</b>. '
-    + 'The house is busiest around <b>' + hourName(dial.peak) + '</b>, and '
-    + (lateDays ? 'on <b>' + lateDays + (lateDays === 1 ? ' night' : ' nights') + '</b> a room was still lit at 2 am.'
-      : 'no room was still lit at 2 am.');
-  /* Only against a month that was recorded for most of its length: "down 96%"
-     against four logged days is a lie about the house. */
+  const day = rooms.slice().sort((a, b) => b.daytimeMs - a.daytimeMs);
+  const dayLamp = (x) => x.daytimeMs / 3600000 / seen;
+  const tv = rep.screenHours;
+  const prime = primeTime(rep.tvHourMs);
+  const schedTotal = rep.sched.reduce((n, s) => n + s.n, 0);
+  const timerTotal = rep.timers.reduce((n, t) => n + t.n, 0);
+  const machines = rooms.flatMap((x) => x.circuits.filter((c) => c.kind === 'fan' || c.kind === 'climate')
+    .map((c) => ({ ...c, room: x.room }))).filter((c) => c.hours >= 1).sort((a, b) => b.hours - a.hours);
+
+  /* ── the short list: the month in five sentences ─────────────────────
+     Each one is only said when the data can carry it, and each is a finding
+     rather than a total. They are tried in order and the first five kept. */
+  const items = [];
+  if (beds.length >= 2 && beds[beds.length - 1].med - beds[0].med >= 45) {
+    const late = beds[beds.length - 1], early = beds[0];
+    items.push('<b>' + esc(sentence(late.room)) + '</b> stays up latest: its lights usually go out around <b>'
+      + nightTime(late.med) + '</b>. ' + esc(sentence(early.room)) + ' is first to bed, around ' + nightTime(early.med) + '.');
+  }
+  if (rep.nudges.total >= 5 && rep.nudges.rooms[0]) {
+    const r0 = rep.nudges.rooms[0];
+    items.push('The house sent <b>' + rep.nudges.total + ' reminders</b> that something had been on a long time, and <b>'
+      + r0.n + '</b> of them were about ' + esc(sentence(r0.room)) + '.');
+  }
+  if (day[0] && dayLamp(day[0]) >= 1.5) {
+    items.push('<b>' + esc(sentence(day[0].room)) + '</b> keeps lamps on in daylight: about <b>'
+      + Math.round(dayLamp(day[0])) + ' lamp-hours</b> between 10 am and 4 pm, every day.');
+  }
+  if (tv >= 5 && prime.share >= 30) {
+    items.push('Television is a late habit. <b>' + prime.share + '%</b> of it was watched between <b>'
+      + hourName(prime.from) + ' and ' + hourName(prime.to) + '</b>.');
+  }
+  if (schedTotal >= 10) {
+    items.push('The house did <b>' + schedTotal + ' things by itself</b> on a schedule'
+      + (timerTotal ? ', and an air conditioner switched itself off <b>' + timerTotal + ' times</b>' : '') + '.');
+  }
+  if (rep.said.total >= 10) {
+    items.push('It was spoken to <b>' + rep.said.total + ' times</b> and understood <b>' + rep.said.ok + '</b> of them.');
+  }
+  if (machines[0] && machines[0].hours / seen >= 8) {
+    items.push(esc(sentence(machines[0].room)) + '’s ' + esc(circuitWord(machines[0].name).toLowerCase())
+      + ' ran about <b>' + Math.round(machines[0].hours / seen) + ' hours a day</b>, longer than any light.');
+  }
+
+  const lede = esc(sentence(lead.room)) + ' was lit the longest this month, about <b>'
+    + Math.round(lead.litHours / seen) + ' hours a day</b>'
+    + (lateDays ? ', and on <b>' + lateDays + ' of ' + seen + ' nights</b> a room was still lit at 2 am.' : '.');
   const trend = rep.compare ? (Math.abs(rep.compare.delta) < 0.02
     ? 'About the same amount of light as ' + MONTH_NAMES[Number(rep.compare.ym.split('-')[1]) - 1] + '.'
     : pctWord(rep.compare.delta) + ' light compared with ' + MONTH_NAMES[Number(rep.compare.ym.split('-')[1]) - 1] + '.') : '';
 
-  const maxLit = Math.max(0.01, ...rooms.map((x) => x.litHours));
-  const roomRows = rooms.map((x) => {
-    const extra = [x.fanHours > 0.5 ? 'fan ' + perDayWord(x.fanHours / seen) : '',
-      x.acHours > 0.5 ? 'AC ' + perDayWord(x.acHours / seen) : ''].filter(Boolean).join(' · ');
-    return '<div class="row"><a class="nm" href="' + roomLink(x.room) + '">' + esc(sentence(x.room)) + '</a>'
-      + '<div class="bar"><i style="width:' + Math.max(1.5, x.litHours / maxLit * 100).toFixed(1)
-      + '%;background:' + x.colour + '"></i></div>'
-      + '<div class="v">' + esc(perDayWord(x.litHours / seen)) + '</div>'
-      + (extra ? '<div class="x">' + esc(extra) + '</div>' : '') + '</div>';
-  }).join('');
+  // ── chapter: bed
+  const weDiff = beds.filter((b) => b.wk != null && b.we != null && Math.abs(b.we - b.wk) >= 30)
+    .sort((a, b) => Math.abs(b.we - b.wk) - Math.abs(a.we - a.wk))[0];
+  const bedChapter = beds.length ? '<section id="s-bed"><h2 class="serif">When the house goes to bed</h2>'
+    + '<span class="mono">the last lamp out each night · the dot is the usual time, the band the middle half of nights</span>'
+    + bedChart(beds)
+    + (weDiff ? '<p class="cap">' + esc(sentence(weDiff.room)) + ' goes to bed about '
+      + spanWord(Math.abs(weDiff.we - weDiff.wk)) + ' ' + (weDiff.we > weDiff.wk ? 'later' : 'earlier')
+      + ' on Friday and Saturday nights.</p>' : '')
+    + (rep.nightLights.length ? '<p class="cap">Night lights are left out: '
+      + rep.nightLights.map((l) => esc(circuitWord(l.name)) + ' in ' + esc(sentence(l.room))).join(', ')
+      + '. They were on at 2 am on most nights, so they are how these rooms sleep, not a light forgotten.</p>' : '')
+    + (lateDays ? '<h3 class="serif">Still lit at 2 am</h3><p>On <b>' + lateDays + ' of ' + seen
+      + '</b> nights. Some of that is people up late and some is a light left on. The house cannot tell which.</p>'
+      + nightsHtml(rep, rep.litNights, true) : '')
+    + '</section>' : '';
 
-  const tv = rep.screenHours;
-  return mastHtml(rep, MONTH_NAMES[m - 1] + '<small>' + y + '</small>')
+  // ── chapter: where the light goes
+  const maxLit = Math.max(0.01, ...rooms.map((x) => x.litHours));
+  const roomRows = rooms.map((x) => '<div class="row"><a class="nm" href="' + roomLink(x.room) + '">'
+    + esc(sentence(x.room)) + '</a><div class="bar"><i style="width:' + Math.max(1.5, x.litHours / maxLit * 100).toFixed(1)
+    + '%;background:' + x.colour + '"></i></div><div class="v">' + esc(perDayWord(x.litHours / seen)) + '</div>'
+    + (dayLamp(x) >= 0.25 ? '<div class="x">' + esc(perDayWord(dayLamp(x)).replace(' a day', '')) + ' of lamps between 10 am and 4 pm</div>' : '')
+    + '</div>').join('');
+  const lightChapter = '<section id="s-light"><h2 class="serif">Where the light goes</h2>'
+    + '<span class="mono">lights on, on a typical day · open a room for its own page</span>'
+    + '<div class="rows">' + roomRows + '</div>'
+    + '<h3 class="serif">Day by day</h3><p class="cap">The fuller the moon, the more of the house was lit that day.</p>'
+    + moonsHtml(rep, roomDay, topDay && topDay.day, (key, ms) => (rep.roomsLitDay.get(key) || 0)
+      + ' rooms lit, ' + hoursTidy(ms / 3600000) + ' of room light')
+    + (topDay ? '<p class="cap">The brightest day was <b>' + esc(DOW_SHORT[new Date(topDay.day).getDay()] + ' '
+      + dayWord(new Date(topDay.day).getTime())) + '</b>, with ' + (rep.roomsLitDay.get(topDay.day) || 0) + ' rooms lit.</p>' : '')
+    + '</section>';
+
+  // ── chapter: forgotten
+  const forgotChapter = rep.nudges.total ? '<section id="s-forgot"><h2 class="serif">What was left on</h2>'
+    + '<span class="mono">' + rep.nudges.total + ' reminders from the house</span>'
+    + '<p>A reminder goes out when a light has been on six hours, a fan eight, or an air conditioner four. It never switches anything off.</p>'
+    + '<ul class="list">' + rep.nudges.circuits.slice(0, 6).map((c) => '<li><span><b>' + esc(circuitWord(c.name))
+      + '</b> in ' + esc(sentence(c.room)) + '</span><span class="v">' + c.n + (c.n === 1 ? ' time' : ' times') + '</span></li>').join('')
+    + '</ul></section>' : '';
+
+  // ── chapter: by itself
+  const selfChapter = schedTotal || timerTotal || rep.cues.length || rep.goodnights.length
+    ? '<section id="s-self"><h2 class="serif">What the house did by itself</h2>'
+      + '<span class="mono">' + (schedTotal + timerTotal) + ' things, with nobody pressing anything</span>'
+      + (rep.sched.length ? '<ul class="list">' + rep.sched.slice(0, 6).map((s) => '<li><span>' + esc(schedWord(s.says))
+        + '</span><span class="v">' + s.n + '×</span></li>').join('') + '</ul>' : '')
+      + (rep.timers.length ? '<p class="cap">Auto-off timers: ' + rep.timers.map((t) => esc(labelWord(t.label)) + ' '
+        + t.n + (t.n === 1 ? ' time' : ' times')).join(', ') + '.</p>' : '')
+      + (rep.cues.length ? '<p class="cap">Cues pressed: ' + rep.cues.map((c) => esc(c.name) + ' '
+        + (c.times === 1 ? 'once' : c.times + ' times')).join(', ') + '.</p>' : '')
+      + (rep.goodnights.length ? '<p class="cap">Good night, said out loud: ' + rep.goodnights.map((g) => esc(whoWord(g.who)) + ' '
+        + (g.n === 1 ? 'once' : g.n + ' times')).join(', ') + '.</p>' : '')
+      + '</section>' : '';
+
+  // ── chapter: talking to it
+  const talkChapter = rep.said.total
+    ? '<section id="s-talk"><h2 class="serif">Talking to the house</h2><span class="mono">'
+      + rep.said.total + ' spoken or typed commands</span>'
+      + '<div class="figs">'
+      + '<div class="fig"><div class="n serif">' + pctOf(rep.said.ok, rep.said.total) + '<small>%</small></div><div class="l">understood</div></div>'
+      + '<div class="fig"><div class="n serif">' + pctOf(rep.said.voice, rep.said.total) + '<small>%</small></div><div class="l">said out loud rather than typed</div></div>'
+      + '<div class="fig"><div class="n serif">' + pctOf(rep.said.grammar, rep.said.total) + '<small>%</small></div><div class="l">worked out on the hub, with nothing sent out</div></div>'
+      + '</div></section>' : '';
+  const roads = roadsBlock(rep.hands, 12);
+
+  // ── chapter: screens and machines
+  const screenChapter = tv >= 0.5 ? '<section id="s-tv"><h2 class="serif">On the screens</h2><span class="mono">'
+    + esc(hoursTidy(tv)) + ' of television</span>'
+    + (prime.share ? '<p>Most of it between <b>' + hourName(prime.from) + ' and ' + hourName(prime.to) + '</b>.</p>' : '')
+    + stripHtml(rep.tvHourMs) + chipsHtml(rep.apps)
+    + '<p class="cap">' + rooms.filter((x) => x.screens.hours >= 0.5).sort((a, b) => b.screens.hours - a.screens.hours)
+      .map((x) => esc(sentence(x.room)) + ' ' + esc(hoursTidy(x.screens.hours))).join(' · ') + '</p></section>' : '';
+  const machineChapter = machines.length ? '<section id="s-mach"><h2 class="serif">Fans and air conditioning</h2>'
+    + '<span class="mono">on, on a typical day · not counted as light anywhere</span>'
+    + '<div class="rows">' + machines.map((c) => '<div class="row"><div class="nm">' + esc(sentence(c.room)) + ' <span class="k">'
+      + (c.kind === 'fan' ? 'fan' : 'AC') + '</span></div><div class="bar"><i style="width:'
+      + Math.min(100, c.hours / seen / 24 * 100).toFixed(1) + '%;background:#9fb0bd"></i></div><div class="v">'
+      + esc(perDayWord(c.hours / seen)) + '</div></div>').join('') + '</div>'
+    + '<p class="cap">An infrared air conditioner’s hours are what the hub sent, not what the unit did. Bars are out of 24 hours.</p></section>' : '';
+
+  return mastHtml(rep, month + '<small>' + y + '</small>')
     + '<p class="lede serif">' + lede + '</p>'
     + (trend ? '<p class="note">' + esc(trend) + '</p>' : '')
     + (rep.blindHours >= 0.5 ? '<p class="note">For <b>' + esc(hoursTidy(rep.blindHours))
       + '</b> the house could not be read, so those hours are left out.</p>' : '')
-    + '<div class="figs">'
-    + '<div class="fig"><div class="n serif">' + atPeak.toFixed(1) + '</div><div class="l">rooms lit at '
-      + hourName(dial.peak) + ', on a typical day</div></div>'
-    + '<div class="fig"><div class="n serif">' + lateDays + '<small>of ' + seen + '</small></div>'
-      + '<div class="l">nights a room was still lit at 2 am</div></div>'
-    + '<div class="fig"><div class="n serif">' + Math.round(tv) + '<small>h</small></div>'
-      + '<div class="l">of television, all month</div></div>'
-    + '</div>'
-
-    + '<section><h2 class="serif">Day by day</h2><span class="mono">the fuller the moon, the more of the house was lit</span>'
-    + moonsHtml(rep, roomDay, topDay && topDay.day, (key, ms) => (rep.roomsLitDay.get(key) || 0)
-      + ' rooms lit, ' + hoursTidy(ms / 3600000) + ' of room light')
-    + (topDay ? '<p class="cap">The brightest day was <b>' + esc(DOW_SHORT[new Date(topDay.day).getDay()]
-      + ' ' + dayWord(new Date(topDay.day).getTime())) + '</b>: ' + (rep.roomsLitDay.get(topDay.day) || 0)
-      + ' rooms were lit that day, ' + esc(hoursTidy(topDay.ms / 3600000)) + ' between them.</p>' : '')
-    + '</section>'
-
-    + '<section><h2 class="serif">Room by room</h2><span class="mono">lights on, on a typical day</span>'
-    + '<div class="rows">' + roomRows + '</div>'
-    + '<p class="cap">Each bar is drawn in the colour that room’s lamps were set to. Open a room for its own page.</p></section>'
-
-    + '<section><h2 class="serif">The shape of a day</h2><span class="mono">every day of the month laid on one clock</span>'
-    + '<div class="clockrow">' + dial.html + '<div><p>Busiest around <b>' + hourName(dial.peak) + '</b>, when '
-    + atPeak.toFixed(1) + ' rooms are usually lit. Quietest around <b>' + hourName(dial.quiet) + '</b>.</p>'
-    + '<p class="cap">Midnight is at the top. The deeper the colour, the more rooms were lit at that hour.</p></div></div></section>'
-
-    + '<section><h2 class="serif">Late nights</h2><span class="mono">lights still on at 2 am · fans and AC are left out</span>'
-    + (rep.nightLights.length ? '<p>The night lights, on most nights: '
-      + rep.nightLights.map((l) => '<b>' + esc(circuitWord(l.name)) + '</b> in ' + esc(sentence(l.room))).join(', ')
-      + '. They are not counted here.</p>' : '')
-    + '<p>' + (rep.nightLights.length ? 'Apart from those, a' : 'A') + ' room was still lit at 2 am on <b>'
-      + lateDays + ' of ' + seen + '</b> nights. Some of that is people up late and some is a light left on. The house cannot tell which.</p>'
-    + nightsHtml(rep, rep.litNights, true) + '</section>'
-
-    + (tv >= 0.5 ? '<section><h2 class="serif">On the screens</h2><span class="mono">'
-      + esc(hoursTidy(tv)) + ' of television</span>' + chipsHtml(rep.apps)
-      + '<p class="cap">A television reports what its own remote did, so these hours are real.</p></section>' : '')
-    + (rep.cues.length ? '<section><h2 class="serif">Cues</h2><span class="mono">pressed this month</span>'
-      + '<div class="chips">' + rep.cues.map((c) => '<span class="chip">' + esc(c.name) + '<span>'
-        + (c.times === 1 ? 'once' : c.times + ' times') + '</span></span>').join('') + '</div></section>' : '')
-    + roadsBlock(rep.hands, 12);
+    + (items.length ? '<section class="first"><h2 class="serif">' + month + ' in ' + Math.min(5, items.length)
+      + (Math.min(5, items.length) === 1 ? ' thing' : ' things') + '</h2>' + shortList(items.slice(0, 5)) + '</section>' : '')
+    + bedChapter + lightChapter + forgotChapter + selfChapter + talkChapter + roads + screenChapter + machineChapter;
 }
 
 function roomArticle(x, rep) {
   const esc = escHtml;
   const seen = Math.max(1, rep.days);
-  const dayMs = perDay(x.litRuns);
-  const dial = dialHtml(byHour(x.litRuns));
+  // The room's own lamps without its night lights, for when it is busy and
+  // when it goes to bed. "Lit for" still counts every light.
+  const dayMs = perDay(x.storyRuns);
+  const dial = dialHtml(byHour(x.storyRuns));
   let topDay = null;
   for (const [day, ms] of dayMs) if (!topDay || ms > topDay.ms) topDay = { day, ms };
   const nights = rep.litNights.map((n) => ({ ...n, lights: n.lights.filter((l) => l.room === x.room) }))
@@ -14697,11 +14964,19 @@ function roomArticle(x, rep) {
   const mine = rep.nightLights.filter((l) => l.room === x.room);
   const lights = x.circuits.filter((c) => c.kind === 'light' && c.hours >= 0.01);
   const others = x.circuits.filter((c) => (c.kind === 'fan' || c.kind === 'climate') && c.hours >= 0.01);
-  const switched = lights.reduce((n, c) => n + c.times, 0);
+  const bed = bedRows([x])[0];
+  const houseLit = reportRooms(rep).reduce((n, r) => n + r.litHours, 0);
+  const rank = reportRooms(rep).slice().sort((a, b) => b.litHours - a.litHours).findIndex((r) => r.room === x.room) + 1;
+  const dayLamp = x.daytimeMs / 3600000 / seen;
+  const reminders = rep.nudges.circuits.filter((c) => c.room === x.room);
+  const remTotal = reminders.reduce((n, c) => n + c.n, 0);
+  const timers = rep.timers.filter((t) => String(t.label).toUpperCase().includes(String(x.room).toUpperCase()));
+  const most = lights.slice().sort((a, b) => b.times - a.times)[0];
+  const tv = x.screens.hours;
 
   const bits = [];
   if (x.litHours >= 0.05) {
-    bits.push('Lit for about <b>' + esc(perDayWord(x.litHours / seen)) + '</b>, most often around <b>'
+    bits.push('Lit for about <b>' + esc(perDayWord(x.litHours / seen)) + '</b>, busiest around <b>'
       + hourName(dial.peak) + '</b>.');
     if (x.tune != null) bits.push('Its lamps were mostly set to <b>' + warmthWord_(x.tune) + '</b>.');
   } else bits.push('Its lights were hardly used this month.');
@@ -14709,55 +14984,69 @@ function roomArticle(x, rep) {
   const running = [fan ? 'the fan ran about ' + perDayWord(x.fanHours / seen) : '',
     x.acHours > 0.5 ? 'the AC ' + (fan ? '' : 'ran ') + 'about ' + perDayWord(x.acHours / seen) : ''].filter(Boolean);
 
+  const items = [];
+  if (bed) items.push('Lights usually go out around <b>' + nightTime(bed.med) + '</b>, and on most nights between '
+    + nightTime(bed.q1) + ' and ' + nightTime(bed.q3) + '.');
+  if (x.litHours >= 0.05) items.push('<b>' + pctOf(x.litHours, houseLit) + '%</b> of the house’s light, the '
+    + ['', 'most of any room', 'second most', 'third most', 'fourth most', 'fifth most', 'sixth most', 'least'][Math.min(rank, 7)] + '.');
+  if (dayLamp >= 0.5) items.push('About <b>' + esc(perDayWord(dayLamp).replace(' a day', '')) + '</b> of lamps between 10 am and 4 pm, every day.');
+  if (remTotal) items.push('<b>' + remTotal + (remTotal === 1 ? ' reminder' : ' reminders') + '</b> that something was left on'
+    + (reminders[0] ? ', mostly about the ' + esc(circuitWord(reminders[0].name).toLowerCase()) : '') + '.');
+  if (timers.length) items.push('The AC switched itself off <b>' + timers.reduce((n, t) => n + t.n, 0) + ' times</b> on an auto-off timer.');
+  if (tv >= 1) {
+    const p = primeTime(x.screens.hourMs || []);
+    items.push('The television was on about <b>' + esc(perDayWord(tv / seen)) + '</b>'
+      + (p.share >= 30 ? ', mostly between ' + hourName(p.from) + ' and ' + hourName(p.to) : '') + '.');
+  }
+  if (most && most.times >= 10) items.push('The ' + esc(circuitWord(most.name).toLowerCase())
+    + ' is switched on most, <b>' + most.times + ' times</b>.');
+
   const maxLit = Math.max(0.01, ...lights.map((c) => c.hours));
-  const lightRows = lights.map((c) => '<div class="row"><div class="nm">' + esc(circuitWord(c.name)) + '</div>'
+  const lightRows = lights.map((c) => '<div class="row"><div class="nm">' + esc(circuitWord(c.name))
+    + (mine.some((l) => l.id === c.id) ? ' <span class="k">night light</span>' : '') + '</div>'
     + '<div class="bar"><i style="width:' + Math.max(1.5, c.hours / maxLit * 100).toFixed(1) + '%;background:'
     + x.colour + '"></i></div><div class="v">' + esc(perDayWord(c.hours / seen)) + '</div>'
     + '<div class="x">switched on ' + c.times + (c.times === 1 ? ' time' : ' times') + '</div></div>').join('');
   const otherRows = others.map((c) => '<div class="row"><div class="nm">' + esc(circuitWord(c.name)) + '</div>'
-    + '<div class="bar"><i style="width:' + Math.max(1.5, c.hours / (seen * 24) * 100).toFixed(1)
+    + '<div class="bar"><i style="width:' + Math.min(100, c.hours / (seen * 24) * 100).toFixed(1)
     + '%;background:#9fb0bd"></i></div><div class="v">' + esc(perDayWord(c.hours / seen)) + '</div></div>').join('');
+  const weDiff = bed && bed.wk != null && bed.we != null && Math.abs(bed.we - bed.wk) >= 30;
 
-  const tv = x.screens.hours;
   return mastHtml(rep, esc(sentence(x.room)), 'room')
     + '<p class="lede serif">' + bits.join(' ') + '</p>'
     + (running.length ? '<p class="note">' + esc(running.join(', and ').replace(/^./, (c) => c.toUpperCase())) + '.'
       + (others.some((c) => c.kind === 'climate' && isAcRecord((devices.get(c.id) || {}).record || {}))
         ? ' The AC is infrared, so its hours are what the hub sent, not what the unit did.' : '')
       + '</p>' : '')
-    + '<div class="figs">'
-    + '<div class="fig"><div class="n serif">' + (x.litHours / seen >= 1 ? (x.litHours / seen).toFixed(1) + '<small>h</small>'
-      : Math.round(x.litHours / seen * 60) + '<small>min</small>') + '</div>'
-      + '<div class="l">lights on, on a typical day</div></div>'
-    + '<div class="fig"><div class="n serif">' + switched + '</div><div class="l">times a light was switched on</div></div>'
-    + (tv >= 0.5
-      ? '<div class="fig"><div class="n serif">' + Math.round(tv) + '<small>h</small></div><div class="l">of television</div></div>'
-      : '<div class="fig"><div class="n serif">' + nights.length + '<small>of ' + seen + '</small></div>'
-        + '<div class="l">nights still lit at 2 am</div></div>')
-    + '</div>'
+    + (items.length ? '<section class="first"><h2 class="serif">In short</h2>' + shortList(items.slice(0, 5)) + '</section>' : '')
 
-    + (x.litHours >= 0.05 ? '<section><h2 class="serif">Day by day</h2><span class="mono">the fuller the moon, the longer it was lit</span>'
-      + moonsHtml(rep, dayMs, topDay && topDay.day, (key, ms) => 'lit ' + hoursTidy(ms / 3600000))
-      + '</section>'
-      + '<section><h2 class="serif">The shape of a day</h2><span class="mono">every day of the month laid on one clock</span>'
-      + '<div class="clockrow">' + dial.html + '<div><p>Most often lit around <b>' + hourName(dial.peak)
-      + '</b>, least around <b>' + hourName(dial.quiet) + '</b>.</p>'
-      + '<p class="cap">Midnight is at the top. The deeper the colour, the more often this room was lit at that hour.</p></div></div></section>' : '')
+    + (bed || nights.length || mine.length ? '<section><h2 class="serif">When it goes to bed</h2>'
+      + '<span class="mono">the last lamp out each night</span>'
+      + (bed ? bedChart([bed]) : '<p class="cap">Too few nights with a clear lights-out to say.</p>')
+      + (weDiff ? '<p class="cap">About ' + spanWord(Math.abs(bed.we - bed.wk)) + ' '
+        + (bed.we > bed.wk ? 'later' : 'earlier') + ' on Friday and Saturday nights.</p>' : '')
+      + (mine.length ? '<p class="cap">Left out as night light' + (mine.length > 1 ? 's' : '') + ': '
+        + mine.map((l) => esc(circuitWord(l.name))).join(', ') + '. On at 2 am on most nights.</p>' : '')
+      + '<h3 class="serif">Still lit at 2 am</h3><p>On <b>' + nights.length + ' of ' + seen + '</b> nights.</p>'
+      + nightsHtml(rep, nights, false) + '</section>' : '')
 
     + (lightRows ? '<section><h2 class="serif">Light by light</h2><span class="mono">on, on a typical day</span>'
       + '<div class="rows">' + lightRows + '</div>'
       + (otherRows ? '<div class="rows small">' + otherRows + '</div>' : '') + '</section>'
       : otherRows ? '<section><h2 class="serif">What ran</h2><div class="rows">' + otherRows + '</div></section>' : '')
 
-    + (x.litHours >= 0.05 ? '<section><h2 class="serif">Late nights</h2><span class="mono">lights still on at 2 am</span>'
-      + (mine.length ? '<p>The night light' + (mine.length > 1 ? 's' : '') + ', on most nights: '
-        + mine.map((l) => '<b>' + esc(circuitWord(l.name)) + '</b>').join(', ') + '. Not counted here.</p>' : '')
-      + '<p>' + (mine.length ? 'Apart from ' + (mine.length > 1 ? 'those' : 'that') + ', a' : 'A')
-      + ' light was still on at 2 am on <b>' + nights.length + ' of ' + seen + '</b> nights.</p>'
-      + nightsHtml(rep, nights, false) + '</section>' : '')
+    + (x.litHours >= 0.05 ? '<section><h2 class="serif">Its month</h2><span class="mono">the fuller the moon, the longer it was lit</span>'
+      + moonsHtml(rep, dayMs, topDay && topDay.day, (key, ms) => 'lit ' + hoursTidy(ms / 3600000))
+      + '<h3 class="serif">Its day</h3>'
+      + '<div class="clockrow">' + dial.html + '<div><p>Most often lit around <b>' + hourName(dial.peak)
+      + '</b>, least around <b>' + hourName(dial.quiet) + '</b>.</p>'
+      + '<p class="cap">Every day of the month laid on one clock, midnight at the top. Night lights are left out.</p></div></div></section>' : '')
 
+    + (remTotal ? '<section><h2 class="serif">What was left on</h2><ul class="list">' + reminders.map((c) => '<li><span><b>'
+      + esc(circuitWord(c.name)) + '</b></span><span class="v">' + c.n + (c.n === 1 ? ' reminder' : ' reminders') + '</span></li>').join('')
+      + '</ul></section>' : '')
     + (tv >= 0.5 ? '<section><h2 class="serif">On the screen</h2><span class="mono">' + esc(hoursTidy(tv))
-      + ' of television</span>' + chipsHtml(x.screens.apps) + '</section>' : '')
+      + ' of television</span>' + stripHtml(x.screens.hourMs || new Array(24).fill(0)) + chipsHtml(x.screens.apps) + '</section>' : '')
     + roadsBlock(x.roads, 6);
 }
 
