@@ -461,6 +461,62 @@ records. `node tools/discover.js` and a restart.
 **`deploy/push.sh` copies `server.js` alone**, so the watchdog change is a
 separate `scp`. Second time that has been worth writing down.
 
+### The watchdog was restarting a healthy vendor twice a day (2026-09-22)
+
+Found by reading the journal rather than by a report: the vendor's app had
+restarted at 21:00 **and** at 21:10, nine minutes after it came back perfectly
+healthy. Counted across September, **nearly every one of the vendor's own
+twelve-hour stops was followed by a restart of ours**, each one 30–40 seconds of
+the family's app, the doorbell tablet and the board being down.
+
+**The vendor restarts itself on a timer, and that is not a fault.** Its unit
+carries `RuntimeMaxSec=43200`, so systemd logs `Service reached runtime time
+limit. Stopping.` every twelve hours, and the app is down for about forty seconds
+&mdash; the `sleep 30` in its `ExecStartPre`, then Django booting and the listener
+starting. Nothing in this file had noticed the cap.
+
+**Two things turned that gap into a loop.**
+- **A bus check landing in the gap read as a dead bus.** `busCheck()` polls,
+  hears nothing, and published `ok:false` for a vendor that was simply starting.
+- **One reading was counted as two strikes.** `busCheck` runs every ten minutes
+  (`BUS_CHECK_MS`) and `watchdog.sh` every five, so the watchdog read the same
+  stale result on two consecutive cycles. The two-strike rule was a one-strike
+  rule for the bus.
+
+It sustains itself because **twelve hours is exactly 72 check intervals**: our
+restart starts a new twelve-hour timer, so the next stop falls on the check grid
+at the same phase and the next check lands in the gap again. The ~10-minute daily
+drift in the timestamps is our own restart's lag. On **2026-09-18** the same
+aliasing ran every ten minutes from 15:05 to 21:45 &mdash; each of our restarts at
+`:x5:01` put the vendor's start-up gap on the check at `:x5:28` &mdash; so some of
+the 09-13 and 09-17 restart runs recorded above are probably this as well as
+their documented causes.
+
+**Two fixes, either of which breaks the loop alone.**
+- **`vendorSettled()` in `server.js`**: on the zero-reply path, beside
+  `unitExists()`, a unit that is not `active` or whose main process is younger
+  than `VENDOR_SETTLE_S` (90s) is **null, cannot tell** &mdash; logged as `not
+  judged`. Age comes from `ps -o etimes=` on `MainPID`, not `ActiveEnterTimestamp`,
+  which is a wall-clock string with a zone name on the end. During `ExecStartPre`
+  the unit is `activating` with `MainPID=0`, which is what caught 21:01:09.
+- **`watchdog.sh` counts checks, not cycles**: the bus stamp holds when the
+  reading was taken (`now - checked_s_ago`), and a repeat of it within 5s is
+  logged `same reading as last cycle` and is not a second strike. A missing
+  `checked_s_ago` or an old empty stamp falls back to the previous behaviour.
+
+Tested against a stub health endpoint with `VENDOR` pointed at a unit that does
+not exist: a first bad reading waits, the same reading twice more waits, a new
+bad reading restarts, and null or healthy clears the stamp. `vendorSettled` was
+run on the hub, lifted out of `server.js`: the running vendor and dashboard are
+settled, an inactive and a missing unit are not, and the running vendor is not
+under a threshold it cannot meet. Deployed with `push.sh` and a separate `scp`
+checked by `md5sum`; health 200, bus 86 replies, a hand run of the watchdog
+silent.
+
+**Not yet watched live.** The first self-restart after the deploy was due at
+09:10 IST on 2026-09-23; the check is that the journal shows the runtime-limit
+stop and **no** `restart tistron_backend` after it.
+
 **`GET_STATUS` works, and `pollHardware()` in `server.js` is it (2026-08-25).** Broadcasting `HEADER + GET_STATUS + <module id> + crc` makes a module report its channels; the vendor's own `device_listener()` catches the replies and its workers save them, so nothing here parses a byte and there is no second copy of the house's state. Called forced at startup — a restart being when the hub's record is least trustworthy — before `look` answers a question, and on demand at `POST /api/poll`, which reads, polls, reads again and names every circuit whose value moved.
 
 Four things measured, and one still open:

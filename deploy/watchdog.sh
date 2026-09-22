@@ -155,9 +155,23 @@ fi
 
 # Two consecutive checks here too: a poll can miss for its own reasons, and
 # restarting the house's controller is not something to do on one reading.
+#
+# Two consecutive CHECKS, not two cycles of this script. The dashboard checks
+# the bus every ten minutes and this runs every five, so each reading is seen
+# twice — and until 2026-09-22 one bad reading was counted as two strikes. So
+# the stamp holds when the reading was taken, and a repeat of it is not a
+# second strike. Allow a few seconds either way: the age is rounded, and the two
+# clocks it is worked out from are read a moment apart.
+age=$(printf '%s' "$bus" | grep -oE '"checked_s_ago":[0-9]+' | cut -d: -f2 || true)
+taken=$(( $(date +%s) - ${age:-0} ))
 if [[ ! -f "$BUS_STAMP" ]]; then
   echo "$(date -Is) bus silent — first failure, waiting for confirmation" >&2
-  touch "$BUS_STAMP"
+  echo "$taken" > "$BUS_STAMP"
+  exit 0
+fi
+before=$(cat "$BUS_STAMP" 2>/dev/null || true)
+if [[ -n "$age" && "$before" =~ ^[0-9]+$ ]] && (( taken - before <= 5 && before - taken <= 5 )); then
+  echo "$(date -Is) bus silent — same reading as last cycle, waiting for a fresh one" >&2
   exit 0
 fi
 

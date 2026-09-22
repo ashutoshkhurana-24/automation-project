@@ -1144,6 +1144,40 @@ function unitExists(unit) {
   });
 }
 
+/* Has the vendor been up long enough for silence to mean anything?
+ *
+ * Its unit carries RuntimeMaxSec=43200, so it restarts itself every twelve
+ * hours, and it is down for about forty seconds each time: the sleep in its
+ * ExecStartPre, then Django booting and the listener starting. A check landing
+ * in that gap hears nothing and used to report a dead bus. The watchdog then
+ * restarted a vendor that was already back — and since twelve hours is exactly
+ * 72 checks, the next self-restart fell on the check grid again. Found
+ * 2026-09-22: nearly every twelve-hour stop that month was followed by one of
+ * ours, and on 2026-09-18 our own restarts fed it every ten minutes for 6.5h.
+ *
+ * So a unit that is not `active`, or whose main process is younger than
+ * VENDOR_SETTLE_S, is "cannot tell". Elapsed time comes from `ps` rather than
+ * from ActiveEnterTimestamp, which is a wall-clock string with a zone name on
+ * the end. */
+const VENDOR_SETTLE_S = 90;
+function vendorSettled(unit) {
+  return new Promise((done) => {
+    execFile('systemctl', ['show', unit, '-p', 'ActiveState', '-p', 'MainPID'],
+      { timeout: 3000 }, (err, out) => {
+        if (err) return done(false);
+        const p = {};
+        for (const line of String(out).split('\n')) {
+          const i = line.indexOf('=');
+          if (i > 0) p[line.slice(0, i)] = line.slice(i + 1).trim();
+        }
+        const pid = Number(p.MainPID);
+        if (p.ActiveState !== 'active' || !(pid > 0)) return done(false);
+        execFile('ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 3000 },
+          (e, age) => done(!e && Number(String(age).trim()) >= VENDOR_SETTLE_S));
+      });
+  });
+}
+
 function busReplies(sinceSec = 15) {
   return new Promise((done) => {
     execFile('journalctl', ['-u', BUS_LOG_UNIT, '--since', sinceSec + ' seconds ago', '--no-pager'],
@@ -1152,7 +1186,13 @@ function busReplies(sinceSec = 15) {
         const n = (String(out).match(/Receieved status/gi) || []).length;
         if (n > 0) return done(n);
         // Zero is only a fault if there was something that could have spoken.
-        done(await unitExists(BUS_LOG_UNIT) ? 0 : null);
+        if (!(await unitExists(BUS_LOG_UNIT))) return done(null);
+        if (!(await vendorSettled(BUS_LOG_UNIT))) {
+          console.log('bus: heard nothing, but ' + BUS_LOG_UNIT
+            + ' is starting or has just started — not judged');
+          return done(null);
+        }
+        done(0);
       });
   });
 }
