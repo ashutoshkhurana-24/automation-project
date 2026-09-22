@@ -1226,6 +1226,22 @@ function busReplies(sinceSec = 15) {
   });
 }
 
+/* When the house cannot be read, the history has to say so.
+ *
+ * Nothing else in it can. The log is quiet whenever the house is quiet, so a
+ * silence after a lamp came on reads as the lamp staying on, and a report then
+ * counts an outage as a day of light. Two kinds: the hub not answering at all
+ * ('read'), and the hub answering from a record that has stopped hearing the
+ * bus ('bus', the 2026-08-31 fault). Written on each change only. Memory-only:
+ * after a restart a gap that is still open is logged again, and the report
+ * joins the two. */
+var blind = { read: false, bus: false };
+function markBlind(kind, now, why) {
+  if (blind[kind] === now) return;
+  blind[kind] = now;
+  logEvent(now ? { e: 'gap', kind, on: true, why: String(why || '') } : { e: 'gap', kind, on: false });
+}
+
 /* What we last learned about the bus. `ok: null` means "not established" —
    which is the honest state on a laptop and until the first check lands. */
 let busSync = { at: 0, replies: null, ok: null, silentSince: 0 };
@@ -1242,6 +1258,8 @@ async function busCheck() {
   if (ok === false && !busSync.silentSince) busSync.silentSince = Date.now();
   if (ok === true) busSync.silentSince = 0;
   busSync = { at: Date.now(), replies, ok, silentSince: busSync.silentSince };
+  if (ok === false) markBlind('bus', true, 'no status from the bus');
+  if (ok === true) markBlind('bus', false);
   if (ok === false) {
     console.error('bus: polled ' + relayModules().length
       + ' modules and heard nothing back — the hub is not receiving status.'
@@ -1269,6 +1287,9 @@ function readHubState() {
       hubSync = { at: Date.now(), taken: takenAt, ok, error: ok ? null : error };
       if (ok) { stats.readsOk++; stats.consecutiveReadFailures = 0; }
       else { stats.readsFailed++; stats.consecutiveReadFailures++; }
+      // Three misses is the same line /api/health draws for "down".
+      if (!ok && stats.consecutiveReadFailures === 3) markBlind('read', true, error);
+      if (ok) markBlind('read', false);
       if (!ok) console.error('hub state read failed:', error);
       try { ws.close(); } catch { /* already gone */ }
       resolve(hubSync);
@@ -13696,6 +13717,73 @@ const monthName = (ym) => {
   return MONTH_NAMES[m - 1] + ' ' + y;
 };
 
+/* The stretches of a month when the house could not be read.
+ *
+ * Two sources. The explicit one is the `gap` events markBlind() writes, from
+ * 2026-09-23 on. The inferred one covers the months before that: a watchdog
+ * restart storm, three or more keyframes each within twelve minutes of the
+ * last and none of them the midnight one. A healthy dashboard writes one
+ * keyframe a day and one per deploy; a storm means it was being restarted
+ * because it could not read the hub, and the keyframes it wrote then came
+ * from its own file rather than from the house. The storm window opens ten
+ * minutes before its first restart, which is the two failed checks the
+ * watchdog waits for.
+ *
+ * It cannot see an outage in which this process stayed up, such as the hub's
+ * address moving on 2026-09-17, because nothing was written then. The explicit
+ * events are the only fix for that, and they only look forward. */
+const STORM_STEP_MS = 12 * 60000;
+const STORM_LEAD_MS = 10 * 60000;
+const nearMidnight = (t) => { const d = new Date(t); return d.getHours() === 0 && d.getMinutes() < 3; };
+
+function blindSpans(events, from, to) {
+  const spans = [];
+  const open = {};
+  const shut = (k, t) => { if (open[k] != null) { spans.push({ from: open[k], to: t }); delete open[k]; } };
+  for (const ev of events) {
+    if (ev.e === 'gap') {
+      const k = ev.kind || 'read';
+      if (ev.on) { if (open[k] == null) open[k] = ev.t; } else shut(k, ev.t);
+    } else if (ev.e === 'edge') {
+      shut('read', ev.t);          // an edge needs a good read, so the hub was back
+    } else if (ev.e === 'snap' && !nearMidnight(ev.t)) {
+      shut('bus', ev.t);           // a restart forgets the bus; it logs again if still dead
+    }
+  }
+  for (const k of Object.keys(open)) spans.push({ from: open[k], to });
+
+  const restarts = events.filter((ev) => ev.e === 'snap' && !nearMidnight(ev.t)).map((ev) => ev.t);
+  for (let i = 0; i < restarts.length;) {
+    let j = i;
+    while (j + 1 < restarts.length && restarts[j + 1] - restarts[j] <= STORM_STEP_MS) j++;
+    if (j - i >= 2) spans.push({ from: restarts[i] - STORM_LEAD_MS, to: restarts[j] });
+    i = j + 1;
+  }
+  return union([spans.map((x) => ({ from: Math.max(x.from, from), to: Math.min(x.to, to) }))
+    .filter((x) => x.to > x.from)]);
+}
+
+/** Take the blind stretches out of a list of intervals. What was on during one
+    is unknown, so it is not counted either way. */
+function cutOut(list, spans) {
+  if (!spans.length) return list;
+  const out = [];
+  for (const r of list) {
+    let pieces = [r];
+    for (const x of spans) {
+      const next = [];
+      for (const p of pieces) {
+        if (x.to <= p.from || x.from >= p.to) { next.push(p); continue; }
+        if (p.from < x.from) next.push({ from: p.from, to: x.from });
+        if (p.to > x.to) next.push({ from: x.to, to: p.to });
+      }
+      pieces = next;
+    }
+    out.push(...pieces);
+  }
+  return out;
+}
+
 /* Replay the events into on-intervals per circuit.
  *
  * The previous month is read as well, and this is not an optimisation — it is
@@ -13756,17 +13844,19 @@ function replay(ym) {
   for (const id of [...openAt.keys()]) close(id, to);
 
   // Clip to the window last, so an interval that straddles either boundary
-  // contributes only the part that belongs to this month.
+  // contributes only the part that belongs to this month. The blind stretches
+  // come out at the same time.
+  const blind = blindSpans(events, from, to);
   const clipped = new Map();
   for (const [id, list] of runs) {
     const keep = [];
-    for (const r of list) {
+    for (const r of cutOut(list, blind)) {
       const a = Math.max(r.from, from), b = Math.min(r.to, to);
       if (b > a) keep.push({ from: a, to: b });
     }
     if (keep.length) clipped.set(id, keep);
   }
-  return { runs: clipped, ons, src, days, from, to, whole,
+  return { runs: clipped, ons, src, days, from, to, whole, blind,
            knownFrom: firstKnown == null ? null : Math.max(from, firstKnown), events };
 }
 
@@ -13859,19 +13949,27 @@ function screenTime(events, room, from, to) {
     }
     if (ev.on) {
       if (!openAt.has(ev.id)) openAt.set(ev.id, ev.t);
+      /* An app is only counted while its set is on. A set that comes on with
+         no app named keeps the one it last reported, from now: counting it from
+         when it was reported, set off in between, gave YouTube 4.6 h on a
+         screen that was on for 2.7 h. */
       if (ev.app) appAt.set(ev.id, { app: ev.app, at: ev.t });
+      else if (appAt.has(ev.id)) appAt.get(ev.id).at = ev.t;
     } else {
       const since = openAt.get(ev.id);
+      const was = appAt.get(ev.id);
       if (since != null) {
         openAt.delete(ev.id);
         push(sets, ev.id, Math.max(0, Math.min(ev.t, to) - Math.max(since, from)));
+        if (was) push(app, was.app, Math.max(0, Math.min(ev.t, to) - Math.max(was.at, from)));
       }
-      const was = appAt.get(ev.id);
-      if (was) { push(app, was.app, Math.max(0, Math.min(ev.t, to) - Math.max(was.at, from))); appAt.delete(ev.id); }
+      if (was) appAt.delete(ev.id);
     }
   }
   for (const [id, since] of openAt) push(sets, id, Math.max(0, to - Math.max(since, from)));
-  for (const [, was] of appAt) push(app, was.app, Math.max(0, to - Math.max(was.at, from)));
+  for (const [id, was] of appAt) {
+    if (openAt.has(id)) push(app, was.app, Math.max(0, to - Math.max(was.at, from)));
+  }
 
   return {
     hours: [...sets.values()].reduce((a, b) => a + b, 0) / 3600000,
@@ -13994,49 +14092,16 @@ function houseReport(ym) {
       room: room.room,
       hours: msSum(all) / 3600000,
       litHours: msSum(union(room.lit)) / 3600000,
+      litRuns: union(room.lit),
       fanHours: msSum(union(room.fan)) / 3600000,
       acHours: msSum(union(room.ac)) / 3600000,
       circuits: room.circuits.sort((a, b) => b.hours - a.hours || natural_(a.name, b.name)),
       colour: lampHex(tune),
       tune: tune == null ? null : Math.round(tune),
       roads: room.roads,
-      runs: all,
       screens: screenTime(r.events, room.room, r.from, r.to),
-      /* The room's own charts, off the same replay as the house's. A per-room
-         report used to run its own replay, which meant two aggregation paths
-         over one month of events and two chances to disagree about it. */
-      hourMs: byHour(all),
-      dayMs: perDay(all),
     };
   }).sort((a, b) => b.hours - a.hours || natural_(a.room, b.room));
-
-  /* Room-hours rather than circuit-hours, for the calendar and the profile: a
-     ceiling of eleven COBs would otherwise drown out six other rooms, and the
-     question those two charts answer is when the house was *in use*. */
-  const dayMs = new Map();
-  const hourMs = new Array(24).fill(0);
-  for (const room of list) {
-    for (const [day, ms] of perDay(room.runs)) dayMs.set(day, (dayMs.get(day) || 0) + ms);
-    byHour(room.runs).forEach((ms, h) => { hourMs[h] += ms; });
-  }
-
-  const nights = [];
-  for (const room of list) {
-    for (const c of room.circuits) {
-      for (const n of overnights(c.runs)) nights.push({ ...n, name: c.name, room: room.room, kind: c.kind });
-    }
-  }
-  nights.sort((a, b) => b.hours - a.hours);
-
-  let longest = null;
-  for (const room of list) {
-    for (const c of room.circuits) {
-      for (const run of c.runs) {
-        const hours = (run.to - run.from) / 3600000;
-        if (!longest || hours > longest.hours) longest = { name: c.name, room: room.room, hours, from: run.from };
-      }
-    }
-  }
 
   const apps = new Map();
   let screenHours = 0;
@@ -14055,9 +14120,52 @@ function houseReport(ym) {
     return a;
   }, {});
 
+  /* The blind stretches by day, for the moons, and how many rooms were lit on
+     each day, for the brightest-day sentence. */
+  const blindDay = perDay(r.blind || []);
+  const blindHours = msSum(r.blind || []) / 3600000;
+  const roomsLitDay = new Map();
+  for (const x of list) {
+    for (const [day, ms] of perDay(x.litRuns)) {
+      if (ms >= 5 * 60000) roomsLitDay.set(day, (roomsLitDay.get(day) || 0) + 1);
+    }
+  }
+  /* Nights, not circuit-nights. "180 nights something was left on" in a
+     23-day month was counting every lamp on every night. A night here is a
+     date, and it lists which lights were still on at 2 am. */
+  const nightMap = new Map();
+  for (const x of list) {
+    for (const c of x.circuits) {
+      if (c.kind !== 'light') continue;
+      for (const n of overnights(c.runs)) {
+        const key = localDay(new Date(n.night));
+        if (!nightMap.has(key)) nightMap.set(key, { day: key, at: n.night, lights: [] });
+        nightMap.get(key).lights.push({ name: c.name, room: x.room, hours: n.hours });
+      }
+    }
+  }
+  const seenDays = Math.max(1, r.days.size);
+  /* Some lights are meant to be on at 2 am. A foot light is a night light,
+     and good night switches one on on purpose, so flagging it would say the
+     same thing every night and hide the night something really was left on.
+     A light on at 2 am on at least half the nights, and on at least three, is
+     the house's night light. It is named rather than counted. */
+  const nightCount = new Map();
+  for (const n of nightMap.values()) {
+    for (const l of n.lights) {
+      const k = l.room + '\u0000' + l.name;
+      nightCount.set(k, (nightCount.get(k) || 0) + 1);
+    }
+  }
+  const nightLights = [...nightCount].filter(([, n]) => n >= Math.max(3, seenDays / 2))
+    .map(([k, n]) => { const [room, name] = k.split('\u0000'); return { room, name, nights: n }; })
+    .sort((a, b) => b.nights - a.nights);
+  const usual = new Set(nightLights.map((l) => l.room + '\u0000' + l.name));
+  const litNights = [...nightMap.values()].map((n) => ({ ...n,
+    lights: n.lights.filter((l) => !usual.has(l.room + '\u0000' + l.name)) }))
+    .filter((n) => n.lights.length).sort((a, b) => a.at - b.at);
+
   const litHours = list.reduce((n, x) => n + x.litHours, 0);
-  let busiestDay = null;
-  for (const [day, ms] of dayMs) if (!busiestDay || ms > busiestDay.ms) busiestDay = { day, ms };
 
   /* Only compared against a month that was actually recorded for most of its
      length — "down 96%" against four logged days is a lie about the house. */
@@ -14069,14 +14177,8 @@ function houseReport(ym) {
   return {
     ym, from: r.from, to: r.to, whole: r.whole, knownFrom: r.knownFrom, days: r.days.size,
     rooms: list,
-    litHours,
-    fanHours: list.reduce((n, x) => n + x.fanHours, 0),
-    acHours: list.reduce((n, x) => n + x.acHours, 0),
-    screenHours,
-    roomsLit: list.filter((x) => x.litHours > 0.05).length,
-    busiest: list[0] || null,
-    busiestDay,
-    dayMs, hourMs, nights, longest, hands, compare,
+    screenHours, hands, compare,
+    blindDay, blindHours, roomsLitDay, litNights, nightLights,
     apps: [...apps.entries()].map(([app, hours]) => ({ app, hours }))
       .sort((a, b) => b.hours - a.hours).slice(0, 6),
     cues: [...cues.entries()].map(([name, times]) => ({ name, times }))
@@ -14085,13 +14187,6 @@ function houseReport(ym) {
 }
 
 /* ------------------------------------------------------ drawing the report */
-
-/* Minutes below the hour, one decimal up to a hundred hours, whole numbers past
-   it. The decimal band is wide on purpose: a headline of "14 h" above a table of
-   rows reading 8.0, 4.5 and 1.0 invites the reader to check the arithmetic and
-   find it wrong, which is a bad way to lose their trust in the whole page. */
-const hoursWord = (h) => (h < 0.05 ? '—' : h < 1 ? Math.round(h * 60) + ' min'
-  : h < 100 ? h.toFixed(1) + ' h' : Math.round(h) + ' h');
 
 /* For a ranked column, where nothing has to be seen to add up and even
    precision matters more than the last tenth of an hour. */
@@ -14110,271 +14205,6 @@ const clockWord = (t) => {
   const d = new Date(t);
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 };
-
-/* One stylesheet, inline. No script, no request to anything, ever.
- *
- * This file gets attached to an email and opened next year on somebody's phone
- * with no network, so a CDN, a remote font or a chart library are all out. What
- * that leaves is not a limitation here: the dashboard itself draws every bar it
- * has as a gradient in a div, so the report is built the same way and comes out
- * looking like the same object.
- *
- * It is the board's own palette, both halves of it. The dashboard switches on
- * the hub's clock, which a saved file cannot know, so this follows the reader's
- * own light or dark setting instead — the same two sets of values either way.
- * Every rule below that differs between them is one the board also had to state
- * twice, and for the reason already written up: a value chosen as a fraction of
- * white cannot be carried into the dark palette by swapping a token. */
-const REPORT_CSS = [
-  ':root {',
-  '  color-scheme: light dark;',
-  /* paper, from the dashboard's own tokens */
-  '  --ink:#2b2622; --soft:#6b635a; --faint:#9a9187;',
-  '  --line:#e4ddd2; --hair:#efe9e0;',
-  '  --paper:#fdfaf5; --ground:#f1ece3; --accent:#e0574a;',
-  '  --warm:#f2a233; --cool:#7fb2e0; --neutral:#9fb0bd;',
-  '  --lip:rgba(255,255,255,.6); --shade:rgba(43,38,34,.05);',
-  '  --grid:rgba(43,38,34,.055);',
-  '  --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
-  '  --display:"Instrument Serif",ui-serif,Georgia,serif;',
-  '  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;',
-  '}',
-  '@media (prefers-color-scheme: dark) {',
-  '  :root {',
-  '    --ink:#ecebe8; --soft:#9ba1a9; --faint:#7d848e;',
-  '    --line:#282d34; --hair:#20242a;',
-  '    --paper:#191c21; --ground:#0f1216; --accent:#ff6f61;',
-  /* The lamp colours do not move between the themes. They are what a lamp is
-     making, which is not a property of who is looking at the page. */
-  '    --lip:rgba(255,255,255,.05); --shade:rgba(0,0,0,.3);',
-  '    --grid:rgba(236,235,232,.07);',
-  '  }',
-  '}',
-  '* { box-sizing:border-box; }',
-  'html { -webkit-text-size-adjust:100%; }',
-  'body { margin:0; background:var(--ground); color:var(--ink);',
-  '  font:15px/1.55 var(--sans); -webkit-font-smoothing:antialiased; }',
-  '.wrap { max-width:820px; width:100%; margin:0 auto; padding:clamp(18px,4vw,34px) clamp(14px,4vw,22px) 72px; }',
-
-  /* ── the masthead, in the board's display serif ────────────────────── */
-  'header { margin:0 0 clamp(18px,3vw,26px); }',
-  '.house { font:500 11px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase;',
-  '  color:var(--faint); }',
-  '.month { font:400 clamp(38px,9vw,58px)/1 var(--display); letter-spacing:-.015em;',
-  '  margin:10px 0 0; }',
-  '.sofar { font-size:13px; color:var(--faint); margin-top:6px; }',
-  /* The one sentence the report speaks in rather than reports in — the hero
-     line off the board, coral number in display italic, same as .hero .say b */
-  '.say { font:400 clamp(21px,4.6vw,29px)/1.32 var(--display); color:var(--soft);',
-  '  margin:clamp(16px,3vw,22px) 0 0; max-width:36ch; text-wrap:balance; }',
-  '.say b { font-weight:400; font-style:italic; color:var(--accent); }',
-  '.say .ink { color:var(--ink); font-style:normal; }',
-  '.trend { font-size:13px; color:var(--soft); margin:10px 0 0; }',
-  '.trend b { color:var(--ink); font-weight:600; }',
-
-  /* ── panes ─────────────────────────────────────────────────────────── */
-  'section { background:var(--paper); border:1px solid var(--line); border-radius:14px;',
-  '  padding:clamp(15px,3vw,20px); margin:0 0 12px;',
-  '  box-shadow:inset 0 1px 0 var(--lip), 0 1px 2px var(--shade); }',
-  /* The board states a section with a small mono pill, not a heading. */
-  'h2 { font:500 10.5px/1 var(--mono); letter-spacing:.15em; text-transform:uppercase;',
-  '  color:var(--faint); margin:0 0 15px; }',
-  '.note { font-size:12.5px; color:var(--faint); margin:13px 0 0; line-height:1.5; }',
-  '.note b { color:var(--soft); font-weight:600; }',
-  '.none { font-size:14px; color:var(--faint); margin:0; }',
-
-  /* ── the four figures ──────────────────────────────────────────────── */
-  '.figs { display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px;',
-  '  margin:clamp(18px,3vw,24px) 0 12px; }',
-  '.fig { background:var(--paper); border:1px solid var(--line); border-radius:12px;',
-  '  padding:14px 15px 12px; box-shadow:inset 0 1px 0 var(--lip), 0 1px 2px var(--shade); }',
-  '.fig .n { font:400 clamp(26px,5vw,33px)/1 var(--display); letter-spacing:-.02em;',
-  '  font-variant-numeric:tabular-nums; display:block; }',
-  '.fig .l { font-size:12px; color:var(--faint); margin-top:5px; line-height:1.35; }',
-  '.fig .hedge { display:block; font-size:10.5px; color:var(--faint); opacity:.8; }',
-
-  /* ── rooms, each bar in its own light ──────────────────────────────── */
-  '.room { display:grid; grid-template-columns:minmax(64px,1fr) 2.4fr auto; gap:11px;',
-  '  align-items:center; padding:7px 0; border-bottom:1px solid var(--hair); }',
-  '.room:last-child { border-bottom:0; }',
-  /* A circuit row adds a switched-on count between the bar and the hours. */
-  '.room.cir { grid-template-columns:minmax(64px,1fr) 2.4fr 42px auto; }',
-  '.room .nm { font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis;',
-  '  white-space:nowrap; }',
-  '.room .nm a { color:inherit; text-decoration:none; }',
-  '.room .nm a:hover { text-decoration:underline; text-underline-offset:3px; }',
-  '.room .track { background:var(--grid); border-radius:4px; height:15px; overflow:hidden; }',
-  /* A gradient, not a block: the board's own .tile-fill is a gradient and a
-     flat bar next to it reads as a different piece of software. */
-  '.room .track i { display:block; height:100%; border-radius:4px;',
-  '  background:linear-gradient(90deg, var(--c) 0%, var(--c) 62%, var(--c2) 100%); }',
-  '.room .h { font-size:12.5px; font-variant-numeric:tabular-nums; color:var(--soft);',
-  '  white-space:nowrap; text-align:right; min-width:52px; }',
-
-  /* ── the month, as a calendar ──────────────────────────────────────── */
-  /* Capped rather than filling the pane: at 820px wide, seven columns give
-     117px cells and the calendar stops being a calendar and becomes a colour
-     field. Near 56px it reads as a month. */
-  '.cal { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; max-width:432px; }',
-  '.cal .wd { font:500 9.5px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase;',
-  '  color:var(--faint); text-align:center; padding-bottom:3px; }',
-  '.cal .d { aspect-ratio:1; border-radius:6px; background:var(--grid); position:relative;',
-  '  display:flex; align-items:flex-end; justify-content:flex-end; padding:3px 4px; }',
-  '.cal .d.pad { background:none; }',
-  '.cal .d span { font-size:9.5px; font-variant-numeric:tabular-nums; color:var(--soft);',
-  '  opacity:.75; line-height:1; }',
-  /* The fill is the board's amber and is identical in both themes, so a number
-     on it must be dark in both. Taking --ink here would make it near-white on
-     amber after dark, which is the --ink-cob mistake this project already made
-     once on its most numerous card. */
-  '.cal .d.lit span { color:rgba(38,30,20,.82); }',
-  '.cal .d.hot span { color:rgba(38,30,20,.95); font-weight:600; }',
-  '.legend { display:flex; align-items:center; gap:5px; margin-top:14px; font:500 10px/1 var(--mono);',
-  '  letter-spacing:.1em; text-transform:uppercase; color:var(--faint); }',
-  '.legend i { display:block; width:22px; height:10px; border-radius:2px; }',
-
-  /* ── hour of day ───────────────────────────────────────────────────── */
-  '.prof { display:grid; grid-template-columns:repeat(24,1fr); gap:2px; align-items:end;',
-  '  height:84px; }',
-  '.prof i { display:block; border-radius:3px 3px 1px 1px; min-height:2px;',
-  '  background:var(--grid); }',
-  /* rgba rather than color-mix: this file has to render on whatever a relative
-     opened it with, and a colour function that is merely unsupported takes the
-     whole declaration with it — which on the calendar below would flatten every
-     day to the same shade and quietly turn the chart into decoration. */
-  '.prof i.on { background:linear-gradient(180deg,rgba(242,162,51,1),rgba(242,162,51,.5)); }',
-  '.prof i.pk { background:var(--accent); }',
-  '.axis { display:grid; grid-template-columns:repeat(24,1fr); gap:2px; margin-top:6px;',
-  '  font:500 9px/1 var(--mono); color:var(--faint); }',
-  '.axis span { text-align:center; }',
-  /* Every hour is there, and midnight, six, noon and six are a shade darker so
-     the row can still be read at a glance rather than counted along. Twenty-four
-     numbers at one weight is a ribbon of digits; four of them standing slightly
-     proud is a scale. */
-  '.axis .q { color:var(--soft); }',
-
-  /* ── lists ─────────────────────────────────────────────────────────── */
-  '.row { display:flex; align-items:baseline; gap:10px; padding:7px 0;',
-  '  border-bottom:1px solid var(--hair); font-size:13.5px; }',
-  '.row:last-child { border-bottom:0; }',
-  '.row .who { flex:1; min-width:0; }',
-  '.row b { font-weight:600; }',
-  '.row .where { color:var(--faint); font-size:11.5px; }',
-  '.row .h { font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--soft); }',
-  '.row .h.warn { color:var(--accent); }',
-  '.pair { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px 22px; }',
-  '.sub { font-size:11.5px; color:var(--faint); padding-bottom:5px;',
-  '  border-bottom:1px solid var(--line); margin-bottom:2px; }',
-  '.split { display:flex; height:15px; border-radius:4px; overflow:hidden; background:var(--grid); }',
-  /* Its own class rather than .split, which styles exactly two bands by
-     first-child and last-child and would fight an inline background. */
-  '.roads { display:flex; height:15px; border-radius:4px; overflow:hidden; background:var(--grid); }',
-  '.roads i { display:block; }',
-  '.split i:first-child { background:var(--accent); }',
-  '.split i:last-child { background:var(--neutral); opacity:.55; }',
-  '.keys { display:flex; flex-wrap:wrap; gap:13px; margin-top:10px; font-size:12px;',
-  '  color:var(--soft); }',
-  '.keys span { display:flex; align-items:center; gap:6px; }',
-  '.keys i { width:9px; height:9px; border-radius:50%; display:block; }',
-
-  /* ── month switcher, served pages only ─────────────────────────────── */
-  '.months { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 14px; }',
-  '.months a { font:500 11px/1 var(--mono); letter-spacing:.04em; text-decoration:none;',
-  '  color:var(--soft); background:var(--paper); border:1px solid var(--line);',
-  '  border-radius:999px; padding:7px 11px; }',
-  '.months a.get { color:var(--accent); }',
-  '.months form { display:flex; gap:6px; margin:0; }',
-  '.months select, .months .go { font:500 11px/1 var(--mono); letter-spacing:.04em;',
-  '  color:var(--soft); background:var(--paper); border:1px solid var(--line);',
-  '  border-radius:999px; padding:7px 11px; cursor:pointer; }',
-  /* The caret is drawn rather than left to the platform, because a native select
-     arrow brings the platform's whole chrome with it — a grey bevelled box beside
-     a row of paper pills. Two gradients meeting at a point is the cheapest
-     triangle there is, and it takes its colour from the tokens like everything else. */
-  '.months select { appearance:none; -webkit-appearance:none; padding-right:27px;',
-  '  background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),',
-  '    linear-gradient(135deg,var(--faint) 50%,transparent 50%);',
-  '  background-position:calc(100% - 15px) 52%,calc(100% - 11px) 52%;',
-  '  background-size:4px 4px,4px 4px; background-repeat:no-repeat; }',
-  '.months select:hover, .months .go:hover { color:var(--ink); border-color:var(--soft); }',
-  /* Under 16px iOS zooms the page when a control takes focus, and this file has
-     recorded that trap for a text field three times. A select is no different.
-     Longhands, because the shorthand here wipes the padding the caret is drawn
-     into and the month reads straight through the arrow — the same silent
-     overwrite this file records for `padding` on .tools. */
-  '@media (max-width:520px) {',
-  '  .months select, .months .go { font-size:16px; padding-top:8px; padding-bottom:8px; }',
-  '  .months select { padding-right:31px; }',
-  '}',
-  /* [hidden] is display:none from the UA sheet, the weakest origin there is, and
-     the script hides the View button with it. Said once here so a later rule
-     giving .go a display cannot quietly bring it back. */
-  '.months [hidden] { display:none; }',
-
-  /* A ranked row does not fit on one line at phone width — the name column was
-     squeezed to 64px and every room came out truncated. Stacked, the name gets
-     the whole width and the bar drops beneath it. Placed explicitly, because
-     auto-placement would put the hours under the name (the track is second in
-     the markup, which is the order that is right on a wide screen). */
-  '@media (max-width: 520px) {',
-  '  .room { grid-template-columns:1fr auto; gap:5px 10px; padding:9px 0; }',
-  '  .room .nm { grid-column:1; grid-row:1; white-space:normal; }',
-  '  .room .h { grid-column:2; grid-row:1; }',
-  '  .room .track { grid-column:1 / -1; grid-row:2; height:11px; }',
-  '  .room.cir { grid-template-columns:1fr 42px auto; }',
-  '  .room.cir .t { grid-column:2; grid-row:1; }',
-  '  .room.cir .h { grid-column:3; grid-row:1; }',
-  '}',
-  /* ── the views, and how one gives way to another ──────────────────────
-     `:target` is the whole mechanism. A room is hidden until its own id is the
-     fragment; the house is shown until any room takes over. No script, so it
-     works from a `file:` URL, in an email client, and with JS switched off.
-     `.rv:target ~ #house` depends on every room being emitted before the house
-     — see the note beside housePage(). */
-  '.rv { display:none; }',
-  '.rv:target { display:block; }',
-  '.rv:target ~ #house { display:none; }',
-  /* Printing wants the lot, since a printed page has no fragment to be at. */
-  '@media print { .rv, #house { display:block !important; } }',
-
-  '.tabs { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 20px; }',
-  '.tb { display:inline-flex; align-items:center; gap:6px; padding:5px 11px;',
-  '  border:1px solid var(--hair); border-radius:999px; text-decoration:none;',
-  '  color:var(--soft); font-size:12px; line-height:1.5; white-space:nowrap; }',
-  '.tb:hover { color:var(--ink); border-color:var(--soft); }',
-  /* The current tab is marked in the board\u2019s own coral, which is the colour
-     this design reserves for the thing being said rather than for light. */
-  '.tb.here { color:var(--accent); border-color:var(--accent); font-weight:600; }',
-  '.swatch { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }',
-  '.swatch.big { width:13px; height:13px; border-radius:4px;',
-  '  display:inline-block; margin-right:9px; vertical-align:.06em; }',
-  '.up { display:inline-block; color:var(--faint); font:500 10px/1 var(--mono);',
-  '  letter-spacing:.14em; text-transform:uppercase; text-decoration:none; }',
-  '.up:hover { color:var(--accent); }',
-  '.pv .up { display:none; }',
-  '.up::before { content:"\u2190  "; }',
-
-  /* A circuit row carries a kind and a count that a room row does not. */
-  '.room .kd { display:block; font:500 9.5px/1.5 var(--mono); letter-spacing:.07em;',
-  '  text-transform:uppercase; color:var(--faint); }',
-  '.room .t { text-align:right; font-size:12px; color:var(--faint);',
-  '  font-variant-numeric:tabular-nums; }',
-
-  'footer { color:var(--faint); font-size:11.5px; line-height:1.6; margin-top:18px; }',
-  'footer p { margin:0 0 8px; }',
-  'footer b { color:var(--soft); font-weight:600; }',
-  '@page { margin:14mm 12mm; }',
-  '@media print {',
-  '  body { background:#fff; }',
-  '  section, .fig { break-inside:avoid; box-shadow:none; }',
-  /* Navigation is the first thing to go: a tab strip on paper is a row of words
-     that do nothing, and the printable assembly repeats neither. */
-  '  .months, .tabs, .up, .noprint { display:none !important; }',
-  /* One room to a page. Only the printable assembly has these; the served page
-     has none, so this costs it nothing. */
-  '  .pv { break-before:page; }',
-  '}',
-].join('\n');
 
 /* The three faces the board uses, embedded.
  *
@@ -14412,388 +14242,327 @@ function appName(id) {
     'com.webos.app.hdmi2': 'HDMI 2', 'com.webos.app.hdmi3': 'HDMI 3',
     'com.webos.app.hdmi4': 'HDMI 4', 'com.webos.app.home': 'Home screen',
     'com.disney.disneyplus-prod': 'Disney+', 'com.apple.appletv': 'Apple TV',
-    'spotify-beehive': 'Spotify', 'com.webos.app.browser': 'Browser',
+    'spotify-beehive': 'Spotify', 'com.webos.app.browser': 'Browser', 'hotstar': 'Hotstar',
   };
   return known[id] || id;
 }
 
-const pageHead = (title) =>
-  '<!doctype html>\n<html lang="en"><head>\n<meta charset="utf-8">\n'
-  + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-  + '<title>' + escHtml(title) + '</title>\n'
-  + '<style>\n' + fontCss() + '\n' + REPORT_CSS + '\n</style>\n</head>\n<body><div class="wrap">\n';
-
-/* The month picker, on the served page only.
- *
- * It offers the months there is a file for and nothing else. A month with no
- * record renders a page of zeroes, and a control that can reach one invites the
- * question "why is August empty" about a house that was simply not being logged
- * yet. `historyMonths()` is the whole of the list — it reads the directory, so
- * the picker cannot claim a month the report cannot draw.
- *
- * It is a real form with a submit button, so it works with **no script at all**.
- * That is not politeness: the strip is the only interactive thing on a page whose
- * whole claim is that it survives being saved and forwarded, and the script in
- * housePage() below only removes the second click.
- *
- * Deliberately absent from the download: a saved file's links back to /report
- * are dead the moment it leaves the house network, and a page full of dead links
- * is a worse artefact than one with no navigation at all. */
-function monthStrip(ym) {
-  const months = historyMonths().slice(0, HISTORY_MONTHS);
-  /* A month reached by a hand-typed URL is not in that list. It is added rather
-     than dropped, because a picker reading September while the page underneath
-     reports August is worse than one admitting there is nothing behind it. */
-  const known = months.includes(ym);
-  const opts = (known ? months : [ym, ...months]).map((m) =>
-    '<option value="' + m + '"' + (m === ym ? ' selected' : '') + '>'
-    + escHtml(monthName(m)) + (m === ym && !known ? ' \u00b7 no record' : '')
-    + '</option>').join('');
-
-  return '<nav class="months">'
-    + '<form class="mpick" method="get" action="/report">'
-    + '<select name="month" aria-label="Which month to report on">' + opts + '</select>'
-    + '<button class="go" type="submit">View</button>'
-    + '</form>'
-    + '<a class="get" href="/report?month=' + ym + '&amp;print=1">Save as PDF</a>'
-    + '<a class="get" href="/report?month=' + ym + '&amp;download=1">Download page</a>'
-    + '</nav>\n';
-}
-
-// The board's amber at a given strength. Stated in full so no CSS function is
-// standing between the number and the colour.
-const warmA = (a) => 'rgba(242,162,51,' + Math.max(0, Math.min(1, a)).toFixed(3) + ')';
-
-const pctWord = (x) => (x >= 0 ? '+' : '\u2212') + Math.round(Math.abs(x) * 100) + '%';
-
-/* Every hour is labelled, not every sixth. The profile above is twenty-four
-   bars whose only address is the number underneath, so somebody who has just
-   read "busiest around 9pm" and wants to find that bar was left counting in
-   sixes. The same string in both views, so it is built once. */
-const HOUR_AXIS = Array.from({ length: 24 }, (_, h) =>
-  '<span' + (h % 6 === 0 ? ' class="q"' : '') + '>'
-  + String(h).padStart(2, '0') + '</span>').join('');
-
-/* ── the house report ─────────────────────────────────────────────────── */
-
-/* ── the report is one document, and the rooms are inside it ──────────────
- *
- * Every view switches on `:target`: a room is `display:none` until its own id is
- * the fragment, and the house stands down while any room is showing. So moving
- * about the report costs **no script at all**, which is what keeps the artefact
- * whole — this file is emailed, saved and opened from disk, and a `file:` URL is
- * the one place a script is most likely to be refused outright. It also means
- * the browser's own Back button walks the rooms, which nothing had to be written
- * to support.
- *
- * The tab strip is repeated inside each view rather than sitting above them, and
- * that repetition is the trick: each copy knows which view it is in, so it can
- * mark its own tab as the current one without anything having to run. Eight
- * rooms of duplicated nav is about 3KB, which is cheaper than the alternative.
- *
- * Ordering matters and is load-bearing: the rooms are emitted **before** the
- * house, because `.rv:target ~ #house` is a following-sibling selector and is
- * the whole of how the house hides. Do not move the house above them. */
-
 const roomSlug = (room) => 'r-' + String(room).toLowerCase()
   .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-function navHtml(rep, current) {
-  const esc = escHtml;
-  const tab = (href, label, here, colour) => '<a class="tb' + (here ? ' here' : '')
-    + '" href="' + href + '">'
-    + (colour ? '<i class="swatch" style="background:' + colour + '"></i>' : '')
-    + esc(label) + '</a>';
-  return '<nav class="tabs">'
-    + tab('#house', 'The house', !current, null)
-    + rep.rooms.filter((x) => x.circuits.length)
-      .map((x) => tab('#' + roomSlug(x.room), sentence(x.room), x.room === current, x.colour))
-      .join('')
+
+/* The board's own seven bands, so a colour is named the way the dashboard names
+   it rather than given as a number nobody has an opinion about. */
+function warmthWord_(v) {
+  return v >= 88 ? 'candlelight' : v >= 72 ? 'amber' : v >= 56 ? 'warm white'
+    : v >= 44 ? 'neutral' : v >= 30 ? 'soft white' : v >= 15 ? 'cool' : 'daylight';
+}
+
+/* ── the monthly report, as a letter ──────────────────────────────────────
+ *
+ * Redrawn on 2026-09-23 for the people it is sent to. One column, a sentence
+ * first, a few pictures that each answer one question, and the fine print
+ * folded away at the foot. Paper by default, because it is read like one and
+ * printed like one; a reader whose device is set to dark gets the same page in
+ * ink. Still no request to anything and no script that matters, so it survives
+ * being saved, emailed and opened from disk.
+ *
+ * Every figure is bounded by the clock. The page before this added room-hours
+ * together and said "lit for 973 h" of a 23-day month, and counted every lamp
+ * on every night as "180 nights left on". A reader who does that sum once stops
+ * trusting the rest, so nothing here is larger than the month it describes.
+ *
+ * The rooms are inside the one document and switch on `:target`: a room is
+ * hidden until its own id is the fragment, and the house stands down while one
+ * is showing. So moving about costs no script, and the browser's Back button
+ * walks the rooms. The rooms are emitted BEFORE the house, because
+ * `.rv:target ~ #house` is a following-sibling selector and is the whole of how
+ * the house hides. Do not move the house above them. */
+const REPORT_CSS = `
+:root { color-scheme: light dark;
+  --paper: #f4eee3; --card: #fbf7ef; --ink: #1f1b16; --soft: #5b5347; --faint: #8b8272;
+  --rule: #e1d6c3; --lamp: #de8c22; --lamp-soft: rgba(222,140,34,.16); --accent: #c9523c;
+  --blind: #b9ae9b; }
+@media (prefers-color-scheme: dark) { :root {
+  --paper: #13110e; --card: #1b1814; --ink: #efe7d9; --soft: #b4aa98; --faint: #7d7465;
+  --rule: #2d2822; --lamp: #f2a233; --lamp-soft: rgba(242,162,51,.14); --accent: #ff7a64;
+  --blind: #5a5247; } }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink);
+  font: 16px/1.55 "Hanken Grotesk", system-ui, sans-serif; }
+.page { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.serif { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; }
+a { color: inherit; }
+
+.top { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  flex-wrap: wrap; padding-bottom: 14px; }
+.top form, .top .gets { display: flex; gap: 8px; flex-wrap: wrap; }
+.top select, .top button, .top a.btn { font: 500 12px/1 "Hanken Grotesk", sans-serif; color: var(--ink);
+  background: var(--card); border: 1px solid var(--rule); border-radius: 999px;
+  padding: 9px 14px; text-decoration: none; cursor: pointer; }
+.top select { font-size: 16px; padding: 6px 12px; }
+
+/* where you are: the house and each room, as a row of chips */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 14px 0; border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule); }
+.tabs a { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; text-decoration: none;
+  color: var(--soft); padding: 6px 11px; border-radius: 999px; border: 1px solid transparent; }
+.tabs a:hover { border-color: var(--rule); }
+.tabs a.here { color: var(--ink); background: var(--card); border-color: var(--rule); font-weight: 500; }
+.tabs i { width: 8px; height: 8px; border-radius: 50%; }
+
+.rv { display: none; }
+.rv:target { display: block; }
+.rv:target ~ #house { display: none; }
+
+header.mast { padding: 42px 0 8px; }
+header.mast h1 { margin: 10px 0 0; font-size: clamp(60px, 14vw, 112px); line-height: .9; letter-spacing: -.02em; }
+header.mast h1 small { font-size: .32em; color: var(--faint); letter-spacing: 0; margin-left: .2em; }
+header.mast h1.room { font-size: clamp(52px, 11vw, 88px); }
+header.mast .span { margin-top: 12px; color: var(--soft); }
+
+.lede { font-size: clamp(24px, 4.6vw, 32px); line-height: 1.28; margin: 34px 0 10px; }
+.lede b { font-weight: 400; font-style: italic; color: var(--accent); }
+.note { color: var(--soft); font-size: 14px; margin: 0 0 6px; }
+
+.figs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 34px 0 8px;
+  background: var(--rule); border: 1px solid var(--rule); border-radius: 18px; overflow: hidden; }
+.fig { background: var(--card); padding: 18px 18px 16px; }
+.fig .n { font-size: clamp(38px, 8vw, 54px); line-height: 1; }
+.fig .n small { font-size: .42em; color: var(--soft); margin-left: 3px; }
+.fig .l { margin-top: 8px; font-size: 13.5px; color: var(--soft); line-height: 1.35; }
+@media (max-width: 520px) { .figs { grid-template-columns: 1fr; }
+  .fig { display: flex; align-items: baseline; gap: 14px; } .fig .l { margin: 0; } }
+
+section { margin-top: 58px; }
+section > h2 { margin: 0 0 4px; font-size: 30px; line-height: 1.1; }
+section > .mono { display: block; margin-bottom: 18px; }
+.cap { color: var(--soft); font-size: 14px; margin: 14px 0 0; }
+
+/* the month as a sheet of moons: the fuller the disc, the more light that day */
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px 6px; }
+.cal .dow { text-align: center; }
+.day { display: grid; justify-items: center; gap: 5px; }
+.moon { position: relative; width: min(46px, 11vw); aspect-ratio: 1; border-radius: 50%;
+  border: 1px solid var(--rule); background: var(--card); overflow: hidden; }
+.moon i { position: absolute; inset: 0; margin: auto; border-radius: 50%; background: var(--lamp);
+  width: calc(var(--f) * 100%); height: calc(var(--f) * 100%); opacity: .92; }
+.day.blind .moon { border: 1.5px dashed var(--blind); }
+.day.none .moon { opacity: .35; }
+.day .d { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.day.peak .d { color: var(--accent); font-weight: 600; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; font-size: 13px; color: var(--soft); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend .k { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--rule); background: var(--card); position: relative; overflow: hidden; }
+.legend .k.full::after { content: ''; position: absolute; inset: 1px; border-radius: 50%; background: var(--lamp); }
+.legend .k.dash { border: 1.5px dashed var(--blind); }
+
+/* one bar per row: a room in its own lamp colour, or a light in its room's */
+.rows { display: grid; gap: 16px; }
+.row { display: grid; grid-template-columns: 150px 1fr 104px; align-items: center; gap: 14px; }
+.row .nm { font-weight: 500; }
+.row a.nm { text-decoration: none; }
+.row a.nm:hover { text-decoration: underline; text-underline-offset: 3px; }
+.row .bar { height: 12px; border-radius: 999px; background: var(--lamp-soft); overflow: hidden; }
+.row .bar i { display: block; height: 100%; border-radius: 999px; }
+.row .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--soft); font-size: 14px; white-space: nowrap; }
+.row .x { grid-column: 2 / -1; margin-top: -10px; font-size: 12.5px; color: var(--faint); }
+.rows.small { gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--rule); }
+.rows.small .nm { font-weight: 400; color: var(--soft); }
+@media (max-width: 520px) { .row { grid-template-columns: 1fr auto; }
+  .row .bar { grid-column: 1 / -1; grid-row: 2; } .row .x { grid-column: 1 / -1; grid-row: 3; margin-top: -8px; } }
+
+/* the day as a clock: midnight at the top, the light around it */
+.clockrow { display: grid; grid-template-columns: 264px 1fr; gap: 24px; align-items: center; }
+@media (max-width: 560px) { .clockrow { grid-template-columns: 1fr; justify-items: center; } }
+.dial { position: relative; width: 220px; aspect-ratio: 1; border-radius: 50%; margin: 22px; }
+.dial .ring { position: absolute; inset: 0; border-radius: 50%; }
+.dial .hole { position: absolute; inset: 26%; border-radius: 50%; background: var(--paper);
+  display: grid; place-content: center; text-align: center; }
+.dial .hole .serif { font-size: 30px; line-height: 1; }
+.dial .t { position: absolute; font-size: 10px; transform: translate(-50%, -50%); }
+.clockrow p { margin: 0 0 10px; }
+
+/* nights: one dot per recorded night, lit where a room was still lit at 2 am */
+.dots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+.dots i { width: 14px; height: 14px; border-radius: 50%; background: var(--rule); }
+.dots i.on { background: var(--lamp); }
+.dots i.blind { background: none; border: 1.5px dashed var(--blind); }
+.nights { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.nights li { display: grid; grid-template-columns: 88px 1fr; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.nights .when { font-variant-numeric: tabular-nums; color: var(--soft); font-size: 14px; }
+.nights .what b { font-weight: 500; }
+.nights .what span { color: var(--soft); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { background: var(--card); border: 1px solid var(--rule); border-radius: 999px; padding: 7px 13px; font-size: 14px; }
+.chip span { color: var(--faint); margin-left: 6px; font-variant-numeric: tabular-nums; }
+
+.road { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--rule); margin: 16px 0 10px; }
+.road i { display: block; height: 100%; }
+.keys { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--soft); margin-bottom: 12px; }
+.keys span { display: inline-flex; align-items: center; gap: 6px; }
+.keys i { width: 9px; height: 9px; border-radius: 50%; }
+
+.empty { color: var(--soft); margin-top: 40px; }
+
+details.fine { margin-top: 64px; border-top: 1px solid var(--rule); padding-top: 18px; color: var(--soft); font-size: 14px; }
+details.fine summary { cursor: pointer; color: var(--ink); font-weight: 500; }
+details.fine p { margin: 12px 0 0; }
+
+@media print {
+  :root { --paper: #fff; --card: #fff; }
+  .top, .tabs { display: none !important; }
+  section, .figs, .row, .nights li { break-inside: avoid; }
+}
+`;
+
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const hourName = (h) => h === 0 ? 'midnight' : h === 12 ? 'noon' : (h % 12) + (h < 12 ? ' am' : ' pm');
+const perDayWord = (h) => h < 0.017 ? 'none' : h < 1 ? Math.round(h * 60) + ' min a day' : h.toFixed(1) + ' h a day';
+const pctWord = (x) => (x >= 0 ? '+' : '−') + Math.round(Math.abs(x) * 100) + '%';
+// FOOT LIGHT reads as "Foot light", and COB 3 stays COB 3.
+const circuitWord = (s) => String(s).trim().split(/\s+/).map((w, i) =>
+  /^(COB|AC|TV|LED|RGB|CCT)$/i.test(w) ? w.toUpperCase()
+    : i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase()).join(' ');
+
+/** The days of the month in reading order, with what the page needs of each. */
+function monthDays(rep) {
+  const [y, m] = rep.ym.split('-').map(Number);
+  const out = [];
+  for (let d = 1; d <= new Date(y, m, 0).getDate(); d++) {
+    const date = new Date(y, m - 1, d);
+    out.push({ d, key: localDay(date), at: date.getTime(), future: date.getTime() >= rep.to,
+      blind: (rep.blindDay.get(localDay(date)) || 0) >= 3600000 });
+  }
+  return out;
+}
+
+/* The moons. Each is measured against this page's own brightest day and by
+   area rather than radius, so a day with twice the light has twice the disc. */
+function moonsHtml(rep, dayMs, peakKey, what) {
+  const [y, m] = rep.ym.split('-').map(Number);
+  const max = Math.max(1, ...dayMs.values());
+  let html = ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => '<div class="dow mono">' + d + '</div>').join('');
+  for (let i = 0; i < (new Date(y, m - 1, 1).getDay() + 6) % 7; i++) html += '<div></div>';
+  for (const day of monthDays(rep)) {
+    const ms = dayMs.get(day.key) || 0;
+    const cls = ['day', day.future ? 'none' : '', day.blind ? 'blind' : '',
+      peakKey === day.key ? 'peak' : ''].filter(Boolean).join(' ');
+    const title = day.future ? '' : day.d + ' ' + MONTH_NAMES[m - 1] + ': ' + what(day.key, ms)
+      + (day.blind ? ', not read for part of the day' : '');
+    html += '<div class="' + cls + '" title="' + escHtml(title) + '"><div class="moon">'
+      + (ms > 0 ? '<i style="--f:' + Math.sqrt(Math.min(1, ms / max)).toFixed(3) + '"></i>' : '')
+      + '</div><div class="d">' + day.d + '</div></div>';
+  }
+  const blind = monthDays(rep).some((d) => d.blind && !d.future);
+  return '<div class="cal">' + html + '</div>'
+    + '<div class="legend"><span><i class="k full"></i>the brightest day</span><span><i class="k"></i>dark</span>'
+    + (blind ? '<span><i class="k dash"></i>not read for part of the day</span>' : '') + '</div>';
+}
+
+/* The clock. Twenty-four slices, midnight at the top, each as deep as that
+   hour's share of the light. Plain rgba rather than color-mix, because this
+   file is opened on whatever phone somebody had, and a slice that renders grey
+   where it meant amber is a wrong picture rather than a plain one. */
+function dialHtml(hours) {
+  const peak = hours.indexOf(Math.max(...hours));
+  const quiet = hours.indexOf(Math.min(...hours));
+  const top = Math.max(1, hours[peak]);
+  const stops = hours.map((ms, h) => 'rgba(230,146,40,' + (0.08 + 0.92 * ms / top).toFixed(3) + ') '
+    + (h * 15) + 'deg ' + (h * 15 + 15) + 'deg').join(', ');
+  const ticks = [0, 3, 6, 9, 12, 15, 18, 21].map((h) => {
+    const ang = (h * 15 + 7.5 - 90) * Math.PI / 180;
+    return '<span class="t mono" style="left:' + (50 + 60 * Math.cos(ang)).toFixed(1) + '%;top:'
+      + (50 + 60 * Math.sin(ang)).toFixed(1) + '%">' + String(h).padStart(2, '0') + '</span>';
+  }).join('');
+  return { peak, quiet,
+    html: '<div class="dial"><div class="ring" style="background:conic-gradient(' + stops + ')"></div>'
+      + '<div class="hole"><div class="mono">busiest</div><div class="serif">' + hourName(peak) + '</div></div>'
+      + ticks + '</div>' };
+}
+
+/* A row of one dot per recorded night, then the nights with the most still lit,
+   in date order. `nights` is already the late nights with the night lights
+   taken out. */
+function nightsHtml(rep, nights, withRoom) {
+  const lit = new Set(nights.map((n) => n.day));
+  const dots = monthDays(rep).filter((d) => !d.future).map((d) => '<i class="'
+    + (lit.has(d.key) ? 'on' : d.blind ? 'blind' : '') + '" title="night of ' + d.d + '"></i>').join('');
+  const rows = nights.slice().sort((a, b) => b.lights.length - a.lights.length || b.at - a.at)
+    .slice(0, 6).sort((a, b) => a.at - b.at).map((n) => {
+      const byRoom = new Map();
+      for (const l of n.lights) byRoom.set(l.room, (byRoom.get(l.room) || []).concat(l.name));
+      const what = [...byRoom].map(([room, names]) => (withRoom ? '<b>' + escHtml(sentence(room)) + '</b> ' : '')
+        + '<span>' + escHtml(names.length > 3 ? names.length + ' lights' : names.map(circuitWord).join(', '))
+        + '</span>').join(' · ');
+      const d = new Date(n.at);
+      return '<li><div class="when">' + DOW_SHORT[d.getDay()] + ' ' + d.getDate() + '</div><div class="what">'
+        + what + '</div></li>';
+    }).join('');
+  return '<div class="dots">' + dots + '</div>' + (rows ? '<ul class="nights">' + rows + '</ul>' : '');
+}
+
+/* How things were switched on, as a bar and a key. Below a floor it says
+   nothing: a split of three switch-ons is noise presented as a finding. */
+function roadsBlock(roads, floor) {
+  const seen = ROADS.filter((k) => (roads && roads[k]) > 0);
+  const total = seen.reduce((n, k) => n + roads[k], 0);
+  if (total < floor) return '';
+  const pct = (k) => Math.round((roads[k] || 0) / total * 100);
+  const wall = pct('elsewhere');
+  const said = pct('voice') + pct('spoken');
+  return '<section><h2 class="serif">How things were switched on</h2><span class="mono">'
+    + total + ' times something came on</span>'
+    + '<div class="road">' + seen.map((k) => '<i style="width:' + (roads[k] / total * 100).toFixed(2)
+      + '%;background:' + ROAD_COLOUR[k] + '"></i>').join('') + '</div>'
+    + '<div class="keys">' + seen.filter((k) => pct(k) >= 1).map((k) => '<span><i style="background:'
+      + ROAD_COLOUR[k] + '"></i>' + pct(k) + '% ' + escHtml(ROAD_LABEL[k]) + '</span>').join('') + '</div>'
+    + '<p>' + (wall >= 50 ? 'Mostly at the wall switch or in the vendor’s app. ' : '')
+    + (said ? said + '% were asked for out loud or in a sentence. ' : '')
+    + 'Worked out from what had just been sent, so a wall switch pressed in the same few seconds as a command counts as the command.</p>'
+    + '</section>';
+}
+
+function chipsHtml(apps) {
+  return '<div class="chips">' + apps.map((a) => '<span class="chip">' + escHtml(appName(a.app))
+    + '<span>' + escHtml(hoursTidy(a.hours)) + '</span></span>').join('') + '</div>';
+}
+
+const roomLink = (room) => '#' + roomSlug(room);
+
+function tabsHtml(rep, current) {
+  const tab = (href, label, here, colour) => '<a class="' + (here ? 'here' : '') + '" href="' + href + '">'
+    + (colour ? '<i style="background:' + colour + '"></i>' : '') + escHtml(label) + '</a>';
+  return '<nav class="tabs">' + tab('#house', 'The house', !current, null)
+    + reportRooms(rep).map((x) => tab(roomLink(x.room), sentence(x.room), x.room === current, x.colour)).join('')
     + '</nav>';
 }
 
-/* ── one room, as its own view inside the house's report ──────────────────
- *
- * It reads off the house's single replay rather than running its own. There used
- * to be a second aggregation for this, which meant two paths over one month of
- * events and two chances to disagree about it. */
-function roomView(x, rep) {
-  const esc = escHtml;
-  const nights = rep.nights.filter((n) => n.room === x.room);
+const reportRooms = (rep) => rep.rooms.filter((x) => x.circuits.length);
 
-  let busiest = null;
-  for (const [day, ms] of x.dayMs) if (!busiest || ms > busiest.ms) busiest = { day, ms };
-
-  let longest = null;
-  for (const c of x.circuits) {
-    for (const r of c.runs || []) {
-      const hours = (r.to - r.from) / 3600000;
-      if (!longest || hours > longest.hours) longest = { name: c.name, hours, from: r.from };
-    }
-  }
-
-  const top = x.circuits.length ? x.circuits[0].hours : 1;
-  const rows = x.circuits.filter((c) => c.hours > 0.008 || c.times > 0).map((c) =>
-    '<div class="room cir"><div class="nm">' + esc(c.name)
-    + '<span class="kd">' + esc(c.kind) + '</span></div>'
-    + '<div class="track"><i style="width:'
-    + Math.max(1.5, (c.hours / (top || 1)) * 100).toFixed(1) + '%;--c:' + x.colour
-    + ';--c2:' + x.colour + '99"></i></div>'
-    + '<div class="t">' + (c.times ? c.times + '\u00d7' : '\u2014') + '</div>'
-    + '<div class="h">' + hoursWord(c.hours) + '</div></div>').join('');
-
-  const peak = Math.max(...x.hourMs, 1);
-  const prof = x.hourMs.map((ms) => {
-    const h = Math.max(2, Math.round((ms / peak) * 100));
-    const cls = ms === peak && ms > 0 ? 'pk' : ms > 0 ? 'on' : '';
-    return '<i class="' + cls + '" style="height:' + h + '%"></i>';
-  }).join('');
-
-  /* The sentence above has already said the hours, so these say what it did not
-     — the same rule as the house's figures. Lit hours appear here only when the
-     sentence could not be formed, which is a room nothing came on in. */
-  const times = x.circuits.reduce((a, c) => a + c.times, 0);
-  const figs = [
-    x.litHours <= 0.008 && x.hours > 0.008
-      ? ['<span class="n">' + hoursWord(x.hours) + '</span>', 'in use'] : null,
-    x.fanHours > 0.008 ? ['<span class="n">' + hoursWord(x.fanHours) + '</span>', 'fans'] : null,
-    x.acHours > 0.008 ? ['<span class="n">' + hoursWord(x.acHours) + '</span>',
-      'air conditioning<span class="hedge">as commanded</span>'] : null,
-    x.screens.hours > 0.008
-      ? ['<span class="n">' + hoursWord(x.screens.hours) + '</span>', 'television'] : null,
-    ['<span class="n">' + (nights.length || '\u2014') + '</span>',
-      nights.length === 1 ? 'night left on' : 'nights left on'],
-    x.tune != null ? ['<span class="n" style="font-size:clamp(17px,3.2vw,21px)">'
-      + esc(warmthWord_(x.tune)) + '</span>', 'usually set to'] : null,
-    times ? ['<span class="n">' + times + '\u00d7</span>',
-      'something was switched on'] : null,
-  ].filter(Boolean).slice(0, 4);
-
-  return '<header><a class="up" href="#house">' + esc(sentence(HOUSE_NAME)) + '</a>'
-    + '<h1 class="month"><i class="swatch big" style="background:' + x.colour + '"></i>'
-    + esc(sentence(x.room)) + '</h1>'
-    + '<div class="sofar">' + esc(monthName(rep.ym))
-    + (rep.whole ? '' : ' \u00b7 so far, to ' + dayWord(rep.to)) + '</div>'
-    + '<p class="say">' + (x.hours < 0.008
-      ? 'Nothing came on in this room this month.'
-      : (x.litHours > 0.008
-          ? 'Lit for <b>' + hoursWord(x.litHours) + '</b>'
-          : 'Something was on for <b>' + hoursWord(x.hours) + '</b>')
-        + (x.hours > x.litHours + 0.05
-          ? ', and something was on for <span class="ink">' + hoursWord(x.hours) + '</span>.'
-          : '.')) + '</p></header>\n'
-
-    + '<div class="figs">' + figs.map(([n, l]) =>
-      '<div class="fig">' + n + '<div class="l">' + l + '</div></div>').join('') + '</div>\n'
-
-    + (rows ? '<section><h2>Every circuit</h2>' + rows
-      + '<p class="note">Times switched on, then hours. An infrared unit\u2019s hours are what '
-      + 'the hub sent it, not what it did.</p></section>\n' : '')
-
-    + (x.hours > 0.008 ? '<section><h2>The shape of a day</h2><div class="prof">' + prof + '</div>'
-      + '<div class="axis">' + HOUR_AXIS + '</div>'
-      + (busiest ? '<p class="note">Busiest day was <b>'
-        + dayWord(new Date(busiest.day + 'T12:00:00').getTime()) + '</b>, at '
-        + hoursWord(busiest.ms / 3600000) + '.</p>' : '') + '</section>\n' : '')
-
-    + '<section><h2>Left on through the night</h2>'
-    + (nights.length
-      ? nights.slice(0, 8).map((n) => '<div class="row"><div class="who"><b>' + esc(n.name)
-        + '</b> <span class="where">night of ' + dayWord(n.night - 86400000) + '</span></div>'
-        + '<div class="h warn">' + hoursWord(n.hours) + '</div></div>').join('')
-      : '<p class="none">Nothing was left running in the small hours.</p>')
-    + (longest && longest.hours > 0.05 ? '<p class="note">The longest single run was <b>'
-      + esc(longest.name) + '</b> for ' + hoursWord(longest.hours) + ', from '
-      + clockWord(longest.from) + ' on ' + dayWord(longest.from) + '.</p>' : '')
-    + '</section>\n'
-
-    + (x.screens.apps.length ? '<section><h2>On the screen</h2>'
-      + x.screens.apps.map((a) => '<div class="row"><div class="who">' + esc(appName(a.app))
-        + '</div><div class="h">' + hoursWord(a.hours) + '</div></div>').join('')
-      + '<p class="note">A television reports honestly, so these hours are real readings '
-      + 'rather than commands.</p></section>\n' : '')
-
-    /* A lower floor than the house, because a room is a fraction of it and eight
-       switch-ons in one bedroom is a real habit where eight across the house is
-       nothing. Still a floor: the point of this section is that rooms differ, and
-       a room with three events cannot show that. */
-    + ((() => {
-      const r = roadsHtml(x.roads, 6);
-      return r ? '<section><h2>How this room was told</h2>' + r.html
-        + '<p class="note">Of ' + r.total + ' times something here came on. Rooms differ more '
-        + 'than the house does \u2014 a bedroom is mostly spoken to, a hallway is mostly a wall '
-        + 'switch.</p></section>\n' : '';
-    })());
+/* The month picker and the save link, on the served page only. It is a
+   real form, so it works with no script at all; the script below only removes
+   the second click and keeps the room you were in. A saved file leaves this
+   out, because its links back to /report are dead the moment it leaves the
+   house network. It offers only months there is a file for. */
+function topHtml(rep) {
+  const months = historyMonths().slice(0, HISTORY_MONTHS);
+  const known = months.includes(rep.ym);
+  const opts = (known ? months : [rep.ym, ...months]).map((m) => '<option value="' + m + '"'
+    + (m === rep.ym ? ' selected' : '') + '>' + escHtml(monthName(m))
+    + (m === rep.ym && !known ? ' · no record' : '') + '</option>').join('');
+  return '<div class="top"><form class="mpick" method="get" action="/report">'
+    + '<select name="month" aria-label="Which month to report on">' + opts + '</select>'
+    + '<button class="go" type="submit">View</button></form>'
+    + '<div class="gets"><a class="btn" href="/report?month=' + rep.ym + '&amp;download=1"'
+    + ' title="One file, with the house and every room as tabs. It opens with no network.">'
+    + 'Save as a file</a></div></div>';
 }
 
-/* ── the house, which is what the report opens on ─────────────────────── */
-
-function houseView(rep) {
-  const esc = escHtml;
-  const partial = !rep.whole;
-
-  /* The sentence. It says the one number worth carrying away and nothing else;
-     everything that qualifies it is in the figures below or the footer. */
-  const say = rep.litHours < 0.05
-    ? 'Nothing came on in the house this month.'
-    : 'The house was lit for <b>' + hoursWord(rep.litHours) + '</b>'
-      + (rep.roomsLit ? ', across <span class="ink">' + rep.roomsLit
-         + (rep.roomsLit === 1 ? ' room' : ' rooms') + '</span>' : '') + '.';
-
-  const trend = rep.compare
-    ? '<p class="trend">' + (Math.abs(rep.compare.delta) < 0.02
-        ? 'Almost exactly ' + monthName(rep.compare.ym).split(' ')[0] + '\u2019s <b>'
-          + hoursWord(rep.compare.hours) + '</b>.'
-        : '<b>' + pctWord(rep.compare.delta) + '</b> on '
-          + monthName(rep.compare.ym).split(' ')[0] + ', which was '
-          + hoursWord(rep.compare.hours) + '.') + '</p>'
-    : '';
-
-  /* The sentence above has already said the total, so these four say what it
-     does not. Lit hours only appear here when the sentence could not be formed,
-     which is a month with nothing in it. */
-  const figs = [
-    rep.busiest && rep.busiest.hours > 0.05
-      ? ['<span class="n" style="font-size:clamp(19px,3.6vw,23px)">' + esc(sentence(rep.busiest.room))
-         + '</span>', 'busiest room<span class="hedge">' + hoursWord(rep.busiest.hours) + ' in use</span>']
-      : null,
-    rep.screenHours > 0.05 ? ['<span class="n">' + hoursWord(rep.screenHours) + '</span>', 'television'] : null,
-    ['<span class="n">' + (rep.nights.length || '\u2014') + '</span>',
-     rep.nights.length === 1 ? 'night something was left on' : 'nights something was left on'],
-    rep.acHours > 0.05
-      ? ['<span class="n">' + hoursWord(rep.acHours) + '</span>',
-         'air conditioning<span class="hedge">as commanded, not measured</span>'] : null,
-    rep.fanHours > 0.05 ? ['<span class="n">' + hoursWord(rep.fanHours) + '</span>', 'fans'] : null,
-    rep.busiestDay ? ['<span class="n" style="font-size:clamp(19px,3.6vw,23px)">'
-      + dayWord(new Date(rep.busiestDay.day + 'T12:00:00').getTime()) + '</span>',
-      'busiest day<span class="hedge">' + hoursWord(rep.busiestDay.ms / 3600000)
-      + ' of rooms in use</span>'] : null,
-    ['<span class="n">' + hoursWord(rep.litHours) + '</span>', 'of light'],
-  ].filter(Boolean).slice(0, 4);
-
-  /* ── rooms ── */
-  const top = rep.rooms.length ? rep.rooms[0].hours : 1;
-  const roomRows = rep.rooms.filter((x) => x.hours > 0.008).map((x) => {
-    const w = Math.max(1.5, (x.hours / (top || 1)) * 100);
-    /* A fragment, so the drill-down survives the file being emailed — which the
-       old absolute link to /report/<room> did not. */
-    const name = x.circuits.length
-      ? '<a href="#' + roomSlug(x.room) + '">' + esc(sentence(x.room)) + '</a>'
-      : esc(sentence(x.room));
-    return '<div class="room"><div class="nm">' + name + '</div>'
-      + '<div class="track"><i style="width:' + w.toFixed(1) + '%;--c:' + x.colour
-      + ';--c2:' + x.colour + '99"></i></div>'
-      + '<div class="h">' + hoursTidy(x.hours) + '</div></div>';
-  }).join('\n');
-
-  /* ── the calendar ── */
-  const [yy, mm] = rep.ym.split('-').map(Number);
-  const first = new Date(yy, mm - 1, 1);
-  const lead = (first.getDay() + 6) % 7;                 // weeks start Monday
-  const days = new Date(yy, mm, 0).getDate();
-  let peakDay = 0;
-  for (const ms of rep.dayMs.values()) peakDay = Math.max(peakDay, ms);
-  const cells = [];
-  for (let i = 0; i < lead; i++) cells.push('<div class="d pad"></div>');
-  for (let d = 1; d <= days; d++) {
-    const key = rep.ym + '-' + String(d).padStart(2, '0');
-    const ms = rep.dayMs.get(key) || 0;
-    const share = peakDay ? ms / peakDay : 0;
-    // Eased, or a month with one heavy evening leaves every other day invisible.
-    const a = ms > 0 ? 0.14 + Math.pow(share, 0.6) * 0.86 : 0;
-    const style = ms > 0 ? ' style="background:' + warmA(a) + '"' : '';
-    cells.push('<div class="d' + (ms > 0 ? ' lit' : '') + (share > 0.55 ? ' hot' : '') + '"' + style
-      + '><span>' + d + '</span></div>');
-  }
-  const cal = '<div class="cal">'
-    + ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((w) => '<div class="wd">' + w + '</div>').join('')
-    + cells.join('') + '</div>';
-
-  /* ── hour of day ── */
-  const peakHour = Math.max(...rep.hourMs, 1);
-  const prof = rep.hourMs.map((ms) => {
-    const h = Math.max(2, Math.round((ms / peakHour) * 100));
-    const cls = ms === peakHour && ms > 0 ? 'pk' : ms > 0 ? 'on' : '';
-    return '<i class="' + cls + '" style="height:' + h + '%"></i>';
-  }).join('');
-
-  const nights = rep.nights.slice(0, 8).map((n) =>
-    '<div class="row"><div class="who"><b>' + esc(n.name) + '</b> '
-    + '<span class="where">' + esc(sentence(n.room)) + ' \u00b7 night of '
-    + dayWord(n.night - 86400000) + '</span></div>'
-    + '<div class="h warn">' + hoursWord(n.hours) + '</div></div>').join('');
-
-  const roads = roadsHtml(rep.hands, 12);
-
-  return '<header><div class="house">' + esc(HOUSE_NAME) + '</div>'
-    + '<h1 class="month">' + esc(monthName(rep.ym)) + '</h1>'
-    + (partial ? '<div class="sofar">So far \u2014 to ' + dayWord(rep.to) + ', ' + clockWord(rep.to) + '</div>' : '')
-    + '<p class="say">' + say + '</p>' + trend + '</header>\n'
-
-    + '<div class="figs">' + figs.map(([n, l]) =>
-      '<div class="fig">' + n + '<div class="l">' + l + '</div></div>').join('') + '</div>\n'
-
-    + (roomRows ? '<section><h2>Room by room</h2>' + roomRows
-      + '<p class="note">How long each room had something on, and each bar drawn in the '
-      + 'colour that room\u2019s own lamps were set to. '
-      + '<b>Open a room for its own report.</b></p></section>\n' : '')
-
-    + '<section><h2>' + esc(monthName(rep.ym).split(' ')[0]) + ', day by day</h2>' + cal
-    + '<div class="legend">quiet'
-    + [0.14, 0.4, 0.68, 1].map((a) => '<i style="background:' + warmA(a) + '"></i>').join('')
-    + 'busy</div>'
-    + (rep.busiestDay ? '<p class="note">Busiest was <b>'
-        + dayWord(new Date(rep.busiestDay.day + 'T12:00:00').getTime()) + '</b>, with '
-        + hoursWord(rep.busiestDay.ms / 3600000) + ' of rooms in use.</p>' : '')
-    + '</section>\n'
-
-    + '<section><h2>The shape of a day</h2><div class="prof">' + prof + '</div>'
-    + '<div class="axis">' + HOUR_AXIS + '</div>'
-    + '<p class="note">Every hour of the month laid on one day, so this is when the house '
-    + 'is awake rather than what any single day looked like.</p></section>\n'
-
-    + '<section><h2>Left on through the night</h2>'
-    + (nights || '<p class="none">Nothing was still running in the small hours. '
-        + 'A good month.</p>')
-    + (rep.longest ? '<p class="note">The longest single run was <b>' + esc(rep.longest.name)
-        + '</b> in ' + esc(sentence(rep.longest.room)) + ' for ' + hoursWord(rep.longest.hours)
-        + ', from ' + clockWord(rep.longest.from) + ' on ' + dayWord(rep.longest.from)
-        + '.</p>' : '')
-    + '</section>\n'
-
-    + (rep.apps.length || rep.cues.length
-      ? '<section><h2>Screens and cues</h2><div class="pair">'
-        + '<div><div class="sub">On the screen</div>' + (rep.apps.length
-          ? rep.apps.map((a) => '<div class="row"><div class="who">' + esc(appName(a.app))
-            + '</div><div class="h">' + hoursWord(a.hours) + '</div></div>').join('')
-          : '<p class="none">No television time recorded.</p>') + '</div>'
-        + '<div><div class="sub">Cues pressed</div>' + (rep.cues.length
-          ? rep.cues.map((c) => '<div class="row"><div class="who">' + esc(c.name)
-            + '</div><div class="h">' + c.times + '\u00d7</div></div>').join('')
-          : '<p class="none">No cues were pressed.</p>') + '</div>'
-        + '</div><p class="note">Cues are house-wide. A television\u2019s hours are real '
-        + 'readings \u2014 a set reports what its own remote did.</p></section>\n' : '')
-
-    + (roads ? '<section><h2>How the house was told</h2>' + roads.html
-      + '<p class="note">Of ' + roads.total + ' times something in the house came on. Each one '
-      + 'is recorded with the road it came down \u2014 a spoken command, a cue, a schedule \u2014 so '
-      + 'the house can say how it was asked and not merely that it was. Inferred from what had '
-      + 'just been sent, so a wall switch pressed in the same few seconds as a command is '
-      + 'counted as the command. Nothing about what was said is kept, only that something '
-      + 'was.</p></section>\n' : '');
-}
-
-/* The picker works without this — it is a form with a submit button — so all of
- * this does is remove the second click and carry the fragment along, which means
- * changing the month from inside a room lands in that room instead of throwing
- * you back to the house. A GET form cannot post a fragment, so that half is only
- * available here.
- *
- * Served pages only, for the reason the strip itself is: the download has no
- * strip, so it has no script either, and stays a file that opens anywhere.
- *
- * Classes rather than ids, because the strip is emitted once per view and nine
- * copies of an id is nine bugs. */
 const PICK_JS = `<script>
 (function () {
   var forms = document.querySelectorAll('.mpick');
@@ -14808,140 +14577,217 @@ const PICK_JS = `<script>
 </script>
 `;
 
+function mastHtml(rep, title, cls) {
+  const [y, m] = rep.ym.split('-').map(Number);
+  const last = new Date(rep.to - 1);
+  return '<header class="mast"><div class="mono">' + escHtml(HOUSE_NAME) + ' · '
+    + (cls ? MONTH_NAMES[m - 1] + ' ' + y : 'the month') + '</div>'
+    + '<h1 class="serif' + (cls ? ' ' + cls : '') + '">' + title + '</h1>'
+    + '<div class="span">' + (rep.whole ? 'The whole month' : '1 to ' + last.getDate() + ' '
+      + MONTH_NAMES[m - 1] + ', so far') + ' · ' + rep.days + ' days recorded</div></header>';
+}
+
+function houseArticle(rep) {
+  const esc = escHtml;
+  const [y, m] = rep.ym.split('-').map(Number);
+  const seen = Math.max(1, rep.days);
+  const rooms = reportRooms(rep).slice().sort((a, b) => b.litHours - a.litHours);
+  if (!rooms.length) {
+    return mastHtml(rep, MONTH_NAMES[m - 1] + '<small>' + y + '</small>')
+      + '<p class="empty">Nothing was recorded for this month yet.</p>';
+  }
+  const lead = rooms[0];
+
+  /* Rooms lit, not "a light on somewhere". A foot light burning all night
+     makes the house "lit" at 3 am on every night of the month, which is true
+     and tells nobody anything. Counting rooms lit gives the evening its shape
+     back: one night light is one room, a lit evening is four. */
+  const hours = new Array(24).fill(0);
+  const roomDay = new Map();
+  for (const x of rooms) {
+    byHour(x.litRuns).forEach((ms, h) => { hours[h] += ms; });
+    for (const [day, ms] of perDay(x.litRuns)) roomDay.set(day, (roomDay.get(day) || 0) + ms);
+  }
+  const dial = dialHtml(hours);
+  const atPeak = hours[dial.peak] / 3600000 / seen;
+  let topDay = null;
+  for (const [day, ms] of roomDay) if (!topDay || ms > topDay.ms) topDay = { day, ms };
+
+  const lateDays = new Set(rep.litNights.map((n) => n.day)).size;
+  const lede = esc(sentence(lead.room)) + ' was lit the longest, about <b>'
+    + Math.round(lead.litHours / seen) + ' hours a day</b>. '
+    + 'The house is busiest around <b>' + hourName(dial.peak) + '</b>, and '
+    + (lateDays ? 'on <b>' + lateDays + (lateDays === 1 ? ' night' : ' nights') + '</b> a room was still lit at 2 am.'
+      : 'no room was still lit at 2 am.');
+  /* Only against a month that was recorded for most of its length: "down 96%"
+     against four logged days is a lie about the house. */
+  const trend = rep.compare ? (Math.abs(rep.compare.delta) < 0.02
+    ? 'About the same amount of light as ' + MONTH_NAMES[Number(rep.compare.ym.split('-')[1]) - 1] + '.'
+    : pctWord(rep.compare.delta) + ' light compared with ' + MONTH_NAMES[Number(rep.compare.ym.split('-')[1]) - 1] + '.') : '';
+
+  const maxLit = Math.max(0.01, ...rooms.map((x) => x.litHours));
+  const roomRows = rooms.map((x) => {
+    const extra = [x.fanHours > 0.5 ? 'fan ' + perDayWord(x.fanHours / seen) : '',
+      x.acHours > 0.5 ? 'AC ' + perDayWord(x.acHours / seen) : ''].filter(Boolean).join(' · ');
+    return '<div class="row"><a class="nm" href="' + roomLink(x.room) + '">' + esc(sentence(x.room)) + '</a>'
+      + '<div class="bar"><i style="width:' + Math.max(1.5, x.litHours / maxLit * 100).toFixed(1)
+      + '%;background:' + x.colour + '"></i></div>'
+      + '<div class="v">' + esc(perDayWord(x.litHours / seen)) + '</div>'
+      + (extra ? '<div class="x">' + esc(extra) + '</div>' : '') + '</div>';
+  }).join('');
+
+  const tv = rep.screenHours;
+  return mastHtml(rep, MONTH_NAMES[m - 1] + '<small>' + y + '</small>')
+    + '<p class="lede serif">' + lede + '</p>'
+    + (trend ? '<p class="note">' + esc(trend) + '</p>' : '')
+    + (rep.blindHours >= 0.5 ? '<p class="note">For <b>' + esc(hoursTidy(rep.blindHours))
+      + '</b> the house could not be read, so those hours are left out.</p>' : '')
+    + '<div class="figs">'
+    + '<div class="fig"><div class="n serif">' + atPeak.toFixed(1) + '</div><div class="l">rooms lit at '
+      + hourName(dial.peak) + ', on a typical day</div></div>'
+    + '<div class="fig"><div class="n serif">' + lateDays + '<small>of ' + seen + '</small></div>'
+      + '<div class="l">nights a room was still lit at 2 am</div></div>'
+    + '<div class="fig"><div class="n serif">' + Math.round(tv) + '<small>h</small></div>'
+      + '<div class="l">of television, all month</div></div>'
+    + '</div>'
+
+    + '<section><h2 class="serif">Day by day</h2><span class="mono">the fuller the moon, the more of the house was lit</span>'
+    + moonsHtml(rep, roomDay, topDay && topDay.day, (key, ms) => (rep.roomsLitDay.get(key) || 0)
+      + ' rooms lit, ' + hoursTidy(ms / 3600000) + ' of room light')
+    + (topDay ? '<p class="cap">The brightest day was <b>' + esc(DOW_SHORT[new Date(topDay.day).getDay()]
+      + ' ' + dayWord(new Date(topDay.day).getTime())) + '</b>: ' + (rep.roomsLitDay.get(topDay.day) || 0)
+      + ' rooms were lit that day, ' + esc(hoursTidy(topDay.ms / 3600000)) + ' between them.</p>' : '')
+    + '</section>'
+
+    + '<section><h2 class="serif">Room by room</h2><span class="mono">lights on, on a typical day</span>'
+    + '<div class="rows">' + roomRows + '</div>'
+    + '<p class="cap">Each bar is drawn in the colour that room’s lamps were set to. Open a room for its own page.</p></section>'
+
+    + '<section><h2 class="serif">The shape of a day</h2><span class="mono">every day of the month laid on one clock</span>'
+    + '<div class="clockrow">' + dial.html + '<div><p>Busiest around <b>' + hourName(dial.peak) + '</b>, when '
+    + atPeak.toFixed(1) + ' rooms are usually lit. Quietest around <b>' + hourName(dial.quiet) + '</b>.</p>'
+    + '<p class="cap">Midnight is at the top. The deeper the colour, the more rooms were lit at that hour.</p></div></div></section>'
+
+    + '<section><h2 class="serif">Late nights</h2><span class="mono">lights still on at 2 am · fans and AC are left out</span>'
+    + (rep.nightLights.length ? '<p>The night lights, on most nights: '
+      + rep.nightLights.map((l) => '<b>' + esc(circuitWord(l.name)) + '</b> in ' + esc(sentence(l.room))).join(', ')
+      + '. They are not counted here.</p>' : '')
+    + '<p>' + (rep.nightLights.length ? 'Apart from those, a' : 'A') + ' room was still lit at 2 am on <b>'
+      + lateDays + ' of ' + seen + '</b> nights. Some of that is people up late and some is a light left on. The house cannot tell which.</p>'
+    + nightsHtml(rep, rep.litNights, true) + '</section>'
+
+    + (tv >= 0.5 ? '<section><h2 class="serif">On the screens</h2><span class="mono">'
+      + esc(hoursTidy(tv)) + ' of television</span>' + chipsHtml(rep.apps)
+      + '<p class="cap">A television reports what its own remote did, so these hours are real.</p></section>' : '')
+    + (rep.cues.length ? '<section><h2 class="serif">Cues</h2><span class="mono">pressed this month</span>'
+      + '<div class="chips">' + rep.cues.map((c) => '<span class="chip">' + esc(c.name) + '<span>'
+        + (c.times === 1 ? 'once' : c.times + ' times') + '</span></span>').join('') + '</div></section>' : '')
+    + roadsBlock(rep.hands, 12);
+}
+
+function roomArticle(x, rep) {
+  const esc = escHtml;
+  const seen = Math.max(1, rep.days);
+  const dayMs = perDay(x.litRuns);
+  const dial = dialHtml(byHour(x.litRuns));
+  let topDay = null;
+  for (const [day, ms] of dayMs) if (!topDay || ms > topDay.ms) topDay = { day, ms };
+  const nights = rep.litNights.map((n) => ({ ...n, lights: n.lights.filter((l) => l.room === x.room) }))
+    .filter((n) => n.lights.length);
+  const mine = rep.nightLights.filter((l) => l.room === x.room);
+  const lights = x.circuits.filter((c) => c.kind === 'light' && c.hours >= 0.01);
+  const others = x.circuits.filter((c) => (c.kind === 'fan' || c.kind === 'climate') && c.hours >= 0.01);
+  const switched = lights.reduce((n, c) => n + c.times, 0);
+
+  const bits = [];
+  if (x.litHours >= 0.05) {
+    bits.push('Lit for about <b>' + esc(perDayWord(x.litHours / seen)) + '</b>, most often around <b>'
+      + hourName(dial.peak) + '</b>.');
+    if (x.tune != null) bits.push('Its lamps were mostly set to <b>' + warmthWord_(x.tune) + '</b>.');
+  } else bits.push('Its lights were hardly used this month.');
+  const fan = x.fanHours > 0.5;
+  const running = [fan ? 'the fan ran about ' + perDayWord(x.fanHours / seen) : '',
+    x.acHours > 0.5 ? 'the AC ' + (fan ? '' : 'ran ') + 'about ' + perDayWord(x.acHours / seen) : ''].filter(Boolean);
+
+  const maxLit = Math.max(0.01, ...lights.map((c) => c.hours));
+  const lightRows = lights.map((c) => '<div class="row"><div class="nm">' + esc(circuitWord(c.name)) + '</div>'
+    + '<div class="bar"><i style="width:' + Math.max(1.5, c.hours / maxLit * 100).toFixed(1) + '%;background:'
+    + x.colour + '"></i></div><div class="v">' + esc(perDayWord(c.hours / seen)) + '</div>'
+    + '<div class="x">switched on ' + c.times + (c.times === 1 ? ' time' : ' times') + '</div></div>').join('');
+  const otherRows = others.map((c) => '<div class="row"><div class="nm">' + esc(circuitWord(c.name)) + '</div>'
+    + '<div class="bar"><i style="width:' + Math.max(1.5, c.hours / (seen * 24) * 100).toFixed(1)
+    + '%;background:#9fb0bd"></i></div><div class="v">' + esc(perDayWord(c.hours / seen)) + '</div></div>').join('');
+
+  const tv = x.screens.hours;
+  return mastHtml(rep, esc(sentence(x.room)), 'room')
+    + '<p class="lede serif">' + bits.join(' ') + '</p>'
+    + (running.length ? '<p class="note">' + esc(running.join(', and ').replace(/^./, (c) => c.toUpperCase())) + '.'
+      + (others.some((c) => c.kind === 'climate' && isAcRecord((devices.get(c.id) || {}).record || {}))
+        ? ' The AC is infrared, so its hours are what the hub sent, not what the unit did.' : '')
+      + '</p>' : '')
+    + '<div class="figs">'
+    + '<div class="fig"><div class="n serif">' + (x.litHours / seen >= 1 ? (x.litHours / seen).toFixed(1) + '<small>h</small>'
+      : Math.round(x.litHours / seen * 60) + '<small>min</small>') + '</div>'
+      + '<div class="l">lights on, on a typical day</div></div>'
+    + '<div class="fig"><div class="n serif">' + switched + '</div><div class="l">times a light was switched on</div></div>'
+    + (tv >= 0.5
+      ? '<div class="fig"><div class="n serif">' + Math.round(tv) + '<small>h</small></div><div class="l">of television</div></div>'
+      : '<div class="fig"><div class="n serif">' + nights.length + '<small>of ' + seen + '</small></div>'
+        + '<div class="l">nights still lit at 2 am</div></div>')
+    + '</div>'
+
+    + (x.litHours >= 0.05 ? '<section><h2 class="serif">Day by day</h2><span class="mono">the fuller the moon, the longer it was lit</span>'
+      + moonsHtml(rep, dayMs, topDay && topDay.day, (key, ms) => 'lit ' + hoursTidy(ms / 3600000))
+      + '</section>'
+      + '<section><h2 class="serif">The shape of a day</h2><span class="mono">every day of the month laid on one clock</span>'
+      + '<div class="clockrow">' + dial.html + '<div><p>Most often lit around <b>' + hourName(dial.peak)
+      + '</b>, least around <b>' + hourName(dial.quiet) + '</b>.</p>'
+      + '<p class="cap">Midnight is at the top. The deeper the colour, the more often this room was lit at that hour.</p></div></div></section>' : '')
+
+    + (lightRows ? '<section><h2 class="serif">Light by light</h2><span class="mono">on, on a typical day</span>'
+      + '<div class="rows">' + lightRows + '</div>'
+      + (otherRows ? '<div class="rows small">' + otherRows + '</div>' : '') + '</section>'
+      : otherRows ? '<section><h2 class="serif">What ran</h2><div class="rows">' + otherRows + '</div></section>' : '')
+
+    + (x.litHours >= 0.05 ? '<section><h2 class="serif">Late nights</h2><span class="mono">lights still on at 2 am</span>'
+      + (mine.length ? '<p>The night light' + (mine.length > 1 ? 's' : '') + ', on most nights: '
+        + mine.map((l) => '<b>' + esc(circuitWord(l.name)) + '</b>').join(', ') + '. Not counted here.</p>' : '')
+      + '<p>' + (mine.length ? 'Apart from ' + (mine.length > 1 ? 'those' : 'that') + ', a' : 'A')
+      + ' light was still on at 2 am on <b>' + nights.length + ' of ' + seen + '</b> nights.</p>'
+      + nightsHtml(rep, nights, false) + '</section>' : '')
+
+    + (tv >= 0.5 ? '<section><h2 class="serif">On the screen</h2><span class="mono">' + esc(hoursTidy(tv))
+      + ' of television</span>' + chipsHtml(x.screens.apps) + '</section>' : '')
+    + roadsBlock(x.roads, 6);
+}
+
+function fineHtml(rep) {
+  return '<details class="fine"><summary>How this report is made</summary>'
+    + '<p>The dashboard on the hub checks every light every fifteen seconds and writes down each change. Anything switched on and off between two checks is missed. A wall switch is counted, because it shows up on the next check.</p>'
+    + '<p>These are hours, not units or cost. There is no meter on any of it.</p>'
+    + '<p>The air conditioners and the projector are infrared, so the hub only knows what it told them. Their hours are what was asked for, not what they did. The televisions report for themselves, so their hours are real. Curtains report nothing and are left out.</p>'
+    + '<p>Fans and air conditioning are not counted as light anywhere on this page. They appear only as their own lines.</p>'
+    + (rep.blindHours >= 0.5 ? '<p>For ' + escHtml(hoursTidy(rep.blindHours)) + ' this month the house could not be read. Those hours are counted as neither on nor off.</p>' : '')
+    + '<p>Speaking to the house sends the recording out of it: a service on the internet turns it into words. Neither the recording nor the words are kept, on the hub or anywhere in the house. A short English command typed into the dashboard never leaves the house at all.</p>'
+    + '<p>' + rep.days + ' days of this month carry a record. Made ' + escHtml(dayWord(Date.now()) + ' at ' + clockWord(Date.now())) + '.</p>'
+    + '</details>';
+}
+
+function reportHead(rep) {
+  return '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    + '<title>' + escHtml(sentence(HOUSE_NAME) + ' · ' + monthName(rep.ym)) + '</title>\n'
+    + '<style>\n' + fontCss() + '\n' + REPORT_CSS + '\n</style>\n</head>\n<body><div class="page">\n';
+}
+
 function housePage(rep, opts) {
   const nav = opts && opts.nav;
-  const rooms = rep.rooms.filter((x) => x.circuits.length);
-  const strip = nav ? monthStrip(rep.ym) : '';
-
-  return pageHead(sentence(HOUSE_NAME) + ' \u00b7 ' + monthName(rep.ym))
+  return reportHead(rep) + (nav ? topHtml(rep) : '')
     /* Rooms first: `.rv:target ~ #house` is how the house gives way. */
-    + rooms.map((x) => '<div class="rv" id="' + roomSlug(x.room) + '">'
-      + strip + navHtml(rep, x.room) + roomView(x, rep) + footerHtml(rep) + '</div>\n').join('')
-    + '<div id="house">' + strip + navHtml(rep, null) + houseView(rep)
-    + footerHtml(rep) + '</div>\n'
-    + (nav ? PICK_JS : '')
-    + '</div></body></html>\n';
-}
-
-/**
- * How the house was told, as a bar and a key.
- *
- * One builder for both views, because the house total and a room's own share are
- * the same question asked at two scales and two implementations would drift.
- * Roads with no count are dropped rather than drawn as slivers, and the whole
- * thing returns empty below a floor: a split of three switch-ons is noise
- * presented as a finding, and this report's own footer is built on not doing that.
- */
-function roadsHtml(roads, floor) {
-  const seen = ROADS.filter((k) => (roads && roads[k]) > 0);
-  const total = seen.reduce((n, k) => n + roads[k], 0);
-  if (total < (floor || 1)) return '';
-
-  /* Percentages are rounded for reading and the last band takes the remainder,
-     so the bar always fills exactly: eight rounded numbers do not add to 100. */
-  let used = 0;
-  const bands = seen.map((k, i) => {
-    const pct = i === seen.length - 1 ? 100 - used : Math.round((roads[k] / total) * 100);
-    used += pct;
-    return { k, n: roads[k], pct };
-  });
-
-  return { total,
-    html: '<div class="roads">'
-      + bands.map((b) => '<i style="width:' + b.pct + '%;background:' + ROAD_COLOUR[b.k]
-        + '"></i>').join('') + '</div>'
-      + '<div class="keys">'
-      + bands.map((b) => '<span><i style="background:' + ROAD_COLOUR[b.k] + '"></i>'
-        + b.pct + '% ' + ROAD_LABEL[b.k] + '</span>').join('')
-      + '</div>' };
-}
-
-/* The board's own seven bands, so a colour is named the way the dashboard names
-   it rather than given as a number nobody has an opinion about. */
-function warmthWord_(v) {
-  return v >= 88 ? 'candlelight' : v >= 72 ? 'amber' : v >= 56 ? 'warm white'
-    : v >= 44 ? 'neutral' : v >= 30 ? 'soft white' : v >= 15 ? 'cool' : 'daylight';
-}
-
-/* The honest half, and it is not an afterthought — the whole page is built on
-   readings of wildly different quality and a family cannot be expected to know
-   which. It sits in every view, because a room is as likely to be the thing
-   somebody reads as the house is. */
-function footerHtml(rep) {
-  return '<footer>'
-    + '<p><b>Where this comes from.</b> The dashboard on the hub, from its own record of the '
-    + 'house. It reads every circuit once every fifteen seconds, so anything switched on and '
-    + 'off inside one of those gaps is not here \u2014 and a change made at a wall switch is, '
-    + 'because a reading is a reading however it was caused.</p>'
-    + '<p><b>What it cannot see.</b> The air conditioners and the projector are infrared: the '
-    + 'hub can only say what it told them, never what they did, so those hours are commands '
-    + 'rather than measurements. Curtains report nothing at all and are left out entirely. '
-    + 'The televisions do report honestly, so their hours are real. There is no meter on any '
-    + 'of it, which is why this page is in hours and says nothing about units or cost.</p>'
-    /* Voice belongs in the honest half rather than in a section of its own, and
-       in this footer rather than on the house view: somebody reading a month of
-       their own household is exactly the person entitled to know whether what
-       they said out loud was kept. It sits in every room view for the same
-       reason the rest of this footer does. Unconditional prose, because it is
-       true of the house whether or not anybody spoke to it this month. */
-    + '<p><b>What is said out loud.</b> Speaking to the house sends the recording '
-    + 'out of it: the words are worked out by a service on the internet, because no '
-    + 'phone here follows Hinglish reliably. <b>Neither the recording nor the words '
-    + 'are kept</b> \u2014 not on the hub, not anywhere in the house. What is kept is '
-    + 'what this page is made of: which circuit changed, when, and whose phone '
-    + 'asked. A short English command typed into the dashboard, <i>ashu cobs 40</i>, '
-    + 'never leaves the house at all \u2014 the hub works that one out by itself.</p>'
-    + '<p><b>Coverage.</b> ' + rep.days + ' ' + (rep.days === 1 ? 'day' : 'days')
-    + ' of this month ' + (rep.days === 1 ? 'carries' : 'carry') + ' a record'
-    + (rep.knownFrom && rep.knownFrom > rep.from
-      ? ', beginning ' + dayWord(rep.knownFrom) + ' at ' + clockWord(rep.knownFrom)
-        + ' \u2014 nothing was being written before that' : '')
-    + '. Generated ' + dayWord(Date.now()) + ' at ' + clockWord(Date.now()) + '.</p>'
-    + '</footer>\n';
-}
-
-/* ── the report as one printable document ─────────────────────────────
- *
- * A separate assembly rather than a print stylesheet laid over the served page,
- * and the reason is ordering. That page emits every room **before** the house,
- * because `.rv:target ~ #house` is the whole of how the house gives way — so
- * printing it puts seven bedrooms ahead of the summary and repeats the honest
- * half once per view. Putting the house back on top in CSS means fragmenting a
- * flex container across pages, which is the corner of printing that engines
- * disagree about most, and a PDF that comes out as one enormous page is worse
- * than no PDF at all.
- *
- * So this is the same builders in reading order: the house, then a room to a
- * page, then the footer once at the end. Nothing that would be a dead link on
- * paper — no tabs, no back links, no month strip.
- *
- * It opens the print dialog itself, that being the whole of what the button
- * promises, and keeps a visible one for anybody who dismisses it. */
-/* Waiting for the faces matters: they are inline base64 with font-display:swap,
-   so a dialog opened at load can catch the fallback stack and hand back a PDF set
-   in Georgia — the one failure that is invisible until it is already on paper.
-   Both arms of .then, because a browser without document.fonts must still print. */
-const PRINT_JS = `<script>
-(function () {
-  var open = function () { setTimeout(function () { window.print(); }, 60); };
-  var faces = document.fonts && document.fonts.ready;
-  if (faces) faces.then(open, open); else open();
-})();
-</script>
-`;
-
-function printPage(rep) {
-  const rooms = rep.rooms.filter((x) => x.circuits.length);
-  return pageHead(sentence(HOUSE_NAME) + ' \u00b7 ' + monthName(rep.ym))
-    + '<nav class="months noprint">'
-    + '<button class="go" type="button" onclick="window.print()">Save as PDF</button>'
-    + '<a class="get" href="/report?month=' + rep.ym + '">\u2190 Back to the report</a>'
-    + '</nav>\n'
-    + '<div id="house">' + houseView(rep) + '</div>\n'
-    + rooms.map((x) => '<div class="pv">' + roomView(x, rep) + '</div>\n').join('')
-    + footerHtml(rep)
-    + PRINT_JS
-    + '</div></body></html>\n';
+    + reportRooms(rep).map((x) => '<article class="rv" id="' + roomSlug(x.room) + '">'
+      + tabsHtml(rep, x.room) + roomArticle(x, rep) + '</article>\n').join('')
+    + '<article id="house">' + tabsHtml(rep, null) + houseArticle(rep) + '</article>\n'
+    + fineHtml(rep) + (nav ? PICK_JS : '') + '</div></body></html>\n';
 }
 
 /* The month asked for, or the newest there is a record of — which is this month
@@ -14959,12 +14805,6 @@ const fileName = (what, ym) => what.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 app.get('/report', (req, res) => {
   const ym = monthOf(req.query.month);
   const down = !!req.query.download;
-  /* Its own address rather than a button on this one, so the served page keeps
-     no script of its own beyond the picker, and so that "the report as a PDF"
-     is a link somebody can send, bookmark or put in a shortcut. */
-  if (req.query.print) {
-    return res.type('html').set('Cache-Control', 'no-cache').send(printPage(houseReport(ym)));
-  }
   const page = housePage(houseReport(ym), { nav: !down });
   if (down) res.set('Content-Disposition', 'attachment; filename="'
     + fileName(HOUSE_NAME + '-house', ym) + '"');
@@ -15010,11 +14850,12 @@ app.listen(PORT, () => {
        armed before this it would have read devices.json and switched off
        whatever the file said. */
     restoreTimers();
-    /* The opening keyframe, written once the first read has landed so it records
-       the house rather than the file it was loaded from. historyTick() has
-       already run inside trackLit by now on a good read, so this only fires when
-       the hub could not be reached — either way the month opens with a snap. */
-    historyTick();
+    /* No keyframe from the file. A good read has already written one inside
+       trackLit. A failed one used to write devices.json into the history as
+       though it were the house: on 2026-09-13 the watchdog restarted this
+       service every ten minutes for five hours with the hub down, and each
+       restart filed the file's lamps as on, which the report then counted as
+       a day of light nobody lit. The first good read writes the keyframe. */
   });
 
   // One reader for the whole house, however many browsers are open. Keeps the
@@ -15956,6 +15797,19 @@ ${FONT_FACES}
   .barcol:not(.on) .bar { background: var(--line-up); }
   .barlabel { display: block; margin-top: 7px; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; }
+  /* Seven columns on a phone leave about 40px each, and PARE… HARS… MAST… told
+     nobody which column was which. The label is the short name, it may take a
+     second line (HOME / THEATRE), and it is never cut inside a word. */
+  @media (max-width: 860px) {
+    .barlabel {
+      white-space: normal; overflow-wrap: normal; word-break: keep-all;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+      font-size: 9px; letter-spacing: 0; line-height: 1.2; text-align: center;
+    }
+    /* HARSHIT and THEATRE are the widest words, and at 6px of gap they missed
+       their 37px column by two pixels. */
+    .saycard .bars { gap: 4px; }
+  }
   .barcol.on .barlabel { color: var(--soft); }
 
   /* a room, as a card that states its own reading */
@@ -16212,6 +16066,34 @@ ${FONT_FACES}
     display: inline-block; margin: 10px 6px 0 0;
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
     text-transform: uppercase; padding: 5px 10px;
+  }
+  .nudge .rs { display: none; }
+  #sayhost:empty { display: none; }
+  /* On a phone an alert is one line: FAN · PARENT · 26 DAYS, then OFF and
+     LEAVE. Stacked, two of them cost 150px above the house, and the word
+     "hours" landed alone beside a button. The full sentence is the row's
+     tooltip and each button's label. */
+  @media (max-width: 860px) {
+    .nudges .nudge {
+      display: flex; align-items: center; gap: 8px;
+      padding-top: 8px; padding-right: 8px; padding-bottom: 8px; padding-left: 12px;
+    }
+    .nudges .nudge .pip { margin-right: 0; }
+    .nudges .nudge .said {
+      display: block; flex: 1 1 auto; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .nudge .in, .nudge .for, .nudge .rl, .nudge button .wd { display: none; }
+    .nudge .rs { display: inline; }
+    .nudge .r::before, .nudge .dur::before { content: ' · '; color: var(--faint); font-weight: 400; }
+    .nudges .nudge button { flex: 0 0 auto; margin: 0; }
+    /* A list, not the sideways rail every other side section becomes here:
+       one line each is short enough to stack, and a rail hid the second alert
+       off the edge of the screen. */
+    #secleft .nudges {
+      display: grid; overflow: visible; margin-left: 0; margin-right: 0;
+      padding-left: 0; padding-right: 0;
+    }
   }
 
   /* All COBs: the room's ceiling as one control. It leads the board, so it is
@@ -18812,6 +18694,7 @@ ${FONT_FACES}
     #secrooms { display: none; }
     .whatsnext { margin: 0 0 12px; }
     #seccues  { order: 2; }
+    #sayhost  { order: 1; margin-bottom: 12px; }
     #secleft  { order: 3; }
     .field    { order: 4; }
     /* What a room is doing belongs above its board: it is the first thing
@@ -19297,6 +19180,10 @@ ${FONT_FACES}
   </button>
 
   <main class="board">
+    <!-- The say card's home on a phone, so it can lead the page above the
+         left-on alerts. On a wide screen it stays empty and hidden, and the
+         card is the first thing on the board. -->
+    <div id="sayhost"></div>
     <aside class="index">
       <div class="index-sec" id="secrooms">
         <div class="legend">Rooms</div>
@@ -20013,6 +19900,9 @@ const cobsIn = (room) => {
 };
 const groupLabel = (room) => (groupFor(room) || {}).label || 'All';
 const title = (s) => s.toLowerCase().replace(/(^|\\s)\\S/g, (c) => c.toUpperCase());
+/* A room's name where the space is short and it is already plain that it is a
+   room: "Parent Room" is "Parent". A name that is nothing but the word keeps it. */
+const shortRoom = (s) => title(s).replace(/\\s+room$/i, '').replace(/^room\\s+/i, '') || title(s);
 
 // The hub stores every label in capitals. Shouting them back is not calm, so
 // they are set in sentence case — except the handful that really are acronyms.
@@ -20100,6 +19990,8 @@ async function load() {
   readout();
   loadCues();
   drawSchedules();
+  // The alerts may have been drawn before the board knew what is on.
+  if (nudgesDrawn != null) drawNudges();
 }
 
 // A circuit the user is touching owns its own state until the hub answers.
@@ -20297,6 +20189,7 @@ async function sync(force) {
 // Called whenever state moved but the shape of the screen did not.
 function tick() {
   readout();
+  if (nudgesDrawn != null && nudgeKey(liveNudges()) !== nudgesDrawn) drawNudges();
   for (const tab of document.querySelectorAll('.tab[data-room]')) tabState(tab, tab.dataset.room);
   for (const t of document.querySelectorAll('.tile[data-room]')) roomTileState(t, t.dataset.room);
   for (const t of document.querySelectorAll('.tile[data-gang]')) paintGang(t);
@@ -20826,6 +20719,7 @@ function drawField() {
   const stack = el('#stack');
   stack.innerHTML = '';
   stack.scrollTop = 0;
+  el('#sayhost').innerHTML = '';
 
   // The say card states the house in a sentence, so a heading saying the same
   // thing above it is a label on a label.
@@ -20935,7 +20829,10 @@ function sayCard() {
     col.style.setProperty('--tint', onHere.length ? roomTint(onHere) : 'var(--line-up)');
     col.querySelector('.bar').style.height =
       (onHere.length ? Math.max(14, Math.round(load * 100)) : 4) + '%';
-    col.querySelector('.barlabel').textContent = title(room);
+    // The column is narrow and the card is about rooms, so the word "Room" goes.
+    // The whole name is still in the aria-label and the tooltip.
+    col.querySelector('.barlabel').textContent = shortRoom(room);
+    col.title = title(room);
     col.setAttribute('aria-label', title(room) + ', ' +
       (onHere.length ? Math.round(load * 100) + ' per cent' : 'dark'));
     col.onclick = () => go('room', room);
@@ -20945,7 +20842,10 @@ function sayCard() {
 }
 
 function fillHouse(stack) {
-  stack.appendChild(sayCard());
+  /* On a phone the house is said first and the alerts follow it. The card
+     lives inside the board, and the alerts sit outside it, so ordering cannot
+     move one past the other; the card is drawn into its own host instead. */
+  (onPhone() ? el('#sayhost') : stack).appendChild(sayCard());
   // Whichever room is carrying the most light takes the big square. If the
   // house is dark nothing is promoted — a hero card for an empty room would be
   // a lie about where to look.
@@ -24532,6 +24432,10 @@ function openSheet(cue) {
    that gives the whole page away as a document. On a wide screen the fade it
    already had is right, so this costs nothing there. */
 const onPhone = () => window.matchMedia('(max-width: 860px)').matches;
+// The say card changes home at this width, so crossing it redraws the house.
+window.matchMedia('(max-width: 860px)').addEventListener('change', () => {
+  if (state.view === 'house' && !state.q) drawField();
+});
 
 function hideScrim(scrim, after) {
   const done = () => {
@@ -25817,23 +25721,56 @@ async function loadAuto() {
   } catch { /* the next pass picks it up */ }
 }
 
+/* Only a circuit the board still shows as on can have been left on.
+ *
+ * The list comes from /api/automations, once a minute, and the server learns
+ * that a circuit went off only on its next hub read. So switching one off from
+ * its own card, a room's all-off or a cue left the alert up for up to a minute,
+ * offering to switch off something already dark. The board's own state is the
+ * fresher of the two, so it decides. A circuit the board does not hold keeps
+ * the server's word. If a switch-off is refused, the tile goes back on and the
+ * alert comes back with it, which is right. */
+function liveNudges() {
+  return auto.nudges.filter((n) => {
+    const d = state.devices.find((x) => x.record_id === n.record_id);
+    return !d || d.status;
+  });
+}
+function nudgeKey(list) { return list.map((n) => n.record_id + ':' + n.on_since).join(','); }
+// var, not let: tick() reads it, and tick can run before this line has.
+var nudgesDrawn = null;
+
+// A day count past two days: "631 hours" has to be divided in your head.
+const onFor = (h) => h >= 48 ? Math.round(h / 24) + ' days'
+  : h >= 2 ? Math.round(h) + ' hours' : h + ' hours';
+
 function drawNudges() {
   const host = el('#nudges');
   host.innerHTML = '';
-  for (const n of auto.nudges) {
+  const list = liveNudges();
+  nudgesDrawn = nudgeKey(list);
+  for (const n of list) {
     const row = document.createElement('div');
     row.className = 'nudge' + (n.kind === 'ac' ? ' ac' : '');
-    const hrs = n.hours >= 2 ? Math.round(n.hours) + ' hours' : n.hours + ' hours';
     row.innerHTML = '<span class="pip"></span><span class="said"></span>';
+    /* One markup for both layouts. The wide column reads it as a sentence; the
+       phone hides the joining words and the word "Room", and reads it as one
+       line: FAN · PARENT · 26 DAYS. */
     row.querySelector('.said').innerHTML =
-      '<b></b> <i>in</i> <b></b> <i>has been on ' + hrs + '</i>';
-    const [what, where] = row.querySelectorAll('.said b');
-    what.textContent = pretty(n.name);
-    where.textContent = title(n.room);
+      '<b class="n"></b><i class="in"> in </i>'
+      + '<b class="r"><span class="rl"></span><span class="rs"></span></b>'
+      + '<i class="for"> has been on </i><i class="dur"></i>';
+    const said = row.querySelector('.said');
+    said.querySelector('.n').textContent = pretty(n.name);
+    said.querySelector('.rl').textContent = title(n.room);
+    said.querySelector('.rs').textContent = shortRoom(n.room);
+    said.querySelector('.dur').textContent = onFor(n.hours);
+    row.title = pretty(n.name) + ' in ' + title(n.room) + ' has been on ' + onFor(n.hours);
 
     const off = document.createElement('button');
     off.type = 'button';
-    off.textContent = 'Switch off';
+    off.innerHTML = '<span class="wd">Switch </span>off';
+    off.setAttribute('aria-label', 'Switch off ' + pretty(n.name) + ' in ' + title(n.room));
     off.onclick = async () => {
       const d = state.devices.find(x => x.record_id === n.record_id);
       if (d) setDevice(d, false);
@@ -25841,16 +25778,25 @@ function drawNudges() {
     };
     const seen = document.createElement('button');
     seen.type = 'button';
-    seen.textContent = 'Leave it';
+    seen.innerHTML = 'Leave<span class="wd"> it</span>';
+    seen.setAttribute('aria-label', 'Leave ' + pretty(n.name) + ' in ' + title(n.room) + ' on');
     seen.onclick = async () => {
       row.remove();
+      // Out of our copy too, or the next redraw brings it back until the minute.
+      auto.nudges = auto.nudges.filter((x) => x !== n);
+      nudgesDrawn = nudgeKey(liveNudges());
+      syncLeftOn();
       await fetch('/api/nudges/' + n.record_id + '/dismiss', { method: 'POST' }).catch(() => {});
     };
     row.append(off, seen);
     host.appendChild(row);
   }
+  syncLeftOn();
+}
+
+function syncLeftOn() {
   const sec = document.getElementById('secleft');
-  if (sec) sec.hidden = !auto.nudges.length;
+  if (sec) sec.hidden = !el('#nudges').children.length;
   fitTiles();          // the alerts have taken their space; the tiles take the rest
 }
 

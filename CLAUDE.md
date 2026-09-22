@@ -970,6 +970,7 @@ Three more found while driving it, all of them fixed:
 **Automations** are three deliberately timid things, all in `server.js` and all switchable from the page. Settings persist in `settings.json`, watch state in `state.json` (both git-ignored, per-install).
 - **Circadian colour** — `circadianTune()` interpolates `DAY_COLOUR` (0 cool … 100 warm on this hub: cool by day, warmest overnight) and is applied **only as a tunable light comes on**, before the brightness so a bleed costs colour not level. It never re-tunes a lit lamp, so it cannot fight a colour set by hand. **Nor a colour set on an unlit one**, which was the gap: the group's warmth slider is most often used while the ceiling is off, and switching it on then overwrote that colour — deciding *per lamp* from the cache, so a partly stale cache overrode some of a group and not others and left one ceiling burning two temperatures. That was the real "All COBs doesn't change all COBs". Any explicit tune — `/api/tune`, `/api/group`, `/do .../warmth-n`, a cue step naming a colour — now records the circuit in `handTuned`, and circadian skips it until a colour is asked for again. Verified: warmth 20 set while off then switched on gives 20 across all five, and a server with no hand-tune memory still gets a consistent circadian 70. The map is in memory, so a restart lets the hour take over again. In cues it fills in only for steps carrying no `tune` of their own, and deliberately is *not* added to the step, so `outstanding()` never treats an ignored colour as a missed step and resends.
 - **Left-on advisories** — `trackLit()` records an off→on edge per circuit after each read; `nudgeList()` reports anything past its threshold (AC 4h, fan 8h, light 6h). **It never switches anything off** — the user chose nudge-only, because the house must not kill a room someone is quietly sitting in. Dismissing stores the current `on_since`, so the nudge returns only after the circuit has genuinely been off and on again. `lit_since` is persisted so a restart (or the watchdog) does not reset every timer and hide a real all-nighter.
+  **The page hides an alert whose circuit the board already shows as off (2026-09-22).** The list comes from `/api/automations` once a minute, and the server only learns a circuit went off on its next hub read, so switching one off from its own card, a room's all-off or a cue left the alert up for up to a minute. `liveNudges()` filters by the board's state and `tick()` redraws when the visible set changes, so a refused switch-off brings the alert back with the tile. "Leave it" also drops the alert from the page's copy, or the next redraw brings it back before the minute. On a phone an alert is one line (`FAN · PARENT · 26 DAYS`, then OFF and LEAVE), stacked rather than in the sideways rail every other side section becomes there, and a duration past two days reads in days.
 - **Sleep goes through `applyScene`, because sending once is not enough.** This is the bug that made "Sleep now did not work": fired on ASHU ROOM it sent five circuits and **two of the five stayed on** — the same intermittent batch loss this file already records for cues, which is exactly why cues verify and resend. A cue that drops a lamp is a cue you press again; a sleep timer that drops one leaves it burning all night with nobody awake to notice, so it was the last thing that should have been firing and forgetting. `runSleep()` is shared by the timer and by now, so neither can drift from the other, and the reply says `missed` rather than reporting the number it sent. Re-fired after the fix: 2 sent, 2 off, 0 missed, fan still running.
 - **An air conditioner switches itself off** — `POST /api/ac {record_id, off_after}` in minutes, `0` to cancel, and it rides in the *same request* as the power on because they are one intention ("on, and off again in an hour"); two calls can half-fail and leave the machine running with nobody expecting it to. It is accepted on its own too, since deciding twenty minutes later is the normal case. One pending off per unit — asking for a second replaces the first — and switching the AC off through the dashboard cancels it, which is a safety point rather than tidiness: this is infrared, so a stale off fired an hour later lands on whatever the unit is doing then, including one somebody has since started with its own remote. It fires through `acPower()`, shared with the endpoint so the two cannot drift, for the reason in the protocol section above: **a step could not do it at all.**
   **These timers persist across a restart (2026-08-25), reversing the 2026-08-22 decision.** They were originally built to persist, on the argument that `watchdog.sh` restarts the service after two failed health checks and so would evaporate an auto-off at exactly the moment it was doing its job; the user's call then was that it must not have a memory at all. The user asked for it back — *"timer should remain even after a restart"* — so the original argument is the operative one and both kinds are in `state.json` again.
@@ -1114,6 +1115,8 @@ What it removes is compositing only — 65 blurred elements to 3 on a room board
 **On a phone an individual COB turns its strips on their side.** A tunable circuit spans the row so its two strips are aimable — right once, wrong five times over on a ceiling. A `.cobmember` is a small square with two vertical rails down its right edge and its key moved to the foot of the left column. The rails are **the same horizontal `input[type=range]` rotated a quarter turn**, not a vertical range: `writing-mode` on a range is recent and `appearance: slider-vertical` is deprecated, while a rotation is hit-tested in the element's own coordinates by every engine. A rotated element keeps its *unrotated* box in flow, so each rail is placed absolutely and `--vrail` has to equal the controls' height by hand (104px inside a 132px tile).
 
 **Brightness and colour in one command.** They go down separate channels anyway, so setting both at once costs nothing and gets the thing you actually want — a lamp that comes on at the level *and* the colour you meant, not the level and then, a second later, the colour. `/do/ashu/cobs/40/warm`, `/do/ashu/cobs/40+warm`, or `ashu cobs 40 warm` in the field. Two actions maximum, merged left to right. Two traps: `slug()` turns any run of punctuation into a hyphen, so the `+` has to be **split before slugging** or `40+warm` arrives as the single word `40-warm`; and the field reads the line **back to front** — actions are taken off the end first and whatever is left in the middle is the circuit, which is the only way to tell `ashu cobs 40` from `ashu 40 warm`.
+
+**On a phone the house summary leads the page, above the left-on alerts (2026-09-22).** The say card is drawn inside the board and the alerts sit outside it, so CSS order cannot move one past the other; on a phone `fillHouse()` draws the card into `#sayhost` instead, and crossing 860px redraws the house. Its bar labels are the short room name (`shortRoom()` drops "Room") and may take two lines, because seven columns at 375px leave 39px each and PARE… HARS… MAST… named nothing.
 
 **The phone's thumb bar keeps its shape and changes its fourth button.** All-off, Sleep, Plans, then **Find** on the house view and **Cues** in a room — because what you are looking for could be anywhere, but standing in a room the thing you reach for is a picture of it you already saved. The quick sleep durations used to live here, replacing the other three buttons whenever you were in a room; they are gone, because a fifth column made a duration easier to reach than the room's own cues, and every one of them is in the sleep panel one tap further in.
 
@@ -2512,7 +2515,7 @@ vendor's own three `static/music/*.mp3`. Worth remembering as its own hazard: th
 privacy property belongs to the running code and not to a session working on it.
 
 **It is written into the monthly report's footer, not into a section of its own.**
-`footerHtml()` is the report's honest half — where it comes from, what it cannot
+`footerHtml()` (now `fineHtml()`, folded into "How this report is made" at the foot of the redrawn report) is the report's honest half — where it comes from, what it cannot
 see, coverage — and it renders in **every** view, house and each room. Somebody
 reading a month of their own household is exactly the person entitled to know
 whether what they said out loud was kept, so the paragraph goes where they are
@@ -3271,6 +3274,8 @@ served a page of zeroes for a month the picker could not even offer.
 
 #### The PDF is the browser's, and it has its own address
 
+**Removed on 2026-09-23, at the user's request:** the saved HTML file carries the rooms as tabs and a PDF cannot, so "Save as a file" replaced "Save as PDF". `?print=1` now opens the ordinary report. The reasoning below is kept because it is why the room views come before the house in the document.
+
 `/report?month=<ym>&print=1` &mdash; a link, not a button, so the served page
 gains no script of its own and "the report as a PDF" is something that can be
 sent, bookmarked or put in a Shortcut. It opens the print dialog on load and
@@ -3295,6 +3300,8 @@ stack and hand back a PDF set in Georgia, which is the one failure invisible
 until it is already on paper.
 
 #### Every hour is on the axis (2026-09-03)
+
+**Superseded on 2026-09-23:** the 24 bars became a 24-hour clock dial in the redrawn report, and `HOUR_AXIS` went with them.
 
 *"on x axis of busiest hour chart, i need all hrs visible."* It labelled every
 sixth hour &mdash; `00 06 12 18` &mdash; so a reader who had just been told the house
@@ -3327,6 +3334,87 @@ every other page script: 5 of 5 parse, where it was 3 before.
 the arrow at 390px. Longhands, the same silent overwrite this file records for
 `padding` on `.tools`. The 16px itself is the iOS zoom-on-focus rule, now
 recorded for a fourth control.
+
+### The report, redrawn as a letter (2026-09-23)
+
+*"Completely overhaul the report section"*, then *"fix and new visual direction"*
+for *"the family"*. So it is a monthly letter now: paper colours (ink ones when
+the reader's device is dark), a large serif title, one sentence first, three
+figures, then the moons, the rooms, a 24-hour clock, late nights, screens, cues
+and how things were switched on, with the fine print in a `<details>` at the
+foot. It is the dashboard's type (Instrument Serif, Hanken Grotesk, Plex Mono)
+and deliberately not its glass. The old views (`houseView`, `roomView`,
+`footerHtml`, `printPage` and their CSS) are **deleted**, not kept behind a switch.
+
+**Every figure is bounded by the clock, because the old ones were not.** "Lit for
+973 h" of a 23-day month added room-hours together, and "180 nights left on"
+counted every lamp on every night. A reader who does that sum once stops trusting
+the rest of the page.
+
+**Rooms lit, not "a light on somewhere".** The first draft of the redesign
+counted the house as lit whenever any light was on, and the answer was 16 hours a
+day, busiest at midnight and a light on at 2 am on 23 of 23 nights. All true and
+all useless, because the foot lights and the curtain rope are **night lights** and
+burn every night. So the day clock and the moons count rooms lit (one night light
+is one room, a lit evening is four), which gave the evening back: busiest around
+10 pm with 3.7 rooms lit.
+
+**Night lights are found from the data and named, not flagged.** A light on at
+2 am on at least half the recorded nights, and at least three, is a night light.
+Good night switches one on deliberately, so counting it would say the same thing
+every night and hide the night something really was left on. It is listed once
+and left out of the count.
+
+**"Late nights", not "left on".** A room still lit at 2 am is as often somebody
+awake as a light forgotten, and the house cannot tell which, so the page says so.
+Fans and air conditioning are never counted as light anywhere; they are their own
+lines.
+
+#### The history could not see an outage, and it had filed one as light
+
+**A logger bug, found while checking the numbers.** When the dashboard started
+with the hub unreachable, the startup `historyTick()` wrote a keyframe from
+`devices.json` as though it were the house. On 2026-09-13 the watchdog restarted
+the dashboard every ten minutes for five hours with the vendor down, and each
+restart filed the file's lamps as on. The keyframe now waits for the first good
+read. Proven from the hub's journal: `Using snapshot status (connect
+ECONNREFUSED ...)` at every restart, with a `snap` in the history at the same
+second.
+
+**Outages are now written down, and cut out rather than counted.**
+`markBlind()` logs `{e:'gap', kind:'read'|'bus', on}`: `read` after three failed
+hub reads (the line `/api/health` draws), `bus` when `busCheck()` hears nothing.
+Only changes are logged. `blindSpans()` pairs them, closes a read gap at the next
+edge (an edge needs a good read) and a bus gap at the next restart, and also
+**infers past outages from restart storms**: three or more non-midnight keyframes,
+each within 12 minutes of the last, opening 10 minutes before the first. `replay()`
+removes those spans with `cutOut()`, so they count as neither on nor off, and the
+page says how many hours it could not read (5.8 h in September).
+
+Two limits worth knowing:
+- **An outage this process stayed up through is invisible in past months**,
+  because nothing was written. The 2026-09-17 address move is one. The `gap`
+  events fix that from 2026-09-23 on.
+- **Three deploys each within 12 minutes of the last look like a storm**, and
+  would cut about half an hour. Space deploys out, or expect it.
+
+#### Smaller things
+
+- **TV app hours could exceed TV hours.** `screenTime()` counted an app from when
+  it was reported even if the set went off in between: YouTube 4.6 h on a Parent
+  Room screen that was on for 2.7 h. An app now counts only while its set is on.
+  Checked per room afterwards: app hours never exceed screen hours.
+- **Saved as HTML, not PDF.** "Save as a file" (`?download=1`) is one file with the
+  house and every room as `:target` tabs, no script, no top bar. It opens from
+  Messages with no network.
+- **A class called `top` on the peak day** picked up the top bar's border. Named
+  `peak`. Obvious once seen, invisible in the code.
+- **Tested against the hub's real history in a scratch copy**: `server.js` plus the
+  hub's `devices.json`, `config.json` (screens and receivers stripped, because the
+  Mac was on a stranger's `192.168.1.0/24` and must not probe it) and history
+  files made read-only, so the copy's own `gap` events could not be written into
+  them. That is the safe way to try a report change, and it is how the night-light
+  problem was found before the family saw it.
 
 ### A plan fires on the hub's clock; the countdown was on the phone's (2026-08-31)
 
