@@ -67,7 +67,10 @@ ws.on('message', (data) => {
     fs.writeFileSync(OUT, JSON.stringify(msg, null, 2));
 
     console.error(`Wrote ${devices.length} devices across ${rooms.length} rooms to data/devices.json`);
-    for (const d of added) console.error(`  + ${d.record_id} ${String(d.device_name || '').trim()}`);
+    // The dashboard leaves these two record types out at load: see NOT_HUB_CIRCUITS in server.js.
+    const leftOut = { DIP: 'receiver', AIP: 'media player' };
+    for (const d of added) console.error(`  + ${d.record_id} ${String(d.device_name || '').trim()}`
+        + (leftOut[d.device_type] ? `  (the hub's ${leftOut[d.device_type]} record; the dashboard leaves it out)` : ''));
     for (const d of removed) console.error(`  - ${d.record_id} ${String(d.device_name || '').trim()}`);
     if (!added.length && !removed.length) console.error('  (no devices added or removed)');
     console.error('Restart the dashboard for this to take effect.');

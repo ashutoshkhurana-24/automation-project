@@ -108,6 +108,26 @@ const SCHEDULES_PATH = path.join(__dirname, 'schedules.json');
 /** @type {Map<number, {room: string, record: object}>} */
 const devices = new Map();
 
+/* Hub records that are not hub circuits, and are left out of `devices` entirely.
+ *
+ * By 2026-09-22 the vendor had added a record for the receiver (523, `AVR` /
+ * `DIP`) and one for the media player (524, `TV` / `AIP`). Its own dispatch reads
+ * both as KEY PRESSES taken out of `opr_param` — `DIP` wants `DIP-<key>-<ip>`
+ * and returns "Invalid command format" on anything else, and `AIP` has no command
+ * branch at all — so the bare on/off record every path here sends moves nothing,
+ * while the hub files the status it was handed and we answer "Done". Loaded, the
+ * receiver would also fall through `kindOf` to a **light**, so "lights off",
+ * sleep or good night in Home Theatre would count it among the lamps.
+ *
+ * Leaving them out at load is the one place that covers every road at once:
+ * the board, /do and its collectives, sleep, cues, schedules and history all read
+ * this map, and the hub merge drops any record it does not hold. Both machines are
+ * driven directly instead (`config.receivers`, `config.media_players`), where
+ * they answer for themselves. */
+const NOT_HUB_CIRCUITS = { DIP: 'receiver', AIP: 'media player' };
+const notHubCircuit = (record) => NOT_HUB_CIRCUITS[record.device_type || ''];
+const leftOut = [];
+
 function loadFromJson() {
   const raw = JSON.parse(fs.readFileSync(JSON_PATH, 'utf8'));
   const res = raw.payload.response;
@@ -126,6 +146,7 @@ function loadFromJson() {
   }
 
   for (const record of res.devices || []) {
+    if (notHubCircuit(record)) { leftOut.push(record); continue; }
     devices.set(record.record_id, {
       room: roomOf.get(record.record_id) || 'OTHER',
       record,
@@ -183,10 +204,18 @@ function loadDevices() {
   if (fs.existsSync(JSON_PATH)) {
     try {
       loadFromJson();
-      if (devices.size) return console.log(`Loaded ${devices.size} devices from devices.json`);
+      if (devices.size) {
+        console.log(`Loaded ${devices.size} devices from devices.json`);
+        for (const r of leftOut) {
+          console.log(`  left out ${r.record_id} ${String(r.device_name || '').trim()}`
+            + ` — the hub's ${notHubCircuit(r)} record, which it cannot drive with an on/off`);
+        }
+        return;
+      }
     } catch (err) {
       console.error('devices.json unreadable, falling back to CSV:', err.message);
       devices.clear();
+      leftOut.length = 0;
     }
   }
   loadFromCsv();

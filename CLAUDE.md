@@ -458,6 +458,39 @@ Verified from the Mac over the tunnel afterwards: health **200**, `ok: true`,
 been fitted and are invisible, which is the merge rule this file already
 records. `node tools/discover.js` and a restart.
 
+**They were not circuits, and discovering them before 2026-09-22 would have
+filed the receiver as a light.** Read on that date: the vendor had removed 517
+"T.V" and added three records &mdash; **521** "T.V" (`TV`/`LIP`, ASHU ROOM, at a
+`192.168.0.131:5555` that is on the subnet this house no longer has), **523**
+"Amplifire" (`AVR`/`DIP`, HOME THEATRE) and **524** "Xstream" (`TV`/`AIP`, HOME
+THEATRE). The vendor app now polls the Denon itself every 30s &mdash; over
+`POST :8080/goform/AppCommand.xml`, which answers 200, so the note above that
+HTTP is a dead end for its state is true only of the legacy `/goform/` pages.
+
+**The vendor reads `DIP` and `AIP` as key presses, not switches.** Its
+`operations.py` takes the key out of `opr_param`: `DIP` wants
+`DIP-<key>-<ip>` and returns `Invalid command format` for anything else, and
+`AIP` has no command branch at all. So every bare on/off record this dashboard
+sends would move nothing while the hub filed the status and we answered "Done"
+&mdash; and `kindOf` has no case for a hub `AVR` record, so the receiver would
+have drawn as a **light** and been counted by "lights off", sleep and good night.
+
+**`NOT_HUB_CIRCUITS` in `server.js` leaves those two record types out at load**,
+which is the one place that covers every road: the board, `/do` and its
+collectives, sleep, cues, schedules and history all read the `devices` map, and
+the hub merge drops what the map does not hold. Both machines are driven
+directly anyway. It is keyed on `device_type` rather than the ids, so another
+install's receiver record is left out too, and the startup log names each one it
+skips. `discover.js` marks them the same way. **521 needs nothing**: it is `TV`
+in a room with a paired set, so `shadowedByTv` hides it exactly as it hid 517.
+
+Checked by running `discover.js` in a scratch copy against the live hub and
+starting that copy against an unreachable address: 88 circuits loaded with 523
+and 524 named as left out, HOME THEATRE's `all` still 11 circuits,
+`/do/home-theatre/amplifire/off` a refusal, and ASHU ROOM identical to the live
+hub &mdash; 19 addresses, 14 in `all`, the TV still addressable as the hub's
+record. **Discovery on the hub itself is now safe and has not been run.**
+
 **`deploy/push.sh` copies `server.js` alone**, so the watchdog change is a
 separate `scp`. Second time that has been worth writing down.
 
