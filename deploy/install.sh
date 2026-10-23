@@ -38,8 +38,8 @@ if [[ -z "${NODE_BIN:-}" ]]; then
 fi
 if [[ -z "$NODE_BIN" ]]; then
   echo "!! Node.js is not installed on this box." >&2
-  echo "   If the hub has internet:  curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs" >&2
-  echo "   If it does NOT:           copy a Node 18 linux tarball for this CPU into ~/ and add its bin/ to PATH, then re-run." >&2
+  echo "   If the hub has internet:  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs" >&2
+  echo "   If it does NOT:           copy a Node 24 linux tarball for this CPU into ~/ and add its bin/ to PATH, then re-run." >&2
   echo "   CPU arch here is: $(uname -m)" >&2
   exit 1
 fi
