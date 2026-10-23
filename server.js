@@ -3392,7 +3392,9 @@ app.get('/icon-:size.png', (req, res) => {
  * falling back to cache only when the hub is unreachable.
  */
 const SW = `
-const SHELL = 'neo-shell-${ASSET_V}';
+/* The 2 is the worker's own version. It must change when this file's caching
+   rules do, or the old cache (which could hold a stale /report) is kept. */
+const SHELL = 'neo-shell-2-${ASSET_V}';
 /* The faces the page starts with are precached, so an installed app has its
    type before it asks for anything — the rest of the subsets are picked up by
    the cache-first handler below only if a character ever needs them. */
@@ -3420,8 +3422,20 @@ self.addEventListener('fetch', (e) => {
   // Nor the backdrop, which is now something the user changes from the page.
   if (url.pathname === '/bg.jpg' || url.pathname.startsWith('/backdrops/')) return;
 
-  if (url.pathname === '/') {
-    e.respondWith(fetch(e.request).catch(() => caches.match('/')));
+  /* Cache-first only for files that never change under the same name: the
+     fonts, the icons and the manifest. Every page (the board, /report, /guide,
+     /setup, /do) is network-first. This used to be cache-first for everything
+     but the board, so once a phone had opened /report over https it was shown
+     that copy for ever, whatever was deployed. The cache is only the offline
+     fallback now. */
+  const p = url.pathname;
+  const fixed = p.startsWith('/fonts/') || p.startsWith('/app-icon/')
+    || p.startsWith('/icon-') || p === '/manifest.webmanifest';
+  if (!fixed) {
+    e.respondWith(fetch(e.request).then((res) => {
+      if (res.ok && p === '/') { const copy = res.clone(); caches.open(SHELL).then((c) => c.put('/', copy)); }
+      return res;
+    }).catch(() => caches.match(e.request).then((hit) => hit || caches.match('/'))));
     return;
   }
   e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {

@@ -145,9 +145,9 @@ Two traps on this hardware, both already paid for once:
   it. Install a modern Node *alongside*, at `/opt/nodejs`:
 
   ```bash
-  curl -fsSLO https://nodejs.org/dist/v18.20.4/node-v18.20.4-linux-x64.tar.xz
+  curl -fsSLO https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz
   sudo mkdir -p /opt/nodejs
-  sudo tar -xJf node-v18.20.4-linux-x64.tar.xz -C /opt/nodejs --strip-components=1
+  sudo tar -xJf node-v24.22.1-linux-x64.tar.xz -C /opt/nodejs --strip-components=1
   /opt/nodejs/bin/node -v
   ```
 

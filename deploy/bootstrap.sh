@@ -24,7 +24,7 @@
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
-NODE_VERSION="${NODE_VERSION:-18.20.4}"
+NODE_VERSION="${NODE_VERSION:-24.22.1}"
 NODE_PREFIX="${NODE_PREFIX:-/opt/nodejs}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -72,7 +72,10 @@ if (( NEED_NODE )); then
   case "$(uname -m)" in
     x86_64|amd64) NODE_ARCH=linux-x64 ;;
     aarch64|arm64) NODE_ARCH=linux-arm64 ;;
-    armv7l) NODE_ARCH=linux-armv7l ;;
+    armv7l) NODE_ARCH=linux-armv7l
+      # Node 24 dropped the 32-bit ARM build, so its tarball is a 404 that
+      # would read as "is this box online?". 22 is the last line that has one.
+      (( ${NODE_VERSION%%.*} < 24 )) || die "Node $NODE_VERSION has no 32-bit ARM build — re-run with --node-version 22.23.4" ;;
     *) die "no prebuilt Node for $(uname -m) — install one by hand and re-run" ;;
   esac
   URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.tar.xz"
