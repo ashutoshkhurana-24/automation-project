@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-file local dashboard (`server.js`) that controls a Neo Console Hub — a home automation controller on the LAN at `192.168.1.3:8090`, driving 87 devices across 7 rooms. Express serves an API and an HTML page; commands reach the hub over WebSocket.
 
-There is no build step, no test suite, no linter, and no framework. `server.js` is the entire application: server logic, then the whole frontend inside a `HTML` template literal at the bottom.
+There is no build step, no linter, and no framework, and the only tests are offline checks (`npm test`). `server.js` is the entire application: server logic, then the whole frontend inside a `HTML` template literal at the bottom.
 
 ## Commands
 
@@ -15,9 +15,10 @@ npm start                      # http://localhost:3000
 PORT=3111 npm start            # a second instance, for testing without disturbing a running one
 HUB_IP=192.0.2.1 npm start     # point at an unreachable address to exercise error paths
 node --check server.js         # the only "build" — always run this after editing
+npm test                       # that check, then tools/say-eval.js and tools/say-speech-review.js
 ```
 
-There are no tests. Verify changes by driving the real hub (see below) and by loading the page.
+`npm test` covers only what can be checked offline: the syntax of `server.js`, the voice grammar and the wording of spoken replies. `.github/workflows/check.yml` runs the same command on every push to `main` and on every pull request. Nothing tests the hardware. Verify those changes by driving the real hub (see below) and by loading the page.
 
 ## The hub protocol
 

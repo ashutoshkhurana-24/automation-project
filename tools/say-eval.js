@@ -70,8 +70,13 @@ function lift(name) {
 function house() {
   const file = JSON.parse(fs.readFileSync(path.join(root, 'data', 'devices.json'), 'utf8'));
   const res = (file.payload && file.payload.response) || file.response || file;
+  /* config.json is per-install and git-ignored, so a clean checkout has none,
+     and neither does CI. The fixture beside this file holds the two keys read
+     below that a bare checkout would lack: the declared groups and the aliases. */
   let config = {};
-  try { config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8')); } catch { /* defaults */ }
+  for (const f of ['config.json', path.join('tools', 'say-eval.fixture.json')]) {
+    try { config = JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')); break; } catch { /* try the next */ }
+  }
 
   const byId = new Map();
   for (const d of res.devices || []) byId.set(String(d.record_id), d);
