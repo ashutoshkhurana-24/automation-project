@@ -175,6 +175,41 @@ pronounce Hinglish, so it is English again. Three media, three answers.
 
 ---
 
+## The month, told back
+
+`/report` is a monthly letter to the people who live here, built from the house's
+own history log. It opens with **"the month in 5 things"** — findings rather than
+totals, each one said only when the data can carry it — and every finding is
+followed by the chart that shows it: when each room goes to bed, where the light
+goes, what was left on, what the house did by itself, and how it was told.
+
+The first version was a set of charts with honest-looking numbers, and four of
+them were wrong in ways worth keeping:
+
+- **Every figure is bounded by the clock.** "Lit for 973 h" of a 23-day month
+  added room-hours together. A reader who does that sum once stops trusting the
+  rest of the page.
+- **Night lights are found from the data and left out.** Counted, the house was
+  busiest at midnight with a light on at 2 am every single night — all true and
+  all useless, because a foot light burns every night on purpose. A lamp on at
+  2 am on at least half the recorded nights is named once and not counted, which
+  gave the evening back: busiest around 10 pm.
+- **An outage is cut out, not counted.** The logger once filed a five-hour hub
+  outage as lamps burning, because each restart wrote the device file into the
+  history as though it were the house. Hours the house could not be read are now
+  recorded as that, and the page says how many there were.
+- **A bedtime needs evidence.** One room came out "first to bed at 10 pm" on 34
+  minutes of light a day. A lamp switched off in an empty room is not somebody
+  going to sleep, so a bedtime wants five nights and an hour of light a day
+  before it is said.
+
+It saves as one HTML file with no script, so it opens from a message with no
+network. There is no screenshot of it here on purpose: the report is a record of
+when people were in which room, and the demo house the other screenshots come
+from has no history to draw one with.
+
+---
+
 ## Underneath
 
 <table>
@@ -226,7 +261,7 @@ only instrument that works for colour is a person looking at the ceiling.**
 
 ## How this was built
 
-**As of 30 August 2026: 216 commits in three weeks, 197 of them co-authored with
+**As of 23 October 2026: 234 commits in eleven weeks, 226 of them co-authored with
 Claude Code.** The commit log says so on each one, and this section is here
 because a README that implied otherwise would be contradicted by the repository
 one click later.
@@ -274,7 +309,23 @@ npm start                      # http://localhost:3000
 PORT=3111 npm start            # a second instance, for testing
 HUB_IP=192.0.2.1 npm start     # an unreachable hub, to exercise error paths
 node --check server.js         # the only build step
+npm test                       # that check, plus the two offline voice checks
 ```
+
+**You do not need the hardware to look at it.** A fresh clone with
+`HUB_IP=192.0.2.1 npm start` draws the whole house — 88 circuits in 7 rooms, the
+console at `/setup`, the address reference at `/do`, the family guide at `/guide`
+— from the device snapshot in `data/devices.json`. Commands fail, because there is
+nothing to send them to. Give it the unreachable address rather than leaving the
+default: the default is this house's hub address, and on your network that may be
+somebody's printer. It also sends a small status query as a UDP broadcast on
+port 6000, at start and every ten minutes after, which only this vendor's
+modules answer.
+
+`npm test` needs no hub, no key and no install: it checks the syntax of
+`server.js`, runs the voice grammar against this house's own device list, and
+reads every spoken reply for the faults a phone's voice makes audible. CI runs
+the same command.
 
 No build, no framework, no bundler. `server.js` is the whole application — server
 logic, then the entire frontend inside one HTML template literal. Two runtime
@@ -289,6 +340,25 @@ shipped with CPUs lacking the AVX2 that Bun's ordinary Linux build wants.
 | [`deploy/`](deploy) | install, deploy-with-rollback, watchdog, fresh-install notes |
 | [`tools/`](tools) | 19 standalone scripts — hub probes, the webOS and Android TV clients, the icon and lens generators, and the offline test harnesses for the voice grammar |
 | [`docs/prompts.md`](docs/prompts.md) | exactly what is sent to the models, dumped from the running server rather than written by hand |
+
+### Finding your way around `server.js`
+
+It is 26,800 lines in one file, so search for a name rather than scroll. The
+first half is the server; the second half is the two pages.
+
+| Search for | What is there |
+|---|---|
+| `function sendToHub`, `function sendBatchToHub` | a command to the hub: one socket each, or one shared socket for many |
+| `function readHubState` | a read of the whole house, and the rule for when a read must not overwrite a command |
+| `function pollHardware` | the HDL Buspro status query |
+| `class TvLink`, `class AvrLink`, `class MediaLink` | the three devices driven directly: webOS, Denon, Android TV |
+| `function setRecords`, `function applyScene` | many circuits at once, with verify-and-resend; cues |
+| `function runAddress` | the `/do/<room>/<circuit>/<action>` grammar that every road goes through |
+| `function speechWords`, `function answerSaid` | the voice path: the free grammar, then the one entry point |
+| `function runGoodnight` | good night, addressed by whoever said it |
+| `function houseReport`, `function replay` | the monthly report |
+| `const SETUP_HTML` | the console page |
+| `const HTML` | the board — the whole frontend, from about line 15,200 to the end |
 
 **Working against it changes something in someone's home.** Read the hub-protocol
 section of `CLAUDE.md` before changing how commands are sent, check the hour, and
