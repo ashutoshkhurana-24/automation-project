@@ -360,6 +360,13 @@ first half is the server; the second half is the two pages.
 | `const SETUP_HTML` | the console page |
 | `const HTML` | the board — the whole frontend, from about line 15,200 to the end |
 
+### Licence
+
+The code is under the [MIT licence](LICENSE). Two things in the repository are
+not mine to license: the three typefaces in `data/fonts` are under the SIL Open
+Font License (see [`data/fonts/README.txt`](data/fonts/README.txt)), and the
+four photographs in `data/backdrops` are not covered by the MIT licence.
+
 **Working against it changes something in someone's home.** Read the hub-protocol
 section of `CLAUDE.md` before changing how commands are sent, check the hour, and
 put back what you touch.
