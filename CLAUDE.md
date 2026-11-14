@@ -369,8 +369,8 @@ whole time. Every layer worked.
 
 **The hub's LAN address had moved.** `enp2s0` held **192.168.1.2** while
 `config.json` still said `192.168.1.3`, and `.3` was **alive** &mdash; a stranger
-at `e0:2e:fe:bc:88:36`, port 80 and nothing else. The gateway MAC had changed to
-`3c:f7:5d:b2:73:c8`, so the router was replaced or reset and the static
+at `e0:2e:fe:··:··:36`, port 80 and nothing else. The gateway MAC had changed to
+`3c:f7:5d:··:··:c8`, so the router was replaced or reset and the static
 reservation this file records setting went with it: the hub took a fresh lease
 and something else took the old one.
 
@@ -447,7 +447,7 @@ and now defaults to `127.0.0.x`; it takes an explicit subnet, so pass
 
 **What this does not fix, and cannot.** The phones' vendor app, the doorbell
 tablet and any Shortcuts are all pinned to `192.168.1.3`. Only a reservation for
-`f8:bc:12:a8:5f:8a` on the new router restores those. **Re-reserve it before
+`f8:bc:12:··:··:8a` on the new router restores those. **Re-reserve it before
 trusting any address in this file** &mdash; every one of them is a lease.
 
 Verified from the Mac over the tunnel afterwards: health **200**, `ok: true`,
