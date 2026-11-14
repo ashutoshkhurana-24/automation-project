@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "The two per-install keys tools/say-eval.js reads, for a checkout that has no",
+    "config.json (a clean clone, and CI). Declared groups are what give a room its",
+    "cobs / direct-lights / indirect-lights names, so without them two cases fail.",
+    "A real config.json, when there is one, is used instead of this file."
+  ],
+  "groups": [
+    {
+      "room": "ASHU ROOM",
+      "label": "All COBs",
+      "record_ids": [
+        449,
+        450,
+        451,
+        452,
+        453
+      ]
+    },
+    {
+      "room": "DINING",
+      "label": "All COBs",
+      "record_ids": [
+        499,
+        500,
+        501,
+        502
+      ]
+    },
+    {
+      "room": "HOME THEATRE",
+      "label": "All COBs",
+      "record_ids": [
+        474,
+        475,
+        476,
+        477
+      ]
+    },
+    {
+      "room": "LIVING",
+      "label": "All COBs",
+      "record_ids": [
+        485,
+        486,
+        487,
+        488,
+        489,
+        490,
+        504,
+        505,
+        513,
+        514,
+        515
+      ]
+    },
+    {
+      "room": "MASTER ROOM",
+      "label": "All COBs",
+      "record_ids": [
+        463,
+        464,
+        465,
+        466,
+        467,
+        468,
+        469
+      ]
+    },
+    {
+      "room": "PARENT ROOM",
+      "label": "All COBs",
+      "record_ids": [
+        429,
+        431,
+        432,
+        433
+      ]
+    }
+  ],
+  "room_aliases": {
+    "kanu room": "HARSHIT ROOM"
+  }
+}

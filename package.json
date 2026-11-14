@@ -2,10 +2,12 @@
   "name": "neo-console-dashboard",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --check server.js && node tools/say-eval.js && node tools/say-speech-review.js"
   },
   "dependencies": {
     "express": "^4.21.2",

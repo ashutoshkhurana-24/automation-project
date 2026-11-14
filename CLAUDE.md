@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-file local dashboard (`server.js`) that controls a Neo Console Hub — a home automation controller on the LAN at `192.168.1.3:8090`, driving 87 devices across 7 rooms. Express serves an API and an HTML page; commands reach the hub over WebSocket.
 
-There is no build step, no test suite, no linter, and no framework. `server.js` is the entire application: server logic, then the whole frontend inside a `HTML` template literal at the bottom.
+There is no build step, no linter, and no framework, and the only tests are offline checks (`npm test`). `server.js` is the entire application: server logic, then the whole frontend inside a `HTML` template literal at the bottom.
 
 ## Commands
 
@@ -15,9 +15,10 @@ npm start                      # http://localhost:3000
 PORT=3111 npm start            # a second instance, for testing without disturbing a running one
 HUB_IP=192.0.2.1 npm start     # point at an unreachable address to exercise error paths
 node --check server.js         # the only "build" — always run this after editing
+npm test                       # that check, then tools/say-eval.js and tools/say-speech-review.js
 ```
 
-There are no tests. Verify changes by driving the real hub (see below) and by loading the page.
+`npm test` covers only what can be checked offline: the syntax of `server.js`, the voice grammar and the wording of spoken replies. `.github/workflows/check.yml` runs the same command on every push to `main` and on every pull request. Nothing tests the hardware. Verify those changes by driving the real hub (see below) and by loading the page.
 
 ## The hub protocol
 
@@ -369,8 +370,8 @@ whole time. Every layer worked.
 
 **The hub's LAN address had moved.** `enp2s0` held **192.168.1.2** while
 `config.json` still said `192.168.1.3`, and `.3` was **alive** &mdash; a stranger
-at `e0:2e:fe:bc:88:36`, port 80 and nothing else. The gateway MAC had changed to
-`3c:f7:5d:b2:73:c8`, so the router was replaced or reset and the static
+at `e0:2e:fe:··:··:36`, port 80 and nothing else. The gateway MAC had changed to
+`3c:f7:5d:··:··:c8`, so the router was replaced or reset and the static
 reservation this file records setting went with it: the hub took a fresh lease
 and something else took the old one.
 
@@ -447,7 +448,7 @@ and now defaults to `127.0.0.x`; it takes an explicit subnet, so pass
 
 **What this does not fix, and cannot.** The phones' vendor app, the doorbell
 tablet and any Shortcuts are all pinned to `192.168.1.3`. Only a reservation for
-`f8:bc:12:a8:5f:8a` on the new router restores those. **Re-reserve it before
+`f8:bc:12:··:··:8a` on the new router restores those. **Re-reserve it before
 trusting any address in this file** &mdash; every one of them is a lease.
 
 Verified from the Mac over the tunnel afterwards: health **200**, `ok: true`,
